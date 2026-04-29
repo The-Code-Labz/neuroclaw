@@ -16,7 +16,7 @@ import { logger } from '../utils/logger';
 import { classifyRoute } from '../system/router';
 import { spawnAgent, type SpawnRequest } from '../system/spawner';
 import { logHive } from '../system/hive-mind';
-import { getLangfuse } from '../system/langfuse';
+import { getLangfuse, createChatTrace, logToolSpan, estimateTokens } from '../system/langfuse';
 import {
   createBackgroundTask,
   completeBackgroundTask,
@@ -266,23 +266,21 @@ export async function chatStream(
   let continueLoop = true;
 
   const lf = getLangfuse();
-  const trace = lf?.trace({
-    name:     'chat',
-    id:       `${sessionId}-${Date.now()}`,
-    userId:   agentId,
-    metadata: { agentName: agentRecord?.name, sessionId },
-  });
+  const trace = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
 
   while (continueLoop && iteration < MAX_TOOL_ITERATIONS) {
     iteration++;
     continueLoop = false;
 
     const genStart = Date.now();
+    // Estimate input tokens from history
+    const inputTokens = history.reduce((sum, m) => sum + estimateTokens(typeof m.content === 'string' ? m.content : ''), 0);
     const generation = trace?.generation({
       name:      `completion-${iteration}`,
       model:     config.voidai.model,
       input:     history,
       startTime: new Date(genStart),
+      metadata:  { inputTokens, iteration },
     });
 
     const stream = await getClient().chat.completions.create({
@@ -339,7 +337,9 @@ export async function chatStream(
       // Execute each tool and add results
       for (const tc of toolCalls) {
         logger.info('Executing tool call', { name: tc.function.name });
+        const toolStart = Date.now();
         const result = await executeTool(tc.function.name, tc.function.arguments, agentId, onMeta);
+        logToolSpan(trace, tc.function.name, tc.function.arguments, result, Date.now() - toolStart);
         const toolMsg: ChatCompletionToolMessageParam = {
           role:         'tool',
           tool_call_id: tc.id,
@@ -351,14 +351,24 @@ export async function chatStream(
       continueLoop = true; // get the LLM's synthesis of the tool results
 
     } else if (textAccum) {
-      generation?.end({ output: textAccum, endTime: new Date() });
+      const outputTokens = estimateTokens(textAccum);
+      generation?.end({ output: textAccum, endTime: new Date(), metadata: { outputTokens } });
       history.push({ role: 'assistant', content: textAccum });
       saveMessage(sessionId, 'assistant', textAccum, agentId);
-      logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId }, sessionId);
+      logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId, outputTokens }, sessionId);
       logger.debug('Agent responded', { agentId, chars: textAccum.length });
     } else {
       generation?.end({ endTime: new Date() });
     }
+  }
+
+  // Finalize trace with output
+  if (trace) {
+    const lastAssistant = history.filter(m => m.role === 'assistant').pop();
+    trace.update({
+      output: typeof lastAssistant?.content === 'string' ? lastAssistant.content : undefined,
+      metadata: { iterations: iteration },
+    });
   }
 
   // Non-blocking flush — don't await in hot path

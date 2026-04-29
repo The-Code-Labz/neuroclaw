@@ -76,6 +76,9 @@ Copy `.env.example` → `.env`:
 | `TEMP_AGENT_IDLE_TIMEOUT_MINUTES` | `30` | Reserved for future enforcement |
 | `TEMP_AGENT_SOFT_LIMIT` | `10` | Log warning above this many active temp agents |
 | `TEMP_AGENT_HARD_LIMIT` | `25` | Block spawns above this many active temp agents |
+| `LANGFUSE_SECRET_KEY` | — | Langfuse secret key (enables tracing when set with public key) |
+| `LANGFUSE_PUBLIC_KEY` | — | Langfuse public key |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Custom Langfuse host URL |
 
 ## SQLite Schema
 

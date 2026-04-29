@@ -2,6 +2,7 @@ import { getClient } from '../agent/openai-client';
 import { config } from '../config';
 import { type AgentRecord } from '../db';
 import { logger } from '../utils/logger';
+import { getLangfuse, estimateTokens } from './langfuse';
 
 export interface RouteDecision {
   agent:      AgentRecord;
@@ -32,13 +33,19 @@ export async function classifyRoute(
 
   const userPrompt = `Agents:\n${agentList}\n\nUser message: ${message}`;
 
+  const lf = getLangfuse();
+  const routerStart = Date.now();
+  
   try {
+    const model = config.routing.model ?? config.voidai.model;
+    const messages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const,   content: userPrompt },
+    ];
+    
     const response = await getClient().chat.completions.create({
-      model:       config.routing.model ?? config.voidai.model,
-      messages:    [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userPrompt },
-      ],
+      model,
+      messages,
       temperature: 0,
       max_tokens:  120,
       stream:      false,
@@ -62,9 +69,40 @@ export async function classifyRoute(
       return null;
     }
 
+    // Log to Langfuse
+    if (lf) {
+      lf.generation({
+        name: 'router-classify',
+        model,
+        input: messages,
+        output: raw,
+        metadata: {
+          decision: matched ? parsed : null,
+          durationMs: Date.now() - routerStart,
+          inputTokens: estimateTokens(systemPrompt + userPrompt),
+          outputTokens: estimateTokens(raw),
+        },
+      });
+      lf.flushAsync().catch(() => {});
+    }
+
     logger.info('Router: classified', { to: matched.name, confidence: parsed.confidence, reason: parsed.reason });
     return { agent: matched, confidence: parsed.confidence, reason: parsed.reason };
   } catch (err) {
+    // Log failure to Langfuse
+    if (lf) {
+      lf.generation({
+        name: 'router-classify',
+        model: config.routing.model ?? config.voidai.model,
+        input: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        output: null,
+        metadata: {
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - routerStart,
+        },
+      });
+      lf.flushAsync().catch(() => {});
+    }
     logger.warn('Router: classification failed, falling back to Alfred', err instanceof Error ? err.message : err);
     return null;
   }

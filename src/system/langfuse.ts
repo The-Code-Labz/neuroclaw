@@ -1,4 +1,4 @@
-import { Langfuse } from 'langfuse';
+import { Langfuse, type LangfuseTraceClient } from 'langfuse';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -32,4 +32,73 @@ export function resetLangfuse(): void {
     client.flushAsync().catch(() => {});
     client = null;
   }
+}
+
+// Helper to estimate tokens (rough approximation: ~4 chars per token)
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// Create a trace for a chat session
+export function createChatTrace(
+  sessionId: string,
+  agentId: string | undefined,
+  agentName: string | undefined,
+  userMessage: string,
+): LangfuseTraceClient | null {
+  const lf = getLangfuse();
+  if (!lf) return null;
+  
+  return lf.trace({
+    name: 'chat',
+    id: `${sessionId}-${Date.now()}`,
+    sessionId,
+    userId: agentId,
+    input: userMessage,
+    metadata: { 
+      agentName,
+      agentId,
+      inputTokens: estimateTokens(userMessage),
+    },
+  });
+}
+
+// Log a tool execution as a span
+export function logToolSpan(
+  trace: LangfuseTraceClient | null,
+  toolName: string,
+  toolInput: string,
+  toolOutput: string,
+  durationMs: number,
+): void {
+  if (!trace) return;
+  
+  trace.span({
+    name: `tool:${toolName}`,
+    input: toolInput,
+    output: toolOutput,
+    metadata: {
+      durationMs,
+      inputTokens: estimateTokens(toolInput),
+      outputTokens: estimateTokens(toolOutput),
+    },
+  });
+}
+
+// Log router/classifier decision
+export function logRouterDecision(
+  trace: LangfuseTraceClient | null,
+  decision: { agentName: string; confidence: number; reason: string } | null,
+  durationMs: number,
+): void {
+  if (!trace) return;
+  
+  trace.span({
+    name: 'router',
+    output: decision ? `${decision.agentName} (${Math.round(decision.confidence * 100)}%)` : 'fallback to Alfred',
+    metadata: {
+      decision,
+      durationMs,
+    },
+  });
 }
