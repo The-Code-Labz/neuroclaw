@@ -282,7 +282,14 @@ select:focus{border-color:var(--blue)}
   <div id="s-analytics" class="section">
     <div class="page-header"><h2>Analytics</h2><button class="btn btn-primary" onclick="load('analytics')">↻ Refresh</button></div>
     <div class="grid4" id="an-stats"></div>
-    <div class="card" id="an-events"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+      <div class="card" id="an-messages-chart"></div>
+      <div class="card" id="an-top-agents"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+      <div class="card" id="an-events"></div>
+      <div class="card" id="an-hive"></div>
+    </div>
   </div>
 
   <!-- Hive Mind -->
@@ -739,22 +746,73 @@ function loadConfig() {
 
 function loadAnalytics() {
   api('/api/analytics').then(function(d) {
+    // Stats cards
     document.getElementById('an-stats').innerHTML = [
-      {l:'Total Messages', v:d.total_messages},
-      {l:'Total Sessions', v:d.total_sessions},
-      {l:'Messages Today', v:d.messages_today},
-      {l:'Total Tokens',   v:d.total_tokens},
+      {l:'Messages Today', v:d.messages_today, sub:'last 24h'},
+      {l:'Messages (7d)',  v:d.messages_7d,    sub:'last week'},
+      {l:'Total Messages', v:d.total_messages, sub:'all time'},
+      {l:'Total Sessions', v:d.total_sessions, sub:'conversations'},
+      {l:'Active Agents',  v:d.active_agents,  sub:'ready'},
+      {l:'Temp Agents',    v:d.temp_agents,    sub:'spawned'},
+      {l:'Tasks Open',     v:d.tasks_todo,     sub:'todo/doing'},
+      {l:'Tasks Done',     v:d.tasks_done,     sub:'completed'},
+      {l:'Memories',       v:d.memories_count, sub:'stored'},
+      {l:'Total Tokens',   v:d.total_tokens,   sub:'API usage'},
     ].map(function(c) {
-      return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div></div>';
+      return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div><div class="card-sub">'+c.sub+'</div></div>';
     }).join('');
+    
+    // Messages by day chart (simple bar visualization)
+    var chartEl = document.getElementById('an-messages-chart');
+    if (d.messages_by_day && d.messages_by_day.length) {
+      var maxCount = Math.max.apply(null, d.messages_by_day.map(function(x) { return x.count; })) || 1;
+      chartEl.innerHTML = '<div class="card-label" style="margin-bottom:10px">Messages (Last 14 Days)</div>'
+        + d.messages_by_day.slice().reverse().map(function(day) {
+          var pct = Math.round((day.count / maxCount) * 100);
+          var label = day.day.slice(5); // MM-DD
+          return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+            + '<span style="width:45px;font-size:11px;color:var(--muted)">'+label+'</span>'
+            + '<div style="flex:1;height:18px;background:var(--bg3);border-radius:3px;overflow:hidden">'
+            + '<div style="width:'+pct+'%;height:100%;background:var(--blue);border-radius:3px"></div></div>'
+            + '<span style="width:30px;font-size:12px;text-align:right">'+day.count+'</span></div>';
+        }).join('');
+    } else {
+      chartEl.innerHTML = '<div class="card-label">Messages (Last 14 Days)</div><div class="muted" style="padding:10px 0">No data yet</div>';
+    }
+    
+    // Top agents
+    var agentsEl = document.getElementById('an-top-agents');
+    if (d.top_agents && d.top_agents.length) {
+      agentsEl.innerHTML = '<div class="card-label" style="margin-bottom:10px">Top Agents (by messages)</div>'
+        + d.top_agents.map(function(a, i) {
+          var medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '';
+          return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border)">'
+            + '<span>'+medal+' '+esc(a.name)+'</span><strong>'+a.messages+'</strong></div>';
+        }).join('');
+    } else {
+      agentsEl.innerHTML = '<div class="card-label">Top Agents</div><div class="muted" style="padding:10px 0">No data yet</div>';
+    }
+    
+    // Events by type
     var evEl = document.getElementById('an-events');
     if (d.events_by_type && d.events_by_type.length) {
-      evEl.innerHTML = '<div class="card-label" style="margin-bottom:10px">Events by Type</div>'
-        +d.events_by_type.map(function(e) {
+      evEl.innerHTML = '<div class="card-label" style="margin-bottom:10px">Event Types</div>'
+        + d.events_by_type.map(function(e) {
           return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border)"><span>'+esc(e.event_type)+'</span><strong>'+e.count+'</strong></div>';
         }).join('');
     } else {
-      evEl.innerHTML = '<div class="card-label">Events by Type</div><div class="muted" style="padding:10px 0">No events yet</div>';
+      evEl.innerHTML = '<div class="card-label">Event Types</div><div class="muted" style="padding:10px 0">No events yet</div>';
+    }
+    
+    // Hive mind activity (24h)
+    var hiveEl = document.getElementById('an-hive');
+    if (d.hive_recent && d.hive_recent.length) {
+      hiveEl.innerHTML = '<div class="card-label" style="margin-bottom:10px">Hive Mind (24h)</div>'
+        + d.hive_recent.map(function(h) {
+          return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border)"><span>'+esc(h.action)+'</span><strong>'+h.count+'</strong></div>';
+        }).join('');
+    } else {
+      hiveEl.innerHTML = '<div class="card-label">Hive Mind (24h)</div><div class="muted" style="padding:10px 0">No activity yet</div>';
     }
   }).catch(function(e) { document.getElementById('an-stats').innerHTML = '<div class="card">'+errHtml(e.message)+'</div>'; });
 }
