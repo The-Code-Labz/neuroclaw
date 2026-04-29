@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { getDashboardHTML } from './html';
 import { registerApiRoutes } from './routes';
 import { startConfigWatcher } from '../system/config-watcher';
+import { startCleanupScheduler } from '../system/cleanup';
 
 // TODO [Discord bot]: Replace or augment this server with a Discord.js client
 // TODO [MCP bridge]: Mount an MCP server alongside Hono for IDE tool integration
@@ -32,4 +33,5 @@ app.get('/', (c) => c.redirect(`/dashboard?token=${config.dashboard.token}`));
 serve({ fetch: app.fetch, port: config.dashboard.port, hostname: '127.0.0.1' }, (info) => {
   logger.info(`Dashboard → http://localhost:${info.port}/dashboard?token=${config.dashboard.token}`);
   startConfigWatcher();
+  startCleanupScheduler();
 });

@@ -115,11 +115,17 @@ select:focus{border-color:var(--blue)}
 .agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
 .agent-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;display:flex;flex-direction:column;gap:10px}
 .agent-card.inactive{opacity:.55}
+.agent-card.temporary{border-color:rgba(210,153,34,.4);background:rgba(210,153,34,.04)}
 .agent-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .agent-name{font-size:15px;font-weight:700}
 .agent-meta{font-size:11px;color:var(--muted)}
 .caps{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .agent-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border)}
+/* ── Hive / Chat meta events ─────────────────────────────────────────────── */
+.msg.meta{align-self:flex-start;margin-bottom:-4px;max-width:90%}
+.msg-meta{font-size:11px;color:var(--muted);padding:3px 10px;background:rgba(88,166,255,.07);border-radius:10px;border:1px solid rgba(88,166,255,.14);display:inline-block}
+.msg-meta.route{background:rgba(63,185,80,.07);border-color:rgba(63,185,80,.2)}
+.msg-meta.spawn{background:rgba(188,140,255,.07);border-color:rgba(188,140,255,.2);color:var(--purple)}
 </style>
 </head>
 <body>
@@ -134,6 +140,7 @@ select:focus{border-color:var(--blue)}
     <a data-s="memory">🧠 Memory</a>
     <a data-s="config">⚙️ Config</a>
     <a data-s="analytics">📈 Analytics</a>
+    <a data-s="hive">🌐 Hive Mind</a>
     <a data-s="logs">📜 Logs</a>
   </nav>
 </aside>
@@ -182,6 +189,12 @@ select:focus{border-color:var(--blue)}
     <div class="page-header">
       <h2>Agents</h2>
       <div class="actions">
+        <div id="agent-filter" style="display:flex;gap:4px">
+          <button class="btn btn-sm btn-primary" data-filter="all"      onclick="filterAgents('all')">All</button>
+          <button class="btn btn-sm"              data-filter="active"   onclick="filterAgents('active')">Active</button>
+          <button class="btn btn-sm"              data-filter="temp"     onclick="filterAgents('temp')">Temp</button>
+          <button class="btn btn-sm"              data-filter="inactive" onclick="filterAgents('inactive')">Inactive</button>
+        </div>
         <button class="btn btn-primary" onclick="openNewAgent()">+ New Agent</button>
         <button class="btn" onclick="load('agents')">↻ Refresh</button>
       </div>
@@ -238,6 +251,25 @@ select:focus{border-color:var(--blue)}
     <div class="page-header"><h2>Analytics</h2><button class="btn btn-primary" onclick="load('analytics')">↻ Refresh</button></div>
     <div class="grid4" id="an-stats"></div>
     <div class="card" id="an-events"></div>
+  </div>
+
+  <!-- Hive Mind -->
+  <div id="s-hive" class="section">
+    <div class="page-header">
+      <h2>Hive Mind</h2>
+      <div class="actions">
+        <select id="hive-limit" onchange="load('hive')">
+          <option value="50">Last 50</option>
+          <option value="100" selected>Last 100</option>
+          <option value="250">Last 250</option>
+        </select>
+        <button class="btn btn-primary" onclick="load('hive')">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Agent</th><th>Action</th><th>Summary</th><th>Time</th></tr></thead>
+      <tbody id="tb-hive"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table>
+    </div>
   </div>
 
   <!-- Logs -->
@@ -324,8 +356,16 @@ function apiPost(path, body, method) {
 }
 
 function badge(status) {
-  var map = {active:'bg',done:'bg',todo:'bb',doing:'by',review:'bp',inactive:'br',orchestrator:'bo',specialist:'bp',assistant:'bb',agent:'bb'};
-  return '<span class="badge ' + (map[status] || 'bb') + '">' + status + '</span>';
+  var map = {
+    active:'bg', done:'bg', todo:'bb', doing:'by', review:'bp', inactive:'br',
+    orchestrator:'bo', specialist:'bp', assistant:'bb', agent:'bb', temporary:'by',
+    auto_route:'bb', manual_delegation:'bg', route_fallback:'br',
+    spawn_request:'by', spawn_success:'bg', spawn_denied:'br',
+    agent_spawned:'bp', agent_expired:'br',
+    task_created:'bb', task_updated:'by',
+    agent_activated:'bg', agent_deactivated:'br'
+  };
+  return '<span class="badge ' + (map[status] || 'bb') + '">' + status.replace(/_/g,' ') + '</span>';
 }
 
 function ago(s) {
@@ -438,12 +478,13 @@ function activateAgent(id) {
 function loadOverview() {
   api('/api/status').then(function(s) {
     var cards = [
-      {l:'Status',   v:'<span class="dot"></span>Online', sub:'System running'},
-      {l:'Model',    v:s.model||'—',                      sub:'Active model'},
-      {l:'Agents',   v:s.agents,                          sub:'Active agents'},
-      {l:'Sessions', v:s.sessions,                        sub:'Total sessions'},
-      {l:'Messages', v:s.messages,                        sub:'Total messages'},
-      {l:'Uptime',   v:Math.floor(s.uptime)+'s',          sub:'Since last start'},
+      {l:'Status',      v:'<span class="dot"></span>Online', sub:'System running'},
+      {l:'Model',       v:s.model||'—',                      sub:'Active model'},
+      {l:'Agents',      v:s.agents,                          sub:'Active agents'},
+      {l:'Temp Agents', v:s.tempAgents||0,                   sub:'Spawned, running'},
+      {l:'Sessions',    v:s.sessions,                        sub:'Total sessions'},
+      {l:'Messages',    v:s.messages,                        sub:'Total messages'},
+      {l:'Uptime',      v:Math.floor(s.uptime)+'s',          sub:'Since last start'},
     ];
     document.getElementById('ov-stats').innerHTML = cards.map(function(c) {
       return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div><div class="card-sub">'+c.sub+'</div></div>';
@@ -481,11 +522,19 @@ function loadAgents() {
       }
       actions += '</div>';
 
-      return '<div class="agent-card' + (isActive ? '' : ' inactive') + '">'
+      var isTemp    = a.temporary === 1;
+      var expiryHtml = isTemp && a.expires_at
+        ? '<div class="muted" style="font-size:11px;margin-top:3px">⏱ expires ' + ago(a.expires_at) + '</div>'
+        : '';
+      var parentHtml = isTemp && a.parent_agent_id && agentCache[a.parent_agent_id]
+        ? '<div class="muted" style="font-size:11px">spawned by ' + esc(agentCache[a.parent_agent_id].name) + '</div>'
+        : '';
+
+      return '<div class="agent-card' + (isActive ? '' : ' inactive') + (isTemp ? ' temporary' : '') + '">'
         +'<div class="agent-header">'
-        +'<div><div class="agent-name">'+esc(a.name)+'</div>'
+        +'<div><div class="agent-name">'+esc(a.name)+(isTemp ? ' <span style="font-size:11px;color:var(--yellow)">[temp]</span>' : '')+'</div>'
         +'<div class="agent-meta">'+esc(a.description||'')+'</div>'
-        +capsHtml+'</div>'
+        +capsHtml+expiryHtml+parentHtml+'</div>'
         +'<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
         +badge(a.status)
         +badge(a.role)
@@ -623,6 +672,22 @@ function loadAnalytics() {
   }).catch(function(e) { document.getElementById('an-stats').innerHTML = '<div class="card">'+errHtml(e.message)+'</div>'; });
 }
 
+function loadHive() {
+  var limit = document.getElementById('hive-limit') ? document.getElementById('hive-limit').value : '100';
+  api('/api/hive?limit=' + limit).then(function(rows) {
+    var tb = document.getElementById('tb-hive');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No hive events yet</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(r) {
+      return '<tr>'
+        + '<td class="muted">' + esc(r.agent_name || (r.agent_id ? r.agent_id.slice(0,8)+'…' : '—')) + '</td>'
+        + '<td>' + badge(r.action) + '</td>'
+        + '<td>' + esc(r.summary) + '</td>'
+        + '<td class="muted">' + ago(r.created_at) + '</td>'
+        + '</tr>';
+    }).join('');
+  }).catch(function(e) { document.getElementById('tb-hive').innerHTML = '<tr><td colspan="4">' + errHtml(e.message) + '</td></tr>'; });
+}
+
 function loadLogs() {
   api('/api/logs').then(function(rows) {
     var tb = document.getElementById('tb-logs');
@@ -742,6 +807,25 @@ function sendChat() {
               accText += ev.content;
               bubbleEl.textContent = accText;
               document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'route') {
+              var icon = ev.manual ? '👤' : '🤖';
+              var pct  = ev.confidence < 1 ? ' (' + Math.round(ev.confidence * 100) + '%)' : '';
+              var meta = document.createElement('div');
+              meta.className = 'msg meta';
+              var mb = document.createElement('div');
+              mb.className = 'msg-meta route';
+              mb.textContent = icon + ' ' + ev.from + ' → ' + ev.to + pct + ' — ' + ev.reason;
+              meta.appendChild(mb);
+              document.getElementById('chat-messages').insertBefore(meta, assistantDiv);
+            } else if (ev.type === 'spawn') {
+              var smeta = document.createElement('div');
+              smeta.className = 'msg meta';
+              var smb = document.createElement('div');
+              smb.className = 'msg-meta spawn';
+              smb.textContent = '🧬 Spawning temporary agent "' + ev.agentName + '"…';
+              smeta.appendChild(smb);
+              document.getElementById('chat-messages').insertBefore(smeta, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
             } else if (ev.type === 'done') {
               assistantDiv.classList.remove('streaming');
               chatStreaming = false;
@@ -810,6 +894,7 @@ var loaders = {
   memory:   loadMemory,
   config:   loadConfig,
   analytics:loadAnalytics,
+  hive:     loadHive,
   logs:     loadLogs
 };
 var current = 'overview';

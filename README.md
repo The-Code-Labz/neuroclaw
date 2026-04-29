@@ -1,18 +1,21 @@
 # NeuroClaw v1
 
-Multi-agent AI system with a CLI chat interface, agent registry, task management, and a local dashboard. Built on Node.js + TypeScript, backed by SQLite, and powered by the VoidAI API (OpenAI-compatible).
+Multi-agent AI orchestration system with auto-delegation, temporary agent spawning, a Hive Mind event log, task management, and a local dashboard. Built on Node.js + TypeScript, backed by SQLite, powered by the VoidAI API (OpenAI-compatible).
 
 ---
 
 ## Features
 
-- **Alfred** — orchestrator agent with a strategic AI butler persona
+- **Alfred** — orchestrator agent; classifies intent and routes to the best specialist
 - **Agent Registry** — create, edit, and manage specialist sub-agents from the dashboard
-- **Delegation** — route messages to a specific agent with `@AgentName` in any chat
-- **Task Management** — create tasks, assign them to agents, and advance their status through the dashboard
-- **Local Dashboard** — dark-mode web UI with live config watching, SSE chat streaming, and full observability
-- **SQLite Persistence** — sessions, messages (with `agent_id`), tasks, memories, audit logs, and analytics events
-- **Hot-reload Config** — edit `.env` while the server runs; changes are detected and applied within 2 seconds
+- **Auto-Delegation** — LLM classifier picks the best agent per message (configurable confidence threshold)
+- **`@mention` Routing** — prefix any message with `@AgentName` to force-route it
+- **Temporary Agent Spawning** — agents can spawn short-lived sub-agents via tool call; TTL + idle timeout enforced
+- **Hive Mind** — centralized event log for every routing decision, spawn, task, and lifecycle event
+- **Task Management** — create tasks, auto-assign via classifier, advance status through the dashboard
+- **Live Dashboard** — dark-mode web UI with SSE chat streaming, routing/spawn indicators, config hot-reload
+- **SQLite Persistence** — sessions, messages, tasks, memories, audit logs, analytics, hive events
+- **Hot-reload Config** — edit `.env` while running; detected and applied within 2 seconds
 
 ---
 
@@ -25,7 +28,7 @@ Multi-agent AI system with a CLI chat interface, agent registry, task management
 | **Coder** | specialist | code, debug, refactor, review |
 | **Planner** | specialist | plan, tasks, roadmap, prioritize |
 
-All agents are seeded automatically on first startup and are idempotent on subsequent starts.
+All agents are seeded on first startup (idempotent). System prompts are always kept current — adding spawn guidance on each boot.
 
 ---
 
@@ -39,7 +42,7 @@ npm install
 cp .env.example .env
 # Edit .env — set VOIDAI_API_KEY and DASHBOARD_TOKEN
 
-# 3a. CLI chat (streaming conversation with Alfred)
+# 3a. CLI chat (Alfred, streaming)
 npm run dev
 
 # 3b. Dashboard (web UI on port 3141)
@@ -55,91 +58,148 @@ npm run dashboard
 |---|---|---|---|
 | `VOIDAI_API_KEY` | Yes | — | API key for VoidAI |
 | `VOIDAI_BASE_URL` | No | `https://api.voidai.app/v1` | OpenAI-compatible base URL |
-| `VOIDAI_MODEL` | No | `gpt-5.1` | Model identifier |
-| `DASHBOARD_PORT` | No | `3141` | Port the dashboard listens on |
-| `DASHBOARD_TOKEN` | Yes | `change-me` | Token required for all dashboard routes |
-| `DB_PATH` | No | `./neuroclaw.db` | SQLite database file path |
+| `VOIDAI_MODEL` | No | `gpt-5.1` | Default model for all agents |
+| `DASHBOARD_PORT` | No | `3141` | Dashboard port |
+| `DASHBOARD_TOKEN` | Yes | `change-me` | Auth token for all dashboard routes |
+| `DB_PATH` | No | `./neuroclaw.db` | SQLite file path |
+| `AUTO_DELEGATION_ENABLED` | No | `false` | Enable LLM-based auto-routing |
+| `AUTO_DELEGATION_MIN_CONFIDENCE` | No | `0.65` | Minimum classifier confidence to route |
+| `ROUTER_MODEL` | No | *(same as VOIDAI_MODEL)* | Override model for the classifier |
+| `SPAWN_AGENTS_ENABLED` | No | `false` | Enable temporary agent spawning |
+| `TEMP_AGENTS_AUTO_APPROVE` | No | `true` | Auto-approve all spawn requests |
+| `TEMP_AGENT_TTL_HOURS` | No | `6` | Hours before a temp agent expires |
+| `TEMP_AGENT_IDLE_TIMEOUT_MINUTES` | No | `30` | Idle timeout (reserved for future enforcement) |
+| `TEMP_AGENT_SOFT_LIMIT` | No | `10` | Log a warning above this many active temp agents |
+| `TEMP_AGENT_HARD_LIMIT` | No | `25` | Block spawn requests above this many active temp agents |
 
-> **VoidAI quirk:** invalid API keys return HTTP 500, not 401. The error handler checks for this.
+> **VoidAI quirk:** invalid API keys return HTTP 500, not 401.
 
 ---
 
 ## Dashboard
 
-The dashboard runs at `http://localhost:3141` (localhost only). All routes require `?token=<DASHBOARD_TOKEN>` or `x-dashboard-token` header.
+Runs at `http://localhost:3141` (localhost only). All routes require `?token=<DASHBOARD_TOKEN>` or `x-dashboard-token` header.
 
 ### Sections
 
 | Section | Description |
 |---|---|
-| Overview | System stats: active agents, sessions, messages, uptime |
-| Chat | Live streaming chat; select any agent or use `@AgentName` to delegate |
-| Agents | View, create, edit, deactivate, and re-activate agents |
-| Tasks | Create tasks, assign to agents, advance status |
+| Overview | Status, model, active/temp agents, sessions, messages, uptime |
+| Chat | SSE streaming chat; routing and spawn events shown inline |
+| Agents | CRUD for all agents; temp agents highlighted with expiry time |
+| Tasks | Create, auto-assign, and advance tasks through status pipeline |
 | Sessions | Browse conversation history |
 | Memory | View stored memories (importance-ranked) |
-| Config | Live view of `config_items` table; secrets redacted |
-| Analytics | Message/session counts and event breakdown |
+| Config | Live config table; secrets redacted |
+| Analytics | Counts and event breakdown |
+| Hive Mind | Full event log — routing decisions, spawns, task changes, lifecycle |
 | Logs | Recent audit log entries |
 
-### Agent Controls
+### Chat Delegation
 
-From **Agents → New Agent**: fill in name, description, role, model, comma-separated capabilities, and a system prompt. Alfred cannot be renamed or deactivated. All other agents support full CRUD.
-
-### Task Controls
-
-From **Tasks → New Task**: set title, description, assigned agent, and priority (0–100). Use the status buttons in each row to move a task through `todo → doing → review → done`.
+- **Dropdown**: select any agent to chat with directly
+- **`@mention`**: prefix message with `@Researcher`, `@Coder`, or `@Planner` to force-route
+- **Auto-routing**: when `AUTO_DELEGATION_ENABLED=true`, the classifier picks the best agent automatically
+- Routing decisions appear as green indicators above the response bubble
+- Spawn events appear as purple indicators
 
 ---
 
-## Delegation
+## Auto-Delegation
 
-Any message prefixed with `@AgentName` is routed to that agent instead of the selected one:
+Routing priority (highest to lowest):
+
+1. `@AgentName` prefix in the message — routes directly, strips the mention
+2. LLM classifier (`AUTO_DELEGATION_ENABLED=true`) — picks best agent above confidence threshold
+3. Explicit `agentId` from the dashboard dropdown
+4. Alfred as final fallback
+
+The classifier makes a separate (non-streaming) LLM call with a structured prompt. If JSON parsing fails or confidence is below `AUTO_DELEGATION_MIN_CONFIDENCE`, it falls back silently to Alfred. All decisions are logged to the Hive Mind.
+
+---
+
+## Temporary Agent Spawning
+
+When `SPAWN_AGENTS_ENABLED=true`, agents that have the `spawn_agent` tool available can create short-lived sub-agents. Alfred and active non-temp agents can spawn; the depth limit is 3 (prevents infinite recursion).
+
+### Lifecycle
 
 ```
-@Researcher Summarise the latest developments in quantum error correction
-@Coder Write a Python function to parse ISO 8601 timestamps
-@Planner Break down launching a SaaS MVP into a 6-week roadmap
+Agent decides to spawn
+  → spawnAgent() validates limits + parent
+  → temp agent created in DB (temporary=1, expires_at set)
+  → sub-agent runs its task (synchronous chatStream call)
+  → result returned to parent
+  → parent streams synthesized response
+  → cleanup scheduler expires agent after TTL
 ```
 
-Each agent maintains a separate conversation history per session (`sessionId::agentId`), so switching agents within a session starts a fresh context.
+### Limits
 
-The dashboard chat bubble labels update dynamically to show which agent is responding.
+| Check | Value (default) |
+|---|---|
+| Max spawn depth | 3 |
+| Soft limit | 10 active temp agents (logs warning) |
+| Hard limit | 25 active temp agents (blocks spawn) |
+| TTL | 6 hours |
+| Cleanup interval | Every 5 minutes |
+
+Expired agents are set to `inactive` and logged to both `audit_logs` and `hive_mind`.
+
+---
+
+## Hive Mind
+
+Every significant system event is logged to the `hive_mind` table:
+
+| Action | Trigger |
+|---|---|
+| `auto_route` | Classifier picks an agent |
+| `route_fallback` | Classifier fails or confidence too low |
+| `manual_delegation` | User uses `@mention` |
+| `spawn_request` | Soft limit warning during spawn |
+| `spawn_success` | Agent successfully spawned |
+| `spawn_denied` | Spawn blocked (hard limit, depth, or disabled) |
+| `agent_spawned` | DB record created |
+| `agent_expired` | Temp agent TTL elapsed |
+| `task_created` | Task created (with auto-assign info) |
+| `task_updated` | Task status changed |
+| `agent_activated` / `agent_deactivated` | Lifecycle events |
+
+Query: `GET /api/hive?limit=100`
 
 ---
 
 ## API Reference
 
-All endpoints require auth token (query param or header).
+All endpoints require `?token=` or `x-dashboard-token`.
 
-| Method | Path | Body / Notes |
+| Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/status` | Active agents, session/message counts, uptime |
-| `GET` | `/api/agents` | All agents |
-| `POST` | `/api/agents` | `{name, description?, system_prompt?, model?, role?, capabilities?}` |
-| `PATCH` | `/api/agents/:id` | Any subset of agent fields; Alfred's name is locked |
-| `DELETE` | `/api/agents/:id` | Soft-deactivates; Alfred is protected |
-| `POST` | `/api/agents/:id/activate` | Re-activates an inactive agent |
-| `GET` | `/api/tasks` | All tasks; filter with `?status=todo\|doing\|review\|done` |
-| `POST` | `/api/tasks` | `{title, description?, agent_id?, priority?}` |
-| `PATCH` | `/api/tasks/:id` | `{status?, agent_id?, title?, description?, priority?}` |
-| `POST` | `/api/chat` | `{message, agentId?, sessionId?}` → SSE stream |
-| `GET` | `/api/sessions` | Recent 50 sessions |
-| `GET` | `/api/messages` | Messages; filter with `?session_id=` |
-| `GET` | `/api/memory` | Memories sorted by importance |
-| `GET` | `/api/config` | Config items (secrets redacted) |
-| `GET` | `/api/analytics` | Message/session/token counts and events by type |
-| `GET` | `/api/logs` | Recent 50 audit log entries |
-| `GET` | `/api/config/watch` | SSE stream; fires `config_changed` when `.env` is edited |
+| `GET` | `/api/status` | Active agents, temp agents, session/message counts |
+| `GET` | `/api/agents` | All agents (including temp) |
+| `POST` | `/api/agents` | Create agent (`name` required) |
+| `PATCH` | `/api/agents/:id` | Update agent fields |
+| `DELETE` | `/api/agents/:id` | Soft-deactivate; Alfred protected |
+| `POST` | `/api/agents/:id/activate` | Re-activate |
+| `POST` | `/api/agents/spawn` | Manually spawn a temp agent |
+| `GET` | `/api/tasks` | All tasks; filter `?status=` |
+| `POST` | `/api/tasks` | Create task; auto-assigns if `AUTO_DELEGATION_ENABLED` |
+| `PATCH` | `/api/tasks/:id` | Update status, agent, or fields |
+| `GET` | `/api/hive` | Hive Mind events; `?limit=` |
+| `POST` | `/api/chat` | SSE stream; `@mention` routing; emits `route`/`spawn` events |
+| `GET` | `/api/config/watch` | SSE — fires on `.env` change |
 
 ### Chat SSE Event Types
 
 ```
-{type: 'session',  sessionId}            — new or reused session ID
-{type: 'agent',    name, agentId}        — resolved agent (after @mention routing)
-{type: 'chunk',    content}              — token stream
-{type: 'done'}                           — stream complete
-{type: 'error',    message}              — error during streaming
+{type: 'session',  sessionId}
+{type: 'agent',    name, agentId}
+{type: 'route',    from, to, confidence, reason, manual}
+{type: 'spawn',    agentName, agentId}
+{type: 'chunk',    content}
+{type: 'done'}
+{type: 'error',    message}
 ```
 
 ---
@@ -147,40 +207,42 @@ All endpoints require auth token (query param or header).
 ## Architecture
 
 ```
-CLI (src/index.ts)
-  └─ messageQueue (FIFO — prevents concurrent streams)
-       └─ alfred.chat() → chatStream() → VoidAI SSE → stdout + SQLite
+User message
+  ├─ @mention? → resolveAgent() routes directly
+  ├─ AUTO_DELEGATION_ENABLED? → classifyRoute() (LLM call, non-streaming)
+  └─ fallback → Alfred
 
-Dashboard (src/dashboard/server.ts)  [Hono, localhost:3141]
-  ├─ GET  /dashboard         → inline HTML (src/dashboard/html.ts)
-  └─ /api/* (src/dashboard/routes.ts)
-       ├─ POST /api/chat     → resolveAgent() → chatStream() → SSE to browser
-       ├─ CRUD /api/agents   → agent registry
-       ├─ CRUD /api/tasks    → task assignment
-       └─ GET  /api/config/watch → SSE, fires on .env change
+chatStream() [alfred.ts]
+  ├─ Builds tools: spawn_agent (if SPAWN_AGENTS_ENABLED + depth < 3)
+  ├─ Streaming LLM call
+  ├─ finish_reason=tool_calls?
+  │   ├─ executeTool(spawn_agent) → spawnAgent() → sub-agent chatStream()
+  │   └─ Continue loop → LLM synthesizes result
+  └─ Save messages to SQLite (agent_id on assistant turns)
 
-SQLite (src/db.ts)  [better-sqlite3, WAL mode]
-  ├─ agents (orchestrators + specialists)
-  ├─ sessions / messages (agent_id on messages)
-  ├─ tasks (agent_id assignment)
-  ├─ memories / audit_logs / analytics_events / config_items
-  └─ runMigrations() — additive ALTER TABLE with try/catch
-
-Config hot-reload (src/system/config-watcher.ts)
-  └─ polls .env every 2s → dotenv.config() + resetClient() + SSE emit
+Hive Mind [hive-mind.ts] — logHive() called from router, spawner, task-manager
+Cleanup [cleanup.ts] — expires temp agents on startup + every 5 min
+Config watcher [config-watcher.ts] — polls .env every 2s, resets OpenAI client
 ```
+
+---
+
+## Safety Rules
+
+- Alfred cannot be deactivated or renamed
+- Inactive agents cannot spawn
+- Max spawn depth: 3 (prevents recursion)
+- Hard limit: 25 concurrent temp agents
+- Classifier JSON parse failure → silent fallback to Alfred
+- All failures logged to `hive_mind` and `audit_logs`
 
 ---
 
 ## Planned Expansions
 
-Integration hooks are marked with `// TODO` in the source:
-
-- Discord.js bot replacing or alongside the CLI readline loop
-- MCP server bridge for IDE tool integration
-- LiveKit voice rooms with ElevenLabs streaming audio
-- Two-pass Alfred auto-delegation (detect intent → re-route to sub-agent)
-- Vector store memory (pgvector / Chroma / Pinecone) for semantic retrieval
-- BullMQ + Redis for durable async task queue workers
-- Obsidian memory vault sync via local REST plugin
-- Sub-agent spawning based on message intent classification
+| Version | Feature |
+|---|---|
+| v1.3 | Memory system (Obsidian vault sync + auto-extractor) |
+| v1.4 | Discord integration |
+| v1.5 | LiveKit + ElevenLabs voice agents |
+| v2 | Full NeuroClaw OS |

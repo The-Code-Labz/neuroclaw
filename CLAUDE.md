@@ -19,24 +19,39 @@ Two entry points share the same SQLite database and agent registry:
 
 **CLI** (`src/index.ts`): Reads stdin → enqueues via `messageQueue` (FIFO, prevents race conditions) → `chat()` in `alfred.ts` → streams tokens to stdout → persists in SQLite.
 
-**Dashboard server** (`src/dashboard/server.ts`): Hono app on `localhost:3141`. Token-protected `/dashboard` serves inline HTML. All data APIs live under `/api/*` (also token-protected). `/api/chat` uses SSE streaming with `@mention` delegation routing. `/api/config/watch` is a long-lived SSE stream that fires when `.env` changes.
+**Dashboard server** (`src/dashboard/server.ts`): Hono app on `localhost:3141`. Token-protected `/dashboard` serves inline HTML. All data APIs live under `/api/*` (also token-protected). `/api/chat` uses SSE streaming. `/api/config/watch` is a long-lived SSE stream that fires when `.env` changes.
 
-**Agent registry**: The `agents` table is the source of truth. Alfred is the orchestrator (seeded at startup). Researcher, Coder, and Planner are specialists (also seeded). Alfred's system prompt lists all sub-agents and tells users to address them with `@Name`.
+**Agent registry**: The `agents` table is the source of truth. Alfred (orchestrator), Researcher, Coder, and Planner are seeded on every cold start (idempotent). System prompts are always updated at seed time so spawn guidance stays current.
 
-**Delegation flow**: When a chat message starts with `@AgentName`, `resolveAgent()` in `alfred.ts` finds that agent and routes the (mention-stripped) message to it using that agent's system prompt. Conversation histories are isolated per `sessionId::agentId` pair so each agent keeps its own context within a session. The SSE response emits `{type:'agent', name, agentId}` before chunks so the dashboard can label the responding agent.
+**Routing priority chain** (`src/agent/alfred.ts → resolveAgent()`):
+1. `@AgentName` prefix in the message — routes directly, strips mention
+2. LLM auto-classifier (`AUTO_DELEGATION_ENABLED=true`) via `src/system/router.ts`
+3. Explicit `agentId` from the dashboard dropdown
+4. Alfred as final fallback
 
-**Config hot-reload** (`src/system/config-watcher.ts`): Polls `.env` every 2 s for mtime changes. On change: re-runs `dotenv.config()`, updates `config_items` table, calls `resetClient()` to force a new OpenAI client, and emits on `configEvents` so `/api/config/watch` SSE connections are notified.
+**Dynamic team awareness**: Every call to `chatStream()` refreshes the system message (history[0]) from the live DB. Alfred gets a fully rebuilt orchestrator prompt listing all active non-temp agents. Sub-agents get their stored prompt plus a "Active team members" section appended. This means user-created agents are immediately visible to all agents without a restart.
 
-**`config.ts`** uses getter properties (not cached values) so live `process.env` changes propagate everywhere without imports needing to re-read.
+**Temporary agent spawning** (`src/system/spawner.ts`): When `SPAWN_AGENTS_ENABLED=true`, agents with `spawn_depth < 3` get the `spawn_agent` LLM tool. `chatStream` accumulates streaming tool call deltas, executes them on `finish_reason: 'tool_calls'`, then loops to get the LLM's synthesis. Max 5 iterations to prevent infinite loops. Spawned agents run their task synchronously via a recursive `chatStream` call.
+
+**Hive Mind** (`src/system/hive-mind.ts`): `logHive()` records every routing decision, spawn, task change, and lifecycle event to the `hive_mind` table. It is wrapped in try/catch so it never crashes the main flow.
+
+**Cleanup scheduler** (`src/system/cleanup.ts`): `startCleanupScheduler()` runs `expireTemporaryAgents()` on startup and every 5 minutes. Expired agents are set to `inactive` and logged to both `audit_logs` and `hive_mind`.
+
+**Config hot-reload** (`src/system/config-watcher.ts`): Polls `.env` every 2s for mtime changes. On change: re-runs `dotenv.config()`, calls `resetClient()` to force a new OpenAI client, and emits on `configEvents`.
+
+**`config.ts`** uses getter properties (not cached values) so live `process.env` changes propagate everywhere.
 
 ## Key Constraints
 
 - **Lazy OpenAI client**: `openai-client.ts` must not construct the client at module scope — `dotenv` hasn't run yet at import time. Always use `getClient()`.
-- **VoidAI returns HTTP 500 for invalid keys** (not 401). Error handlers in `src/index.ts` check for `"api key"` in the message and `"500"` as distinct cases.
-- **Dashboard binds to `127.0.0.1` only**. The token from `DASHBOARD_TOKEN` is required on all `/dashboard` and `/api/*` routes. `/api/config` redacts `is_secret=1` rows.
-- **Alfred is protected**: `deactivateAgent()` returns `{ok: false}` for Alfred, and `PATCH /api/agents/:id` prevents renaming Alfred.
-- **Schema migration via try/catch**: `runMigrations()` in `db.ts` uses try/catch around `ALTER TABLE` statements because SQLite doesn't support `ADD COLUMN IF NOT EXISTS`. New additive columns go there.
-- **Agent seed is idempotent**: Each agent is checked by name before insertion. Alfred and the three sub-agents (Researcher, Coder, Planner) are seeded on every cold start but only inserted if missing.
+- **VoidAI returns HTTP 500 for invalid keys** (not 401).
+- **Dashboard binds to `127.0.0.1` only**. Token from `DASHBOARD_TOKEN` required on all `/dashboard` and `/api/*` routes.
+- **Alfred is protected**: `deactivateAgent()` returns `{ok: false}` for Alfred; `PATCH /api/agents/:id` prevents renaming Alfred.
+- **Schema migration via try/catch**: `runMigrations()` uses try/catch around `ALTER TABLE` statements. SQLite doesn't support `ADD COLUMN IF NOT EXISTS`.
+- **History keys**: Per-agent conversation histories are keyed as `"sessionId::agentId"` in `sessionHistories` Map. Each agent has isolated context within a session.
+- **Classifier fallback**: If JSON parse fails or confidence < `AUTO_DELEGATION_MIN_CONFIDENCE`, routing falls back silently to Alfred. All decisions logged to hive mind.
+- **Spawn depth limit**: Max 3 levels deep. `buildTools()` suppresses `spawn_agent` at depth ≥ 3.
+- **Dynamic system prompts**: `history[0]` is overwritten on every `chatStream` turn. Do not rely on the session's cached system message — it is always rebuilt from DB.
 
 ## Environment Variables
 
@@ -46,39 +61,69 @@ Copy `.env.example` → `.env`:
 |---|---|---|
 | `VOIDAI_API_KEY` | — | Required |
 | `VOIDAI_BASE_URL` | `https://api.voidai.app/v1` | OpenAI-compatible endpoint |
-| `VOIDAI_MODEL` | `gpt-5.1` | |
+| `VOIDAI_MODEL` | `gpt-5.1` | Default model for all agents |
 | `DASHBOARD_PORT` | `3141` | |
 | `DASHBOARD_TOKEN` | `change-me` | Protects all dashboard routes |
 | `DB_PATH` | `./neuroclaw.db` | SQLite file path |
+| `AUTO_DELEGATION_ENABLED` | `false` | LLM classifier auto-routes messages |
+| `AUTO_DELEGATION_MIN_CONFIDENCE` | `0.65` | Minimum confidence to act on classifier decision |
+| `ROUTER_MODEL` | *(same as VOIDAI_MODEL)* | Override model for the classifier |
+| `SPAWN_AGENTS_ENABLED` | `false` | Allow agents to spawn temp sub-agents |
+| `TEMP_AGENTS_AUTO_APPROVE` | `true` | Auto-approve all spawn requests |
+| `TEMP_AGENT_TTL_HOURS` | `6` | Hours before temp agent expires |
+| `TEMP_AGENT_IDLE_TIMEOUT_MINUTES` | `30` | Reserved for future enforcement |
+| `TEMP_AGENT_SOFT_LIMIT` | `10` | Log warning above this many active temp agents |
+| `TEMP_AGENT_HARD_LIMIT` | `25` | Block spawns above this many active temp agents |
 
 ## SQLite Schema
 
-Tables: `agents`, `sessions`, `messages`, `tasks`, `memories`, `audit_logs`, `analytics_events`, `config_items`. All IDs are `randomUUID()`. Schema is created idempotently in `db.ts:initSchema()`. Additive migrations run in `runMigrations()`.
+Tables: `agents`, `sessions`, `messages`, `tasks`, `memories`, `audit_logs`, `analytics_events`, `config_items`, `hive_mind`. All IDs are `randomUUID()`. Schema created idempotently in `db.ts:initSchema()`. Additive migrations in `runMigrations()`.
 
-Agent columns: `id`, `name`, `description`, `system_prompt`, `model`, `role` (`orchestrator`/`specialist`/`assistant`/`agent`), `capabilities` (JSON array), `status` (`active`/`inactive`), timestamps.
+**Agent columns**: `id`, `name`, `description`, `system_prompt`, `model`, `role` (`orchestrator`/`specialist`/`assistant`/`agent`), `capabilities` (JSON array), `status` (`active`/`inactive`), `temporary` (0/1), `spawn_depth`, `parent_agent_id`, `created_by_agent_id`, `expires_at`, timestamps.
 
-Messages now carry `agent_id` to track which agent produced each assistant turn.
+**Hive Mind columns**: `id`, `agent_id`, `action` (see Hive Mind actions below), `summary`, `metadata` (JSON), `created_at`.
 
 Task status flow: `todo` → `doing` → `review` → `done`.
+
+## Key Files
+
+| File | Purpose |
+|---|---|
+| `src/agent/alfred.ts` | `chatStream()`, `resolveAgent()`, dynamic prompt builders |
+| `src/system/router.ts` | `classifyRoute()` — LLM classifier for auto-delegation |
+| `src/system/spawner.ts` | `spawnAgent()` — validates and creates temp agents |
+| `src/system/hive-mind.ts` | `logHive()`, `getHiveEvents()` |
+| `src/system/cleanup.ts` | TTL cleanup scheduler |
+| `src/system/task-manager.ts` | `createTask()` (async, auto-assigns), `updateTask()` |
+| `src/dashboard/routes.ts` | All `/api/*` endpoints |
+| `src/dashboard/html.ts` | Single-file dashboard SPA (inline HTML/CSS/JS) |
+| `src/db.ts` | Schema, migrations, seed, all CRUD helpers |
+| `src/config.ts` | Getter-based config (reads live `process.env`) |
 
 ## API Endpoints
 
 All `/api/*` require `?token=` or `x-dashboard-token` header.
 
-| Method | Path | Description |
+| Method | Path | Notes |
 |---|---|---|
-| GET | `/api/status` | System overview counts |
-| GET | `/api/agents` | List all agents |
+| GET | `/api/status` | Active agents, temp agents, session/message counts |
+| GET | `/api/agents` | All agents (including temp) |
 | POST | `/api/agents` | Create agent (`name` required) |
 | PATCH | `/api/agents/:id` | Update agent fields |
-| DELETE | `/api/agents/:id` | Deactivate agent (soft; Alfred protected) |
+| DELETE | `/api/agents/:id` | Soft-deactivate (Alfred protected) |
 | POST | `/api/agents/:id/activate` | Re-activate an inactive agent |
-| GET | `/api/tasks` | List tasks (optional `?status=`) |
-| POST | `/api/tasks` | Create task (`title` required, optional `agent_id`) |
-| PATCH | `/api/tasks/:id` | Update task status, agent, or fields |
-| POST | `/api/chat` | SSE stream; supports `@mention` delegation |
+| POST | `/api/agents/spawn` | Manually spawn a temp agent |
+| GET | `/api/tasks` | List tasks (`?status=` optional filter) |
+| POST | `/api/tasks` | Create task; auto-assigns if `AUTO_DELEGATION_ENABLED` |
+| PATCH | `/api/tasks/:id` | Update status, agent, or fields |
+| GET | `/api/hive` | Hive Mind events (`?limit=` default 100) |
+| POST | `/api/chat` | SSE stream; emits `session`, `agent`, `route`, `spawn`, `chunk`, `done`, `error` |
 | GET | `/api/config/watch` | SSE stream for `.env` change notifications |
 
-## Planned Expansions (TODOs in code)
+## Hive Mind Actions
 
-The codebase has `// TODO` comments marking integration points for: Discord.js bot, HTTP API routes, MCP bridge for IDE extensions, LiveKit voice rooms, ElevenLabs audio streaming, two-pass auto-delegation from Alfred's response, vector-store memory (pgvector/Chroma/Pinecone), BullMQ/Redis task queue, and Obsidian memory vault sync.
+`auto_route`, `route_fallback`, `manual_delegation`, `spawn_request`, `spawn_success`, `spawn_denied`, `agent_spawned`, `agent_expired`, `task_created`, `task_updated`, `agent_activated`, `agent_deactivated`
+
+## Dashboard HTML
+
+`src/dashboard/html.ts` returns the entire dashboard as a single inline HTML string. All onclick handlers use `data-*` attributes + `this.dataset.*` — never inline string parameters — to avoid JS string escaping issues inside TypeScript template literals (where `\'` is NOT a valid escape and becomes a bare `'`).

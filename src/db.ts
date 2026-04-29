@@ -19,16 +19,21 @@ export function getDb(): Database.Database {
 function initSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS agents (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      description   TEXT,
-      system_prompt TEXT,
-      model         TEXT,
-      role          TEXT DEFAULT 'agent',
-      capabilities  TEXT DEFAULT '[]',
-      status        TEXT DEFAULT 'active',
-      created_at    TEXT DEFAULT (datetime('now')),
-      updated_at    TEXT DEFAULT (datetime('now'))
+      id                  TEXT PRIMARY KEY,
+      name                TEXT NOT NULL,
+      description         TEXT,
+      system_prompt       TEXT,
+      model               TEXT,
+      role                TEXT DEFAULT 'agent',
+      capabilities        TEXT DEFAULT '[]',
+      status              TEXT DEFAULT 'active',
+      temporary           INTEGER DEFAULT 0,
+      spawn_depth         INTEGER DEFAULT 0,
+      parent_agent_id     TEXT REFERENCES agents(id),
+      created_by_agent_id TEXT REFERENCES agents(id),
+      expires_at          TEXT,
+      created_at          TEXT DEFAULT (datetime('now')),
+      updated_at          TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -96,16 +101,29 @@ function initSchema(database: Database.Database): void {
       is_secret   INTEGER DEFAULT 0,
       updated_at  TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS hive_mind (
+      id         TEXT PRIMARY KEY,
+      agent_id   TEXT REFERENCES agents(id),
+      action     TEXT NOT NULL,
+      summary    TEXT NOT NULL,
+      metadata   TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
   logger.info('Database schema initialized');
 }
 
-// Additive migrations for existing databases
 function runMigrations(database: Database.Database): void {
   const alters = [
     "ALTER TABLE agents ADD COLUMN role TEXT DEFAULT 'agent'",
     "ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT '[]'",
-    'ALTER TABLE messages ADD COLUMN agent_id TEXT REFERENCES agents(id)',
+    "ALTER TABLE agents ADD COLUMN temporary INTEGER DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN spawn_depth INTEGER DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN parent_agent_id TEXT",
+    "ALTER TABLE agents ADD COLUMN created_by_agent_id TEXT",
+    "ALTER TABLE agents ADD COLUMN expires_at TEXT",
+    'ALTER TABLE messages ADD COLUMN agent_id TEXT',
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -116,61 +134,79 @@ function runMigrations(database: Database.Database): void {
 
 // ── Seed ────────────────────────────────────────────────────────────────────
 
+const SPAWN_GUIDANCE =
+  '\n\nYou may create temporary sub-agents when:\n' +
+  '- the task is complex and requires deep specialization\n' +
+  '- parallel work would significantly improve performance\n' +
+  'Prefer delegation before spawning. Do NOT spawn agents unnecessarily.';
+
 const SUB_AGENTS = [
   {
     name: 'Researcher',
     description: 'Deep research, synthesis, and knowledge retrieval specialist',
     role: 'specialist',
     capabilities: ['research', 'summarize', 'fact-check'],
-    systemPrompt: `You are Researcher, a specialist AI agent focused on deep research and knowledge synthesis.
-
-You:
-- Find and synthesize information thoroughly
-- Cite sources and distinguish fact from inference
-- Break down complex topics into clear explanations
-- Flag uncertainty when your knowledge is incomplete
-
-You are a sub-agent working under Alfred's orchestration. Stay focused on your research specialty.`,
-    model: null as string | null,
+    systemPrompt:
+      'You are Researcher, a specialist AI agent focused on deep research and knowledge synthesis.\n\n' +
+      'You:\n' +
+      '- Find and synthesize information thoroughly\n' +
+      '- Cite sources and distinguish fact from inference\n' +
+      '- Break down complex topics into clear explanations\n' +
+      '- Flag uncertainty when your knowledge is incomplete\n\n' +
+      'You are a sub-agent working under Alfred\'s orchestration. Stay focused on your research specialty.' +
+      SPAWN_GUIDANCE,
   },
   {
     name: 'Coder',
     description: 'Code generation, debugging, and technical implementation specialist',
     role: 'specialist',
     capabilities: ['code', 'debug', 'refactor', 'review'],
-    systemPrompt: `You are Coder, a specialist AI agent focused on code generation and technical implementation.
-
-You:
-- Write clean, efficient, well-structured code
-- Debug and explain technical problems precisely
-- Suggest idiomatic improvements and best practices
-- Adapt to the user's language, framework, and context
-
-You are a sub-agent working under Alfred's orchestration. Stay focused on technical and coding tasks.`,
-    model: null as string | null,
+    systemPrompt:
+      'You are Coder, a specialist AI agent focused on code generation and technical implementation.\n\n' +
+      'You:\n' +
+      '- Write clean, efficient, well-structured code\n' +
+      '- Debug and explain technical problems precisely\n' +
+      '- Suggest idiomatic improvements and best practices\n' +
+      '- Adapt to the user\'s language, framework, and context\n\n' +
+      'You are a sub-agent working under Alfred\'s orchestration. Stay focused on technical and coding tasks.' +
+      SPAWN_GUIDANCE,
   },
   {
     name: 'Planner',
     description: 'Project planning, task breakdown, and strategic roadmapping specialist',
     role: 'specialist',
     capabilities: ['plan', 'tasks', 'roadmap', 'prioritize'],
-    systemPrompt: `You are Planner, a specialist AI agent focused on project planning and strategic thinking.
-
-You:
-- Break down complex goals into concrete, actionable tasks
-- Identify dependencies, risks, and critical paths
-- Prioritize work by impact, urgency, and effort
-- Create clear timelines, milestones, and success criteria
-
-You are a sub-agent working under Alfred's orchestration. Stay focused on planning and coordination tasks.`,
-    model: null as string | null,
+    systemPrompt:
+      'You are Planner, a specialist AI agent focused on project planning and strategic thinking.\n\n' +
+      'You:\n' +
+      '- Break down complex goals into concrete, actionable tasks\n' +
+      '- Identify dependencies, risks, and critical paths\n' +
+      '- Prioritize work by impact, urgency, and effort\n' +
+      '- Create clear timelines, milestones, and success criteria\n\n' +
+      'You are a sub-agent working under Alfred\'s orchestration. Stay focused on planning and coordination tasks.' +
+      SPAWN_GUIDANCE,
   },
 ];
 
+function buildAlfredPrompt(): string {
+  const agentLines = SUB_AGENTS.map(a => `- @${a.name} — ${a.description}`).join('\n');
+  return (
+    'You are Alfred, a strategic AI butler and orchestrator.\n\n' +
+    'You:\n' +
+    '- Understand intent and route requests to the right specialist\n' +
+    '- Respond clearly and think like a manager\n' +
+    '- Assign tasks to agents best suited for them\n\n' +
+    'Available sub-agents (users can address them with @Name):\n' +
+    agentLines +
+    '\n\nWhen a request is better handled by a sub-agent, recommend the user address @AgentName directly.' +
+    SPAWN_GUIDANCE
+  );
+}
+
 function seedDefaultData(database: Database.Database): void {
   // Alfred
-  const existing = database.prepare('SELECT id FROM agents WHERE name = ?').get('Alfred');
-  if (!existing) {
+  const alfredExists = database.prepare('SELECT id FROM agents WHERE name = ?').get('Alfred');
+  if (!alfredExists) {
     const alfredId = randomUUID();
     database.prepare(`
       INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
@@ -185,10 +221,9 @@ function seedDefaultData(database: Database.Database): void {
       JSON.stringify(['orchestrate', 'delegate', 'plan', 'respond']),
     );
 
-    const insertConfig = database.prepare(`
-      INSERT OR IGNORE INTO config_items (key, value, description, is_secret)
-      VALUES (?, ?, ?, ?)
-    `);
+    const insertConfig = database.prepare(
+      'INSERT OR IGNORE INTO config_items (key, value, description, is_secret) VALUES (?, ?, ?, ?)',
+    );
     for (const item of [
       { key: 'VOIDAI_MODEL',    value: config.voidai.model,           description: 'Active AI model',        is_secret: 0 },
       { key: 'DASHBOARD_PORT',  value: String(config.dashboard.port),  description: 'Dashboard port',         is_secret: 0 },
@@ -197,13 +232,15 @@ function seedDefaultData(database: Database.Database): void {
     ]) {
       insertConfig.run(item.key, item.value, item.description, item.is_secret);
     }
-
     logger.info('Seeded default Alfred agent');
   }
 
-  // Sub-agents (idempotent by name)
+  // Always keep seeded agent prompts current (idempotent update)
+  database.exec("UPDATE agents SET role = 'orchestrator' WHERE name = 'Alfred'");
+  database.prepare('UPDATE agents SET system_prompt = ? WHERE name = ?').run(buildAlfredPrompt(), 'Alfred');
+
   for (const agent of SUB_AGENTS) {
-    const row = database.prepare('SELECT id FROM agents WHERE name = ?').get(agent.name);
+    const row = database.prepare('SELECT id FROM agents WHERE name = ?').get(agent.name) as { id: string } | undefined;
     if (!row) {
       database.prepare(`
         INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
@@ -213,43 +250,37 @@ function seedDefaultData(database: Database.Database): void {
         agent.name,
         agent.description,
         agent.systemPrompt,
-        agent.model ?? config.voidai.model,
+        config.voidai.model,
         agent.role,
         JSON.stringify(agent.capabilities),
       );
       logger.info(`Seeded sub-agent: ${agent.name}`);
+    } else {
+      // Keep system prompt current
+      database.prepare('UPDATE agents SET system_prompt = ?, description = ? WHERE id = ?')
+        .run(agent.systemPrompt, agent.description, row.id);
     }
   }
 }
 
-function buildAlfredPrompt(): string {
-  const names = SUB_AGENTS.map(a => `@${a.name} — ${a.description}`).join('\n');
-  return `You are Alfred, a strategic AI butler and orchestrator.
-
-You:
-- Understand intent and route requests to the right specialist
-- Respond clearly and think like a manager
-- Assign tasks to agents best suited for them
-
-Available sub-agents (users can address them with @Name):
-${names}
-
-When a request is better handled by a sub-agent, recommend the user address @AgentName directly.`;
-}
-
-// ── Agent CRUD ──────────────────────────────────────────────────────────────
+// ── Agent CRUD ───────────────────────────────────────────────────────────────
 
 export interface AgentRecord {
-  id:            string;
-  name:          string;
-  description:   string | null;
-  system_prompt: string | null;
-  model:         string | null;
-  role:          string;
-  capabilities:  string;
-  status:        string;
-  created_at:    string;
-  updated_at:    string;
+  id:                  string;
+  name:                string;
+  description:         string | null;
+  system_prompt:       string | null;
+  model:               string | null;
+  role:                string;
+  capabilities:        string;
+  status:              string;
+  temporary:           number;
+  spawn_depth:         number;
+  parent_agent_id:     string | null;
+  created_by_agent_id: string | null;
+  expires_at:          string | null;
+  created_at:          string;
+  updated_at:          string;
 }
 
 export function getAgentById(id: string): AgentRecord | undefined {
@@ -263,7 +294,9 @@ export function getAgentByName(name: string): AgentRecord | undefined {
 }
 
 export function getAllAgents(): AgentRecord[] {
-  return getDb().prepare('SELECT * FROM agents ORDER BY role DESC, name ASC').all() as AgentRecord[];
+  return getDb()
+    .prepare('SELECT * FROM agents ORDER BY role DESC, name ASC')
+    .all() as AgentRecord[];
 }
 
 export function createAgentRecord(
@@ -309,15 +342,15 @@ export function updateAgentRecord(
   const sets: string[] = ["updated_at = datetime('now')"];
   const params: unknown[] = [];
 
-  if (fields.name        !== undefined) { sets.push('name = ?');          params.push(fields.name); }
-  if (fields.description !== undefined) { sets.push('description = ?');   params.push(fields.description); }
+  if (fields.name          !== undefined) { sets.push('name = ?');          params.push(fields.name); }
+  if (fields.description   !== undefined) { sets.push('description = ?');   params.push(fields.description); }
   if (fields.system_prompt !== undefined) { sets.push('system_prompt = ?'); params.push(fields.system_prompt); }
-  if (fields.model       !== undefined) { sets.push('model = ?');         params.push(fields.model); }
-  if (fields.role        !== undefined) { sets.push('role = ?');          params.push(fields.role); }
-  if (fields.capabilities !== undefined) { sets.push('capabilities = ?'); params.push(JSON.stringify(fields.capabilities)); }
-  if (fields.status      !== undefined) { sets.push('status = ?');        params.push(fields.status); }
+  if (fields.model         !== undefined) { sets.push('model = ?');         params.push(fields.model); }
+  if (fields.role          !== undefined) { sets.push('role = ?');          params.push(fields.role); }
+  if (fields.capabilities  !== undefined) { sets.push('capabilities = ?');  params.push(JSON.stringify(fields.capabilities)); }
+  if (fields.status        !== undefined) { sets.push('status = ?');        params.push(fields.status); }
 
-  if (sets.length === 1) return; // nothing to update beyond timestamp
+  if (sets.length === 1) return;
   params.push(id);
   getDb().prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   logAudit('agent_updated', 'agent', id, fields);
@@ -335,7 +368,7 @@ export function activateAgent(id: string): void {
   updateAgentRecord(id, { status: 'active' });
 }
 
-// ── Session helpers ──────────────────────────────────────────────────────────
+// ── Session helpers ───────────────────────────────────────────────────────────
 
 export function createSession(agentId: string, title?: string): string {
   const id = randomUUID();
@@ -365,7 +398,7 @@ export function getAlfredAgent(): AgentRecord | undefined {
   return getAgentByName('Alfred');
 }
 
-// ── Logging helpers ──────────────────────────────────────────────────────────
+// ── Logging helpers ───────────────────────────────────────────────────────────
 
 export function logAudit(action: string, entityType?: string, entityId?: string, details?: unknown): void {
   getDb().prepare(`
