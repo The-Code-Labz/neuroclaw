@@ -790,7 +790,6 @@ function sendChat() {
   var assistantDiv = appendMsg('assistant', '', true, null);
   var bubbleEl = assistantDiv.querySelector('.msg-bubble');
   var accText = '';
-  var spawnBubble = null, spawnBubbleEl = null, spawnAccText = '';
 
   var reqBody = JSON.stringify({ message: message, agentId: agentId, sessionId: chatSessionId });
 
@@ -850,17 +849,16 @@ function sendChat() {
               smeta.appendChild(smb);
               document.getElementById('chat-messages').insertBefore(smeta, assistantDiv);
               document.getElementById('chat-messages').scrollTop = 9999;
-              // Create a new bubble for the sub-agent response
-              spawnBubble = appendMsg('assistant', '', true, ev.agentName);
-              spawnBubbleEl = spawnBubble.querySelector('.msg-bubble');
-              spawnAccText = '';
-            } else if (ev.type === 'spawn_chunk') {
-              spawnAccText += ev.content;
-              if (spawnBubbleEl) spawnBubbleEl.textContent = spawnAccText;
+            } else if (ev.type === 'spawn_started') {
+              // Sub-agent is now running in background — no longer blocks chat
+              var smeta = document.createElement('div');
+              smeta.className = 'msg meta';
+              var smb = document.createElement('div');
+              smb.className = 'msg-meta spawn';
+              smb.textContent = '🚀 Sub-agent "' + ev.agentName + '" working in background (task: ' + ev.taskId.slice(0,8) + '…)';
+              smeta.appendChild(smb);
+              document.getElementById('chat-messages').appendChild(smeta);
               document.getElementById('chat-messages').scrollTop = 9999;
-            } else if (ev.type === 'spawn_done') {
-              if (spawnBubble) spawnBubble.classList.remove('streaming');
-              spawnBubble = null; spawnBubbleEl = null; spawnAccText = '';
             } else if (ev.type === 'done') {
               assistantDiv.classList.remove('streaming');
               chatStreaming = false;
@@ -919,6 +917,70 @@ function connectConfigWatch() {
   };
 }
 
+/* ── Background task watcher SSE ────────────────────────────────────────── */
+function connectTaskWatch() {
+  var url = '/api/tasks/watch?token=' + encodeURIComponent(token);
+  var es  = new EventSource(url);
+
+  es.onmessage = function(e) {
+    try {
+      var data = JSON.parse(e.data);
+      if (data.type === 'task_complete') {
+        // Show the completed sub-agent result as a new message bubble
+        var container = document.getElementById('chat-messages');
+        if (container) {
+          var meta = document.createElement('div');
+          meta.className = 'msg meta';
+          var mb = document.createElement('div');
+          mb.className = 'msg-meta spawn';
+          mb.textContent = '✅ Sub-agent "' + data.agentName + '" completed';
+          meta.appendChild(mb);
+          container.appendChild(meta);
+
+          // Add the result as a message
+          var div = document.createElement('div');
+          div.className = 'msg assistant';
+          var who = document.createElement('div');
+          who.className = 'msg-who';
+          who.textContent = data.agentName + ' (completed)';
+          var bubble = document.createElement('div');
+          bubble.className = 'msg-bubble';
+          bubble.textContent = data.result || '(no output)';
+          div.appendChild(who);
+          div.appendChild(bubble);
+          container.appendChild(div);
+          container.scrollTop = container.scrollHeight;
+        }
+        showToast('✅ Sub-agent "' + data.agentName + '" completed', 4000);
+        // Refresh agents tab to show deactivation
+        if (current === 'agents') loadAgents();
+      } else if (data.type === 'task_failed') {
+        var container = document.getElementById('chat-messages');
+        if (container) {
+          var meta = document.createElement('div');
+          meta.className = 'msg meta';
+          var mb = document.createElement('div');
+          mb.className = 'msg-meta';
+          mb.style.background = 'rgba(248,81,73,.1)';
+          mb.style.borderColor = 'rgba(248,81,73,.3)';
+          mb.style.color = 'var(--red)';
+          mb.textContent = '⚠ Sub-agent "' + data.agentName + '" failed: ' + (data.error || 'unknown error');
+          meta.appendChild(mb);
+          container.appendChild(meta);
+          container.scrollTop = container.scrollHeight;
+        }
+        showToast('⚠ Sub-agent "' + data.agentName + '" failed', 5000);
+        if (current === 'agents') loadAgents();
+      }
+    } catch(_) {}
+  };
+
+  es.onerror = function() {
+    es.close();
+    setTimeout(connectTaskWatch, 5000);
+  };
+}
+
 /* ── Navigation ─────────────────────────────────────────────────────────────── */
 var loaders = {
   overview: loadOverview,
@@ -967,6 +1029,7 @@ setInterval(function() {
 /* ── Init ───────────────────────────────────────────────────────────────────── */
 loadOverview();
 connectConfigWatch();
+connectTaskWatch();
 </script>
 </body>
 </html>`;

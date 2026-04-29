@@ -16,6 +16,13 @@ import { classifyRoute } from '../system/router';
 import { spawnAgent, type SpawnRequest } from '../system/spawner';
 import { logHive } from '../system/hive-mind';
 import { getLangfuse } from '../system/langfuse';
+import {
+  createBackgroundTask,
+  completeBackgroundTask,
+  failBackgroundTask,
+  taskEvents,
+  type BackgroundTask,
+} from '../system/background-tasks';
 
 // TODO [ElevenLabs]: Stream audio output alongside text for voice-enabled agents
 // TODO [memory]: Retrieve relevant memories before each message; persist key facts after responses
@@ -37,7 +44,8 @@ export type MetaEvent =
   | { type: 'route';        event: RouteEvent }
   | { type: 'spawn';        event: SpawnEvent }
   | { type: 'spawn_chunk';  agentName: string; content: string }
-  | { type: 'spawn_done';   agentName: string };
+  | { type: 'spawn_done';   agentName: string; result: string }
+  | { type: 'spawn_started'; agentName: string; taskId: string };
 
 // ── Dynamic system prompt builders ───────────────────────────────────────────
 
@@ -154,27 +162,44 @@ async function executeTool(
 
   await onMeta?.({ type: 'spawn', event: { agentName: result.agent.name, agentId: result.agent.id } });
 
-  // Run the spawned agent on its task immediately, streaming output live
+  // Run the spawned agent's task in the background (non-blocking)
   if (args.taskDescription) {
-    let subResponse = '';
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const spawnSessionId = createSession(result.agent.id, `Spawn: ${result.agent.name}`);
-    await chatStream(
-      args.taskDescription,
-      spawnSessionId,
-      async (chunk) => {
-        subResponse += chunk;
-        await onMeta?.({ type: 'spawn_chunk', agentName: result.agent.name, content: chunk });
-      },
-      result.agent.system_prompt ?? '',
-      result.agent.id,
-    );
-    await onMeta?.({ type: 'spawn_done', agentName: result.agent.name });
-    logger.info('Spawned agent completed task', { name: result.agent.name, chars: subResponse.length });
-    // Return a short note — full output was already streamed; Alfred should just briefly acknowledge
+    
+    // Create background task tracking
+    createBackgroundTask(taskId, result.agent.id, result.agent.name, spawnSessionId);
+    
+    // Notify that background task started
+    await onMeta?.({ type: 'spawn_started', agentName: result.agent.name, taskId });
+
+    // Fire and forget — run in background
+    (async () => {
+      let subResponse = '';
+      try {
+        await chatStream(
+          args.taskDescription!,
+          spawnSessionId,
+          (chunk) => { subResponse += chunk; },
+          result.agent!.system_prompt ?? '',
+          result.agent!.id,
+        );
+        // Mark complete and auto-deactivate the temp agent
+        completeBackgroundTask(taskId, subResponse, true);
+        logger.info('Background sub-agent completed', { taskId, agentName: result.agent!.name, chars: subResponse.length });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        failBackgroundTask(taskId, errMsg);
+        logger.error('Background sub-agent failed', { taskId, agentName: result.agent!.name, error: errMsg });
+      }
+    })();
+
+    // Return immediately so main agent can continue
     return JSON.stringify({
       spawned: result.agent.name,
-      status: 'completed',
-      note: 'The sub-agent\'s full response has already been shown to the user. Give a one-sentence acknowledgment only — do not repeat or summarize the content.',
+      status: 'running_in_background',
+      taskId,
+      note: `Sub-agent "${result.agent.name}" is now working on the task in the background. The user can continue chatting. You'll be notified when it completes. Do not wait — proceed with the conversation.`,
     });
   }
 

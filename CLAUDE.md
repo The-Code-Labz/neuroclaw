@@ -31,7 +31,9 @@ Two entry points share the same SQLite database and agent registry:
 
 **Dynamic team awareness**: Every call to `chatStream()` refreshes the system message (history[0]) from the live DB. Alfred gets a fully rebuilt orchestrator prompt listing all active non-temp agents. Sub-agents get their stored prompt plus a "Active team members" section appended. This means user-created agents are immediately visible to all agents without a restart.
 
-**Temporary agent spawning** (`src/system/spawner.ts`): When `SPAWN_AGENTS_ENABLED=true`, agents with `spawn_depth < 3` get the `spawn_agent` LLM tool. `chatStream` accumulates streaming tool call deltas, executes them on `finish_reason: 'tool_calls'`, then loops to get the LLM's synthesis. Max 5 iterations to prevent infinite loops. Spawned agents run their task synchronously via a recursive `chatStream` call.
+**Temporary agent spawning** (`src/system/spawner.ts`): When `SPAWN_AGENTS_ENABLED=true`, agents with `spawn_depth < 3` get the `spawn_agent` LLM tool. Spawned agents run their task **in the background** (non-blocking) so the main chat remains responsive. When the background task completes, the temp agent is **auto-deactivated**.
+
+**Background task runner** (`src/system/background-tasks.ts`): Manages async sub-agent execution. Emits `task_complete` and `task_failed` events for SSE delivery. Auto-deactivates temp agents on completion.
 
 **Hive Mind** (`src/system/hive-mind.ts`): `logHive()` records every routing decision, spawn, task change, and lifecycle event to the `hive_mind` table. It is wrapped in try/catch so it never crashes the main flow.
 
@@ -91,6 +93,7 @@ Task status flow: `todo` → `doing` → `review` → `done`.
 |---|---|
 | `src/agent/alfred.ts` | `chatStream()`, `resolveAgent()`, dynamic prompt builders |
 | `src/system/router.ts` | `classifyRoute()` — LLM classifier for auto-delegation |
+| `src/system/background-tasks.ts` | Async sub-agent task runner, auto-deactivates temp agents |
 | `src/system/spawner.ts` | `spawnAgent()` — validates and creates temp agents |
 | `src/system/hive-mind.ts` | `logHive()`, `getHiveEvents()` |
 | `src/system/cleanup.ts` | TTL cleanup scheduler |
@@ -117,7 +120,8 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 | POST | `/api/tasks` | Create task; auto-assigns if `AUTO_DELEGATION_ENABLED` |
 | PATCH | `/api/tasks/:id` | Update status, agent, or fields |
 | GET | `/api/hive` | Hive Mind events (`?limit=` default 100) |
-| POST | `/api/chat` | SSE stream; emits `session`, `agent`, `route`, `spawn`, `spawn_chunk`, `spawn_done`, `chunk`, `done`, `error` |
+| POST | `/api/chat` | SSE stream; emits `session`, `agent`, `route`, `spawn`, `spawn_started`, `chunk`, `done`, `error` |
+| GET | `/api/tasks/watch` | SSE stream for background task completions (`task_complete`, `task_failed`) |
 | GET | `/api/config/watch` | SSE stream for `.env` change notifications |
 
 ## Hive Mind Actions

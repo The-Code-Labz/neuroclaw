@@ -13,6 +13,7 @@ import { configEvents } from '../system/config-watcher';
 import { chatStream, resolveAgent, type MetaEvent } from '../agent/alfred';
 import { spawnAgent } from '../system/spawner';
 import { getHiveEvents } from '../system/hive-mind';
+import { taskEvents, getTasksBySession, type BackgroundTask } from '../system/background-tasks';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerApiRoutes(app: Hono<any>): void {
@@ -214,10 +215,12 @@ export function registerApiRoutes(app: Hono<any>): void {
         try {
           if (e.type === 'spawn') {
             await stream.writeSSE({ data: JSON.stringify({ type: 'spawn', agentName: e.event.agentName, agentId: e.event.agentId }) });
+          } else if (e.type === 'spawn_started') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_started', agentName: e.agentName, taskId: e.taskId }) });
           } else if (e.type === 'spawn_chunk') {
             await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_chunk', agentName: e.agentName, content: e.content }) });
           } else if (e.type === 'spawn_done') {
-            await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_done', agentName: e.agentName }) });
+            await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_done', agentName: e.agentName, result: e.result }) });
           }
         } catch { /* stream closed */ }
       };
@@ -231,6 +234,59 @@ export function registerApiRoutes(app: Hono<any>): void {
         const msg = err instanceof Error ? err.message : String(err);
         try { await stream.writeSSE({ data: JSON.stringify({ type: 'error', message: msg }) }); } catch { /* closed */ }
       }
+    });
+  });
+
+  // ── Background task updates (SSE) ────────────────────────────────────────────
+  app.get('/api/tasks/watch', (c) => {
+    const sessionId = c.req.query('sessionId');
+    
+    return streamSSE(c, async (stream) => {
+      await stream.writeSSE({ data: JSON.stringify({ type: 'connected' }) });
+
+      const onComplete = async (task: BackgroundTask) => {
+        // Only send if no sessionId filter, or task matches session
+        if (!sessionId || task.sessionId === sessionId) {
+          try {
+            await stream.writeSSE({ data: JSON.stringify({
+              type: 'task_complete',
+              taskId: task.id,
+              agentName: task.agentName,
+              result: task.result,
+            }) });
+          } catch { /* stream closed */ }
+        }
+      };
+
+      const onFailed = async (task: BackgroundTask) => {
+        if (!sessionId || task.sessionId === sessionId) {
+          try {
+            await stream.writeSSE({ data: JSON.stringify({
+              type: 'task_failed',
+              taskId: task.id,
+              agentName: task.agentName,
+              error: task.error,
+            }) });
+          } catch { /* closed */ }
+        }
+      };
+
+      taskEvents.on('task_complete', onComplete);
+      taskEvents.on('task_failed', onFailed);
+
+      const pingId = setInterval(async () => {
+        try { await stream.writeSSE({ data: JSON.stringify({ type: 'ping' }) }); }
+        catch { clearInterval(pingId); }
+      }, 20000);
+
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          taskEvents.off('task_complete', onComplete);
+          taskEvents.off('task_failed', onFailed);
+          clearInterval(pingId);
+          resolve();
+        });
+      });
     });
   });
 
