@@ -163,17 +163,21 @@ select:focus{border-color:var(--blue)}
       <div class="actions">
         <label>Agent:</label>
         <select id="chat-agent"></select>
-        <button class="btn btn-sm" onclick="newChat()">+ New Chat</button>
+        <label style="margin-left:12px">Session:</label>
+        <select id="chat-session-select" onchange="loadSession(this.value)"></select>
+        <button class="btn btn-sm btn-primary" onclick="newChat()">+ New Chat</button>
       </div>
     </div>
     <div class="chat-wrap">
       <div class="chat-toolbar">
-        <span class="muted">Session:</span>
+        <span class="muted">Session ID:</span>
         <span id="chat-session-id">—</span>
-        <span class="chat-hint">Tip: prefix with @AgentName to delegate</span>
+        <button class="btn btn-sm" style="margin-left:8px" onclick="renameSession()">Rename</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteCurrentSession()">Delete</button>
+        <span class="chat-hint" style="margin-left:auto">Tip: prefix with @AgentName to delegate</span>
       </div>
       <div class="chat-messages" id="chat-messages">
-        <div class="chat-empty" id="chat-empty">Select an agent and type a message to start chatting</div>
+        <div class="chat-empty" id="chat-empty">Select a session or start a new chat</div>
       </div>
       <div class="chat-input-row">
         <div class="chat-input-inner">
@@ -228,9 +232,37 @@ select:focus{border-color:var(--blue)}
 
   <!-- Memory -->
   <div id="s-memory" class="section">
-    <div class="page-header"><h2>Memory</h2><button class="btn btn-primary" onclick="load('memory')">↻ Refresh</button></div>
-    <div class="tbl-wrap"><table><thead><tr><th>Content</th><th>Type</th><th>Importance</th><th>Created</th></tr></thead>
-    <tbody id="tb-memory"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
+    <div class="page-header">
+      <h2>Memory</h2>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="openAddMemory()">+ Add Memory</button>
+        <button class="btn" onclick="load('memory')">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="tbl-wrap"><table><thead><tr><th>Content</th><th>Type</th><th>Importance</th><th>Created</th><th>Actions</th></tr></thead>
+    <tbody id="tb-memory"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+  </div>
+
+  <!-- Memory Modal -->
+  <div id="memory-modal" class="modal-overlay" style="display:none">
+    <div class="modal">
+      <div class="modal-header"><h3>Add Memory</h3><button class="btn btn-sm" onclick="closeModal('memory')">✕</button></div>
+      <div class="field"><label>Content</label><textarea id="mf-content" rows="4" placeholder="The memory content..."></textarea></div>
+      <div class="field"><label>Type</label>
+        <select id="mf-type">
+          <option value="general">General</option>
+          <option value="fact">Fact</option>
+          <option value="preference">Preference</option>
+          <option value="context">Context</option>
+          <option value="summary">Summary</option>
+        </select>
+      </div>
+      <div class="field"><label>Importance (1-10)</label><input type="number" id="mf-importance" min="1" max="10" value="5"></div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeModal('memory')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitMemory()">Save Memory</button>
+      </div>
+    </div>
   </div>
 
   <!-- Config -->
@@ -652,11 +684,43 @@ function loadSessions() {
 function loadMemory() {
   api('/api/memory').then(function(rows) {
     var tb = document.getElementById('tb-memory');
-    if (!rows.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No memories stored</td></tr>'; return; }
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No memories stored</td></tr>'; return; }
     tb.innerHTML = rows.map(function(r) {
-      return '<tr><td>'+esc(r.content)+'</td><td>'+esc(r.type)+'</td><td>'+r.importance+'/10</td><td class="muted">'+ago(r.created_at)+'</td></tr>';
+      return '<tr><td style="max-width:400px">'+esc(r.content)+'</td><td><span class="badge bb">'+esc(r.type)+'</span></td><td>'+r.importance+'/10</td><td class="muted">'+ago(r.created_at)+'</td>'
+            +'<td><button class="btn btn-sm btn-danger" data-id="'+r.id+'" onclick="deleteMemory(this.dataset.id)">🗑</button></td></tr>';
     }).join('');
-  }).catch(function(e) { document.getElementById('tb-memory').innerHTML = '<tr><td colspan="4">'+errHtml(e.message)+'</td></tr>'; });
+  }).catch(function(e) { document.getElementById('tb-memory').innerHTML = '<tr><td colspan="5">'+errHtml(e.message)+'</td></tr>'; });
+}
+
+function openAddMemory() {
+  document.getElementById('mf-content').value = '';
+  document.getElementById('mf-type').value = 'general';
+  document.getElementById('mf-importance').value = '5';
+  document.getElementById('memory-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('mf-content').focus(); }, 80);
+}
+
+function submitMemory() {
+  var content = document.getElementById('mf-content').value.trim();
+  if (!content) { showToast('Content is required', 3000); return; }
+  var payload = {
+    content: content,
+    type: document.getElementById('mf-type').value,
+    importance: parseInt(document.getElementById('mf-importance').value, 10) || 5
+  };
+  apiPost('/api/memory', payload).then(function() {
+    closeModal('memory');
+    loadMemory();
+    showToast('Memory saved');
+  }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
+}
+
+function deleteMemory(id) {
+  if (!confirm('Delete this memory?')) return;
+  apiPost('/api/memory/' + id, {}, 'DELETE').then(function() {
+    loadMemory();
+    showToast('Memory deleted');
+  }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
 }
 
 function loadConfig() {
@@ -729,6 +793,7 @@ function loadLogs() {
 var chatSessionId   = null;
 var chatStreaming    = false;
 var chatRespondingAs = 'Agent';
+var sessionsCache    = [];
 
 function loadChatAgents() {
   api('/api/agents').then(function(rows) {
@@ -742,14 +807,76 @@ function loadChatAgents() {
       if (active[i].name === 'Alfred') { sel.value = active[i].id; break; }
     }
   }).catch(function() {});
+  // Also load sessions
+  loadChatSessions();
+}
+
+function loadChatSessions() {
+  api('/api/sessions').then(function(rows) {
+    sessionsCache = rows;
+    var sel = document.getElementById('chat-session-select');
+    sel.innerHTML = '<option value="">— New Chat —</option>' +
+      rows.map(function(s) {
+        var preview = s.last_message ? ' — ' + esc(s.last_message.slice(0,30)) + (s.last_message.length > 30 ? '…' : '') : '';
+        var title = s.title || 'Chat ' + s.id.slice(0,8);
+        return '<option value="'+s.id+'">'+esc(title)+preview+'</option>';
+      }).join('');
+    // If we have a current session, keep it selected
+    if (chatSessionId) sel.value = chatSessionId;
+  }).catch(function() {});
+}
+
+function loadSession(sessionId) {
+  if (!sessionId) {
+    newChat();
+    return;
+  }
+  chatSessionId = sessionId;
+  document.getElementById('chat-session-id').textContent = sessionId.slice(0, 8) + '…';
+  // Load messages for this session
+  api('/api/sessions/' + sessionId + '/messages').then(function(messages) {
+    var container = document.getElementById('chat-messages');
+    container.innerHTML = '';
+    if (!messages.length) {
+      container.innerHTML = '<div class="chat-empty">No messages in this session yet</div>';
+      return;
+    }
+    messages.forEach(function(m) {
+      appendMsg(m.role, m.content, false, m.agent_id ? (agentCache[m.agent_id]?.name || 'Agent') : null);
+    });
+    container.scrollTop = container.scrollHeight;
+  }).catch(function(e) {
+    showToast('Error loading session: ' + e.message, 5000);
+  });
+}
+
+function renameSession() {
+  if (!chatSessionId) { showToast('No session to rename', 3000); return; }
+  var newTitle = prompt('Enter new session title:');
+  if (!newTitle) return;
+  apiPost('/api/sessions/' + chatSessionId, { title: newTitle }, 'PATCH').then(function() {
+    loadChatSessions();
+    showToast('Session renamed');
+  }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
+}
+
+function deleteCurrentSession() {
+  if (!chatSessionId) { showToast('No session to delete', 3000); return; }
+  if (!confirm('Delete this session and all its messages?')) return;
+  apiPost('/api/sessions/' + chatSessionId, {}, 'DELETE').then(function() {
+    newChat();
+    loadChatSessions();
+    showToast('Session deleted');
+  }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
 }
 
 function newChat() {
   chatSessionId = null;
   chatRespondingAs = 'Agent';
   document.getElementById('chat-session-id').textContent = '—';
+  document.getElementById('chat-session-select').value = '';
   document.getElementById('chat-messages').innerHTML =
-    '<div class="chat-empty" id="chat-empty">Select an agent and type a message to start chatting</div>';
+    '<div class="chat-empty" id="chat-empty">Select a session or start a new chat</div>';
 }
 
 function appendMsg(role, text, streaming, agentName) {
@@ -821,6 +948,9 @@ function sendChat() {
             if (ev.type === 'session') {
               chatSessionId = ev.sessionId;
               document.getElementById('chat-session-id').textContent = ev.sessionId.slice(0, 8) + '…';
+              document.getElementById('chat-session-select').value = ev.sessionId;
+              // Refresh session list to show new session
+              loadChatSessions();
             } else if (ev.type === 'agent') {
               chatRespondingAs = ev.name;
               // Update the who label on the in-progress bubble

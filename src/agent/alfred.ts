@@ -9,6 +9,7 @@ import { config } from '../config';
 import {
   saveMessage, logAnalytics, createSession,
   getAgentByName, getAgentById, getAllAgents,
+  getSessionMessages,
   type AgentRecord,
 } from '../db';
 import { logger } from '../utils/logger';
@@ -105,7 +106,22 @@ function getOrCreateHistory(
 ): ChatCompletionMessageParam[] {
   const key = historyKey(sessionId, agentId);
   if (!sessionHistories.has(key)) {
-    sessionHistories.set(key, [{ role: 'system', content: systemPrompt }]);
+    // Try to restore from DB if this is an existing session
+    const dbMessages = getSessionMessages(sessionId);
+    if (dbMessages.length > 0) {
+      const restored: ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+      for (const m of dbMessages) {
+        if (m.role === 'user' || m.role === 'assistant') {
+          restored.push({ role: m.role, content: m.content });
+        }
+      }
+      sessionHistories.set(key, restored);
+      logger.debug('Restored session history from DB', { sessionId, messages: dbMessages.length });
+    } else {
+      sessionHistories.set(key, [{ role: 'system', content: systemPrompt }]);
+    }
   }
   return sessionHistories.get(key)!;
 }

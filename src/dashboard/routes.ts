@@ -3,11 +3,13 @@ import { streamSSE } from 'hono/streaming';
 import {
   getDb, createSession, getAllAgents, getAgentById,
   createAgentRecord, updateAgentRecord, deactivateAgent, activateAgent,
+  getSessions, getSessionById, getSessionMessages, updateSessionTitle, deleteSession,
+  type SessionRecord, type MessageRecord,
 } from '../db';
 import { config } from '../config';
 import { getAnalyticsSummary } from '../system/analytics';
 import { getRecentLogs } from '../system/audit';
-import { getMemories } from '../memory/memory-service';
+import { getMemories, saveMemory } from '../memory/memory-service';
 import { getTasks, createTask, updateTask, type TaskStatus } from '../system/task-manager';
 import { configEvents } from '../system/config-watcher';
 import { chatStream, resolveAgent, type MetaEvent } from '../agent/alfred';
@@ -39,16 +41,58 @@ export function registerApiRoutes(app: Hono<any>): void {
   });
 
   // ── Sessions / Messages ──────────────────────────────────────────────────
+  // ── Sessions / Messages ──────────────────────────────────────────────────
   app.get('/api/sessions', (c) => {
-    return c.json(getDb().prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 50').all());
+    const sessions = getSessions(100);
+    // Add last message preview for each session
+    const db = getDb();
+    const withPreviews = sessions.map(s => {
+      const lastMsg = db.prepare(
+        'SELECT content, role FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(s.id) as { content: string; role: string } | undefined;
+      return {
+        ...s,
+        last_message: lastMsg ? lastMsg.content.slice(0, 100) + (lastMsg.content.length > 100 ? '…' : '') : null,
+        last_role: lastMsg?.role ?? null,
+      };
+    });
+    return c.json(withPreviews);
+  });
+
+  app.get('/api/sessions/:id', (c) => {
+    const session = getSessionById(c.req.param('id'));
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+    return c.json(session);
+  });
+
+  app.get('/api/sessions/:id/messages', (c) => {
+    const session = getSessionById(c.req.param('id'));
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+    return c.json(getSessionMessages(c.req.param('id')));
+  });
+
+  app.patch('/api/sessions/:id', async (c) => {
+    const session = getSessionById(c.req.param('id'));
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+    let body: { title?: string };
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (body.title) updateSessionTitle(c.req.param('id'), body.title.trim());
+    return c.json(getSessionById(c.req.param('id')));
+  });
+
+  app.delete('/api/sessions/:id', (c) => {
+    const session = getSessionById(c.req.param('id'));
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+    deleteSession(c.req.param('id'));
+    return c.json({ ok: true });
   });
 
   app.get('/api/messages', (c) => {
     const sessionId = c.req.query('session_id');
-    const rows = sessionId
-      ? getDb().prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId)
-      : getDb().prepare('SELECT * FROM messages ORDER BY created_at DESC LIMIT 100').all();
-    return c.json(rows);
+    if (sessionId) {
+      return c.json(getSessionMessages(sessionId));
+    }
+    return c.json(getDb().prepare('SELECT * FROM messages ORDER BY created_at DESC LIMIT 100').all());
   });
 
   // ── Agents ───────────────────────────────────────────────────────────────
@@ -176,7 +220,24 @@ export function registerApiRoutes(app: Hono<any>): void {
   });
 
   // ── Memory / Config / Analytics / Logs ───────────────────────────────────
-  app.get('/api/memory',    (c) => c.json(getMemories()));
+  app.get('/api/memory',    (c) => c.json(getMemories(100)));
+  
+  app.post('/api/memory', async (c) => {
+    let body: { content?: string; type?: string; importance?: number; sessionId?: string };
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    const content = (body.content ?? '').trim();
+    if (!content) return c.json({ error: 'content is required' }, 400);
+    const memory = saveMemory(content, body.type ?? 'general', body.sessionId, body.importance ?? 5);
+    return c.json(memory, 201);
+  });
+
+  app.delete('/api/memory/:id', (c) => {
+    const id = c.req.param('id');
+    const exists = getDb().prepare('SELECT id FROM memories WHERE id = ?').get(id);
+    if (!exists) return c.json({ error: 'Memory not found' }, 404);
+    getDb().prepare('DELETE FROM memories WHERE id = ?').run(id);
+    return c.json({ ok: true });
+  });
   app.get('/api/analytics', (c) => c.json(getAnalyticsSummary()));
   app.get('/api/logs',      (c) => c.json(getRecentLogs()));
   app.get('/api/hive',      (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));

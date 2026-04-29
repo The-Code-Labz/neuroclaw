@@ -370,12 +370,59 @@ export function activateAgent(id: string): void {
 
 // ── Session helpers ───────────────────────────────────────────────────────────
 
+export interface SessionRecord {
+  id:            string;
+  title:         string | null;
+  status:        string;
+  agent_id:      string | null;
+  message_count: number;
+  created_at:    string;
+  updated_at:    string;
+}
+
+export interface MessageRecord {
+  id:         string;
+  session_id: string;
+  role:       string;
+  content:    string;
+  agent_id:   string | null;
+  tokens_used: number;
+  created_at: string;
+}
+
 export function createSession(agentId: string, title?: string): string {
   const id = randomUUID();
   getDb().prepare(`
     INSERT INTO sessions (id, title, agent_id) VALUES (?, ?, ?)
-  `).run(id, title ?? `Session ${new Date().toLocaleString()}`, agentId);
+  `).run(id, title ?? `Chat ${new Date().toLocaleString()}`, agentId);
   return id;
+}
+
+export function getSessionById(id: string): SessionRecord | undefined {
+  return getDb().prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRecord | undefined;
+}
+
+export function getSessions(limit = 50): SessionRecord[] {
+  return getDb()
+    .prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?')
+    .all(limit) as SessionRecord[];
+}
+
+export function getSessionMessages(sessionId: string): MessageRecord[] {
+  return getDb()
+    .prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC')
+    .all(sessionId) as MessageRecord[];
+}
+
+export function updateSessionTitle(sessionId: string, title: string): void {
+  getDb().prepare(`UPDATE sessions SET title = ?, updated_at = datetime('now') WHERE id = ?`).run(title, sessionId);
+}
+
+export function deleteSession(sessionId: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+  logAudit('session_deleted', 'session', sessionId);
 }
 
 export function saveMessage(
