@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(timeout 5 npx tsx src/dashboard/server.ts)",
+      "Bash(timeout 4 npx tsx src/dashboard/server.ts)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s \"http://localhost:3141/dashboard?token=change-me\")",
+      "Bash(kill %1)",
+      "Bash(curl -s 'http://localhost:3141/dashboard?token=__TRACKED_VAR__')",
+      "Bash(node --input-type=module)",
+      "Bash(echo \"JS PARSE: $?\")",
+      "Bash(pkill -f \"tsx src/dashboard\")",
+      "Bash(kill %%)"
+    ]
+  }
+}

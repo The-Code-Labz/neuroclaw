@@ -1,0 +1,393 @@
+import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
+import { config } from './config';
+import { logger } from './utils/logger';
+
+let db: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (!db) {
+    db = new Database(config.db.path);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+    runMigrations(db);
+    seedDefaultData(db);
+  }
+  return db;
+}
+
+function initSchema(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agents (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      description   TEXT,
+      system_prompt TEXT,
+      model         TEXT,
+      role          TEXT DEFAULT 'agent',
+      capabilities  TEXT DEFAULT '[]',
+      status        TEXT DEFAULT 'active',
+      created_at    TEXT DEFAULT (datetime('now')),
+      updated_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id            TEXT PRIMARY KEY,
+      title         TEXT,
+      status        TEXT DEFAULT 'active',
+      agent_id      TEXT REFERENCES agents(id),
+      message_count INTEGER DEFAULT 0,
+      created_at    TEXT DEFAULT (datetime('now')),
+      updated_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT NOT NULL REFERENCES sessions(id),
+      role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+      content     TEXT NOT NULL,
+      agent_id    TEXT REFERENCES agents(id),
+      tokens_used INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id          TEXT PRIMARY KEY,
+      title       TEXT NOT NULL,
+      description TEXT,
+      status      TEXT DEFAULT 'todo' CHECK(status IN ('todo', 'doing', 'review', 'done')),
+      priority    INTEGER DEFAULT 50,
+      session_id  TEXT REFERENCES sessions(id),
+      agent_id    TEXT REFERENCES agents(id),
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS memories (
+      id         TEXT PRIMARY KEY,
+      session_id TEXT REFERENCES sessions(id),
+      content    TEXT NOT NULL,
+      type       TEXT DEFAULT 'general',
+      importance INTEGER DEFAULT 5,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id          TEXT PRIMARY KEY,
+      action      TEXT NOT NULL,
+      entity_type TEXT,
+      entity_id   TEXT,
+      details     TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id         TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      data       TEXT,
+      session_id TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS config_items (
+      key         TEXT PRIMARY KEY,
+      value       TEXT NOT NULL,
+      description TEXT,
+      is_secret   INTEGER DEFAULT 0,
+      updated_at  TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  logger.info('Database schema initialized');
+}
+
+// Additive migrations for existing databases
+function runMigrations(database: Database.Database): void {
+  const alters = [
+    "ALTER TABLE agents ADD COLUMN role TEXT DEFAULT 'agent'",
+    "ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT '[]'",
+    'ALTER TABLE messages ADD COLUMN agent_id TEXT REFERENCES agents(id)',
+  ];
+  for (const sql of alters) {
+    try { database.exec(sql); } catch { /* column already exists */ }
+  }
+  // Patch Alfred's role if it was seeded before this column existed
+  database.exec("UPDATE agents SET role = 'orchestrator' WHERE name = 'Alfred' AND role = 'agent'");
+}
+
+// ── Seed ────────────────────────────────────────────────────────────────────
+
+const SUB_AGENTS = [
+  {
+    name: 'Researcher',
+    description: 'Deep research, synthesis, and knowledge retrieval specialist',
+    role: 'specialist',
+    capabilities: ['research', 'summarize', 'fact-check'],
+    systemPrompt: `You are Researcher, a specialist AI agent focused on deep research and knowledge synthesis.
+
+You:
+- Find and synthesize information thoroughly
+- Cite sources and distinguish fact from inference
+- Break down complex topics into clear explanations
+- Flag uncertainty when your knowledge is incomplete
+
+You are a sub-agent working under Alfred's orchestration. Stay focused on your research specialty.`,
+    model: null as string | null,
+  },
+  {
+    name: 'Coder',
+    description: 'Code generation, debugging, and technical implementation specialist',
+    role: 'specialist',
+    capabilities: ['code', 'debug', 'refactor', 'review'],
+    systemPrompt: `You are Coder, a specialist AI agent focused on code generation and technical implementation.
+
+You:
+- Write clean, efficient, well-structured code
+- Debug and explain technical problems precisely
+- Suggest idiomatic improvements and best practices
+- Adapt to the user's language, framework, and context
+
+You are a sub-agent working under Alfred's orchestration. Stay focused on technical and coding tasks.`,
+    model: null as string | null,
+  },
+  {
+    name: 'Planner',
+    description: 'Project planning, task breakdown, and strategic roadmapping specialist',
+    role: 'specialist',
+    capabilities: ['plan', 'tasks', 'roadmap', 'prioritize'],
+    systemPrompt: `You are Planner, a specialist AI agent focused on project planning and strategic thinking.
+
+You:
+- Break down complex goals into concrete, actionable tasks
+- Identify dependencies, risks, and critical paths
+- Prioritize work by impact, urgency, and effort
+- Create clear timelines, milestones, and success criteria
+
+You are a sub-agent working under Alfred's orchestration. Stay focused on planning and coordination tasks.`,
+    model: null as string | null,
+  },
+];
+
+function seedDefaultData(database: Database.Database): void {
+  // Alfred
+  const existing = database.prepare('SELECT id FROM agents WHERE name = ?').get('Alfred');
+  if (!existing) {
+    const alfredId = randomUUID();
+    database.prepare(`
+      INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      alfredId,
+      'Alfred',
+      'Strategic AI butler and orchestrator',
+      buildAlfredPrompt(),
+      config.voidai.model,
+      'orchestrator',
+      JSON.stringify(['orchestrate', 'delegate', 'plan', 'respond']),
+    );
+
+    const insertConfig = database.prepare(`
+      INSERT OR IGNORE INTO config_items (key, value, description, is_secret)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const item of [
+      { key: 'VOIDAI_MODEL',    value: config.voidai.model,           description: 'Active AI model',        is_secret: 0 },
+      { key: 'DASHBOARD_PORT',  value: String(config.dashboard.port),  description: 'Dashboard port',         is_secret: 0 },
+      { key: 'VOIDAI_API_KEY',  value: config.voidai.apiKey,           description: 'VoidAI API key',         is_secret: 1 },
+      { key: 'DASHBOARD_TOKEN', value: config.dashboard.token,         description: 'Dashboard access token', is_secret: 1 },
+    ]) {
+      insertConfig.run(item.key, item.value, item.description, item.is_secret);
+    }
+
+    logger.info('Seeded default Alfred agent');
+  }
+
+  // Sub-agents (idempotent by name)
+  for (const agent of SUB_AGENTS) {
+    const row = database.prepare('SELECT id FROM agents WHERE name = ?').get(agent.name);
+    if (!row) {
+      database.prepare(`
+        INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        randomUUID(),
+        agent.name,
+        agent.description,
+        agent.systemPrompt,
+        agent.model ?? config.voidai.model,
+        agent.role,
+        JSON.stringify(agent.capabilities),
+      );
+      logger.info(`Seeded sub-agent: ${agent.name}`);
+    }
+  }
+}
+
+function buildAlfredPrompt(): string {
+  const names = SUB_AGENTS.map(a => `@${a.name} — ${a.description}`).join('\n');
+  return `You are Alfred, a strategic AI butler and orchestrator.
+
+You:
+- Understand intent and route requests to the right specialist
+- Respond clearly and think like a manager
+- Assign tasks to agents best suited for them
+
+Available sub-agents (users can address them with @Name):
+${names}
+
+When a request is better handled by a sub-agent, recommend the user address @AgentName directly.`;
+}
+
+// ── Agent CRUD ──────────────────────────────────────────────────────────────
+
+export interface AgentRecord {
+  id:            string;
+  name:          string;
+  description:   string | null;
+  system_prompt: string | null;
+  model:         string | null;
+  role:          string;
+  capabilities:  string;
+  status:        string;
+  created_at:    string;
+  updated_at:    string;
+}
+
+export function getAgentById(id: string): AgentRecord | undefined {
+  return getDb().prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord | undefined;
+}
+
+export function getAgentByName(name: string): AgentRecord | undefined {
+  return getDb()
+    .prepare('SELECT * FROM agents WHERE name = ? COLLATE NOCASE')
+    .get(name) as AgentRecord | undefined;
+}
+
+export function getAllAgents(): AgentRecord[] {
+  return getDb().prepare('SELECT * FROM agents ORDER BY role DESC, name ASC').all() as AgentRecord[];
+}
+
+export function createAgentRecord(
+  name: string,
+  opts: {
+    description?: string;
+    systemPrompt?: string;
+    model?: string;
+    role?: string;
+    capabilities?: string[];
+  } = {},
+): AgentRecord {
+  const id = randomUUID();
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    name,
+    opts.description ?? null,
+    opts.systemPrompt ?? null,
+    opts.model ?? config.voidai.model,
+    opts.role ?? 'agent',
+    JSON.stringify(opts.capabilities ?? []),
+  );
+  logAudit('agent_created', 'agent', id, { name });
+  return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord;
+}
+
+export function updateAgentRecord(
+  id: string,
+  fields: {
+    name?: string;
+    description?: string;
+    system_prompt?: string;
+    model?: string;
+    role?: string;
+    capabilities?: string[];
+    status?: string;
+  },
+): void {
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: unknown[] = [];
+
+  if (fields.name        !== undefined) { sets.push('name = ?');          params.push(fields.name); }
+  if (fields.description !== undefined) { sets.push('description = ?');   params.push(fields.description); }
+  if (fields.system_prompt !== undefined) { sets.push('system_prompt = ?'); params.push(fields.system_prompt); }
+  if (fields.model       !== undefined) { sets.push('model = ?');         params.push(fields.model); }
+  if (fields.role        !== undefined) { sets.push('role = ?');          params.push(fields.role); }
+  if (fields.capabilities !== undefined) { sets.push('capabilities = ?'); params.push(JSON.stringify(fields.capabilities)); }
+  if (fields.status      !== undefined) { sets.push('status = ?');        params.push(fields.status); }
+
+  if (sets.length === 1) return; // nothing to update beyond timestamp
+  params.push(id);
+  getDb().prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  logAudit('agent_updated', 'agent', id, fields);
+}
+
+export function deactivateAgent(id: string): { ok: boolean; reason?: string } {
+  const agent = getAgentById(id);
+  if (!agent) return { ok: false, reason: 'not found' };
+  if (agent.name === 'Alfred') return { ok: false, reason: 'Alfred cannot be deactivated' };
+  updateAgentRecord(id, { status: 'inactive' });
+  return { ok: true };
+}
+
+export function activateAgent(id: string): void {
+  updateAgentRecord(id, { status: 'active' });
+}
+
+// ── Session helpers ──────────────────────────────────────────────────────────
+
+export function createSession(agentId: string, title?: string): string {
+  const id = randomUUID();
+  getDb().prepare(`
+    INSERT INTO sessions (id, title, agent_id) VALUES (?, ?, ?)
+  `).run(id, title ?? `Session ${new Date().toLocaleString()}`, agentId);
+  return id;
+}
+
+export function saveMessage(
+  sessionId: string,
+  role: 'user' | 'assistant',
+  content: string,
+  agentId?: string,
+): void {
+  const id = randomUUID();
+  const database = getDb();
+  database.prepare(`
+    INSERT INTO messages (id, session_id, role, content, agent_id) VALUES (?, ?, ?, ?, ?)
+  `).run(id, sessionId, role, content, agentId ?? null);
+  database.prepare(`
+    UPDATE sessions SET message_count = message_count + 1, updated_at = datetime('now') WHERE id = ?
+  `).run(sessionId);
+}
+
+export function getAlfredAgent(): AgentRecord | undefined {
+  return getAgentByName('Alfred');
+}
+
+// ── Logging helpers ──────────────────────────────────────────────────────────
+
+export function logAudit(action: string, entityType?: string, entityId?: string, details?: unknown): void {
+  getDb().prepare(`
+    INSERT INTO audit_logs (id, action, entity_type, entity_id, details)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    randomUUID(),
+    action,
+    entityType ?? null,
+    entityId ?? null,
+    details !== undefined ? JSON.stringify(details) : null,
+  );
+}
+
+export function logAnalytics(eventType: string, data?: unknown, sessionId?: string): void {
+  getDb().prepare(`
+    INSERT INTO analytics_events (id, event_type, data, session_id)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    randomUUID(),
+    eventType,
+    data !== undefined ? JSON.stringify(data) : null,
+    sessionId ?? null,
+  );
+}
