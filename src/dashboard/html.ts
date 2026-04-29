@@ -474,6 +474,29 @@ function activateAgent(id) {
   }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
 }
 
+/* ── Agent filtering ───────────────────────────────────────────────────────── */
+var currentAgentFilter = 'all';
+
+function filterAgents(filter) {
+  currentAgentFilter = filter;
+  // Update button styles
+  document.querySelectorAll('#agent-filter button').forEach(function(btn) {
+    btn.classList.remove('btn-primary');
+    if (btn.dataset.filter === filter) btn.classList.add('btn-primary');
+  });
+  // Apply filter to agent cards
+  document.querySelectorAll('.agent-card').forEach(function(card) {
+    var isTemp     = card.classList.contains('temporary');
+    var isInactive = card.classList.contains('inactive');
+    var show = false;
+    if (filter === 'all')      show = true;
+    else if (filter === 'active')   show = !isInactive && !isTemp;
+    else if (filter === 'temp')     show = isTemp;
+    else if (filter === 'inactive') show = isInactive;
+    card.style.display = show ? '' : 'none';
+  });
+}
+
 /* ── Section loaders ────────────────────────────────────────────────────────── */
 function loadOverview() {
   api('/api/status').then(function(s) {
@@ -767,6 +790,7 @@ function sendChat() {
   var assistantDiv = appendMsg('assistant', '', true, null);
   var bubbleEl = assistantDiv.querySelector('.msg-bubble');
   var accText = '';
+  var spawnBubble = null, spawnBubbleEl = null, spawnAccText = '';
 
   var reqBody = JSON.stringify({ message: message, agentId: agentId, sessionId: chatSessionId });
 
@@ -826,6 +850,17 @@ function sendChat() {
               smeta.appendChild(smb);
               document.getElementById('chat-messages').insertBefore(smeta, assistantDiv);
               document.getElementById('chat-messages').scrollTop = 9999;
+              // Create a new bubble for the sub-agent response
+              spawnBubble = appendMsg('assistant', '', true, ev.agentName);
+              spawnBubbleEl = spawnBubble.querySelector('.msg-bubble');
+              spawnAccText = '';
+            } else if (ev.type === 'spawn_chunk') {
+              spawnAccText += ev.content;
+              if (spawnBubbleEl) spawnBubbleEl.textContent = spawnAccText;
+              document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'spawn_done') {
+              if (spawnBubble) spawnBubble.classList.remove('streaming');
+              spawnBubble = null; spawnBubbleEl = null; spawnAccText = '';
             } else if (ev.type === 'done') {
               assistantDiv.classList.remove('streaming');
               chatStreaming = false;

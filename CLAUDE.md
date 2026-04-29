@@ -117,7 +117,7 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 | POST | `/api/tasks` | Create task; auto-assigns if `AUTO_DELEGATION_ENABLED` |
 | PATCH | `/api/tasks/:id` | Update status, agent, or fields |
 | GET | `/api/hive` | Hive Mind events (`?limit=` default 100) |
-| POST | `/api/chat` | SSE stream; emits `session`, `agent`, `route`, `spawn`, `chunk`, `done`, `error` |
+| POST | `/api/chat` | SSE stream; emits `session`, `agent`, `route`, `spawn`, `spawn_chunk`, `spawn_done`, `chunk`, `done`, `error` |
 | GET | `/api/config/watch` | SSE stream for `.env` change notifications |
 
 ## Hive Mind Actions
@@ -127,3 +127,7 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 ## Dashboard HTML
 
 `src/dashboard/html.ts` returns the entire dashboard as a single inline HTML string. All onclick handlers use `data-*` attributes + `this.dataset.*` — never inline string parameters — to avoid JS string escaping issues inside TypeScript template literals (where `\'` is NOT a valid escape and becomes a bare `'`).
+
+**Agent tab filters**: `filterAgents(filter)` applies client-side filtering (all/active/temp/inactive) to the rendered agent cards.
+
+**Chat spawn streaming**: When a sub-agent is spawned during chat, `spawn_chunk` and `spawn_done` SSE events stream the sub-agent's response into its own separate message bubble in the UI.
