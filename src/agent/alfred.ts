@@ -53,7 +53,11 @@ const SPAWN_GUIDANCE_TEXT =
   '\n\nYou may create temporary sub-agents when:\n' +
   '- the task is complex and requires deep specialization\n' +
   '- parallel work would significantly improve performance\n' +
-  'Prefer delegation before spawning. Do NOT spawn agents unnecessarily.';
+  'Prefer delegation before spawning. Do NOT spawn agents unnecessarily.\n\n' +
+  'IMPORTANT: When you spawn a sub-agent, it runs IN THE BACKGROUND. ' +
+  'Do NOT attempt to do the task yourself. Do NOT write the content the sub-agent was asked to create. ' +
+  'Simply confirm that the sub-agent has been spawned and is working. ' +
+  'The sub-agent\'s results will appear automatically when it finishes.';
 
 function buildOrchestratorPrompt(allAgents: AgentRecord[]): string {
   const specialists = allAgents.filter(
@@ -199,7 +203,10 @@ async function executeTool(
       spawned: result.agent.name,
       status: 'running_in_background',
       taskId,
-      note: `Sub-agent "${result.agent.name}" is now working on the task in the background. The user can continue chatting. You'll be notified when it completes. Do not wait — proceed with the conversation.`,
+      note: `Sub-agent "${result.agent.name}" is now working on the task in the background. ` +
+            `DO NOT write the essay/content/output yourself — the sub-agent will produce it. ` +
+            `Just tell the user that ${result.agent.name} is working on it and they can continue chatting. ` +
+            `Keep your response to 1-2 sentences maximum.`,
     });
   }
 
