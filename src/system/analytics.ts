@@ -1,4 +1,5 @@
 import { getDb } from '../db';
+import { logger } from '../utils/logger';
 
 export interface AnalyticsSummary {
   total_messages:     number;
@@ -17,33 +18,60 @@ export interface AnalyticsSummary {
   hive_recent:        Array<{ action: string; count: number }>;
 }
 
+function safeCount(db: ReturnType<typeof getDb>, sql: string): number {
+  try {
+    return (db.prepare(sql).get() as { count: number })?.count ?? 0;
+  } catch (err) {
+    logger.warn('Analytics query failed', { sql, err: err instanceof Error ? err.message : err });
+    return 0;
+  }
+}
+
+function safeSum(db: ReturnType<typeof getDb>, sql: string): number {
+  try {
+    return (db.prepare(sql).get() as { total: number })?.total ?? 0;
+  } catch (err) {
+    logger.warn('Analytics query failed', { sql, err: err instanceof Error ? err.message : err });
+    return 0;
+  }
+}
+
+function safeAll<T>(db: ReturnType<typeof getDb>, sql: string): T[] {
+  try {
+    return db.prepare(sql).all() as T[];
+  } catch (err) {
+    logger.warn('Analytics query failed', { sql, err: err instanceof Error ? err.message : err });
+    return [];
+  }
+}
+
 export function getAnalyticsSummary(): AnalyticsSummary {
   const db = getDb();
 
-  const total_messages = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  const total_sessions = (db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number }).count;
-  const total_tokens   = (db.prepare("SELECT COALESCE(SUM(tokens_used), 0) as total FROM messages").get() as { total: number }).total;
-  const messages_today = (db.prepare("SELECT COUNT(*) as count FROM messages WHERE date(created_at) = date('now')").get() as { count: number }).count;
-  const messages_7d    = (db.prepare("SELECT COUNT(*) as count FROM messages WHERE created_at >= datetime('now', '-7 days')").get() as { count: number }).count;
-  const active_agents  = (db.prepare("SELECT COUNT(*) as count FROM agents WHERE status = 'active'").get() as { count: number }).count;
-  const temp_agents    = (db.prepare("SELECT COUNT(*) as count FROM agents WHERE temporary = 1 AND status = 'active'").get() as { count: number }).count;
-  const tasks_todo     = (db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status IN ('todo', 'doing')").get() as { count: number }).count;
-  const tasks_done     = (db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'done'").get() as { count: number }).count;
-  const memories_count = (db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number }).count;
+  const total_messages = safeCount(db, 'SELECT COUNT(*) as count FROM messages');
+  const total_sessions = safeCount(db, 'SELECT COUNT(*) as count FROM sessions');
+  const total_tokens   = safeSum(db, "SELECT COALESCE(SUM(tokens_used), 0) as total FROM messages");
+  const messages_today = safeCount(db, "SELECT COUNT(*) as count FROM messages WHERE date(created_at) = date('now')");
+  const messages_7d    = safeCount(db, "SELECT COUNT(*) as count FROM messages WHERE created_at >= datetime('now', '-7 days')");
+  const active_agents  = safeCount(db, "SELECT COUNT(*) as count FROM agents WHERE status = 'active'");
+  const temp_agents    = safeCount(db, "SELECT COUNT(*) as count FROM agents WHERE temporary = 1 AND status = 'active'");
+  const tasks_todo     = safeCount(db, "SELECT COUNT(*) as count FROM tasks WHERE status IN ('todo', 'doing')");
+  const tasks_done     = safeCount(db, "SELECT COUNT(*) as count FROM tasks WHERE status = 'done'");
+  const memories_count = safeCount(db, 'SELECT COUNT(*) as count FROM memories');
   
-  const events_by_type = db.prepare(
+  const events_by_type = safeAll<{ event_type: string; count: number }>(db,
     'SELECT event_type, COUNT(*) as count FROM analytics_events GROUP BY event_type ORDER BY count DESC LIMIT 10'
-  ).all() as Array<{ event_type: string; count: number }>;
+  );
   
-  const messages_by_day = db.prepare(`
+  const messages_by_day = safeAll<{ day: string; count: number }>(db, `
     SELECT date(created_at) as day, COUNT(*) as count 
     FROM messages 
     WHERE created_at >= datetime('now', '-14 days')
     GROUP BY date(created_at) 
     ORDER BY day DESC
-  `).all() as Array<{ day: string; count: number }>;
+  `);
   
-  const top_agents = db.prepare(`
+  const top_agents = safeAll<{ name: string; messages: number }>(db, `
     SELECT a.name, COUNT(m.id) as messages
     FROM agents a
     LEFT JOIN messages m ON m.agent_id = a.id
@@ -51,16 +79,16 @@ export function getAnalyticsSummary(): AnalyticsSummary {
     GROUP BY a.id
     ORDER BY messages DESC
     LIMIT 5
-  `).all() as Array<{ name: string; messages: number }>;
+  `);
   
-  const hive_recent = db.prepare(`
+  const hive_recent = safeAll<{ action: string; count: number }>(db, `
     SELECT action, COUNT(*) as count
     FROM hive_mind
     WHERE created_at >= datetime('now', '-24 hours')
     GROUP BY action
     ORDER BY count DESC
     LIMIT 10
-  `).all() as Array<{ action: string; count: number }>;
+  `);
 
   return { 
     total_messages, total_sessions, total_tokens, messages_today, messages_7d,

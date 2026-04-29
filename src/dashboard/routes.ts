@@ -238,7 +238,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     getDb().prepare('DELETE FROM memories WHERE id = ?').run(id);
     return c.json({ ok: true });
   });
-  app.get('/api/analytics', (c) => c.json(getAnalyticsSummary()));
+    app.get('/api/analytics', (c) => { try { return c.json(getAnalyticsSummary()); } catch(e) { console.error('Analytics:',e); return c.json({error:String(e)},500); } });
   app.get('/api/logs',      (c) => c.json(getRecentLogs()));
   app.get('/api/hive',      (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));
 
