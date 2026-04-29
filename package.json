@@ -4,8 +4,10 @@
   "description": "NeuroClaw v1 — multi-agent registry, delegation, task assignment, and local dashboard",
   "type": "commonjs",
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "dashboard": "tsx src/dashboard/server.ts",
+    "dev": "tsx watch src/index.ts",
+    "dashboard": "tsx watch src/dashboard/server.ts",
+    "dev:cli": "tsx src/index.ts",
+    "dashboard:once": "tsx src/dashboard/server.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
