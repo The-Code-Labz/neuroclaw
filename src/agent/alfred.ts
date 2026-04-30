@@ -10,6 +10,7 @@ import {
   saveMessage, logAnalytics, createSession,
   getAgentByName, getAgentById, getAllAgents,
   getSessionMessages,
+  createAgentMessage, updateAgentMessageResponse,
   type AgentRecord,
 } from '../db';
 import { logger } from '../utils/logger';
@@ -24,6 +25,8 @@ import {
   taskEvents,
   type BackgroundTask,
 } from '../system/background-tasks';
+import { decomposeTask, mergeResults, evaluateSpawn } from '../system/decomposer';
+import { createTask } from '../system/task-manager';
 
 // TODO [ElevenLabs]: Stream audio output alongside text for voice-enabled agents
 // TODO [memory]: Retrieve relevant memories before each message; persist key facts after responses
@@ -46,9 +49,32 @@ export type MetaEvent =
   | { type: 'spawn';        event: SpawnEvent }
   | { type: 'spawn_chunk';  agentName: string; content: string }
   | { type: 'spawn_done';   agentName: string; result: string }
-  | { type: 'spawn_started'; agentName: string; taskId: string };
+  | { type: 'spawn_started'; agentName: string; taskId: string }
+  | { type: 'plan';         steps: Array<{ index: number; task: string; agent: string; parallel: boolean }> }
+  | { type: 'step_start';   stepIndex: number; task: string; agentName: string }
+  | { type: 'step_chunk';   stepIndex: number; agentName: string; content: string }
+  | { type: 'step_done';    stepIndex: number; agentName: string }
+  | { type: 'merge_start' }
+  | { type: 'spawn_eval';        task: string; shouldSpawn: boolean; benefit: number; reason: string }
+  | { type: 'agent_message';     fromName: string; toName: string; preview: string }
+  | { type: 'agent_task_assigned'; fromName: string; toName: string; title: string; taskId: string; executing: boolean };
 
 // ── Dynamic system prompt builders ───────────────────────────────────────────
+
+const AGENT_COMMS_GUIDANCE =
+  '\n\n## Agent Communication Tools — USE THEM, DO NOT DESCRIBE THEM\n\n' +
+  'You have two tools for working with other agents. CALL THEM immediately — never tell the user "you can do X" or "here is how to do X". Just do it.\n\n' +
+  '`message_agent` — send a message to an agent and receive their response right now.\n' +
+  '  → Use when: user asks you to "ask", "check with", "get a response from", "have X say", or "send a message to" an agent.\n\n' +
+  '`assign_task_to_agent` — create a task for an agent (set execute_now=true to run it immediately).\n' +
+  '  → Use when: user asks you to "assign", "delegate", "give a task to", or "have X do" something.\n\n' +
+  'RULE: If the user says "send a hello", "assign that task", "have Coder do X", "ask Researcher about Y" — ' +
+  'CALL THE TOOL IMMEDIATELY. Do not narrate. Do not say "here is the instruction". Just execute.\n\n' +
+  '## CRITICAL — DO NOT DO THE WORK YOURSELF\n\n' +
+  'When you assign or delegate a task to another agent, you MUST NOT also produce the output yourself. ' +
+  'Your only job is to call the tool and report back what that agent returned. ' +
+  'Do NOT write the essay, code, plan, or answer — the assigned agent will do that. ' +
+  'If you catch yourself about to produce content that was meant for another agent, STOP and use the tool instead.';
 
 const SPAWN_GUIDANCE_TEXT =
   '\n\nYou may create temporary sub-agents when:\n' +
@@ -76,7 +102,8 @@ function buildOrchestratorPrompt(allAgents: AgentRecord[]): string {
     '- Assign tasks to agents best suited for them\n\n' +
     'Available agents (users can address them with @Name):\n' +
     agentLines +
-    '\n\nWhen a request is better handled by a specialist, direct the user to address @AgentName or route via the dashboard.' +
+    '\n\nWhen a request needs a specialist, USE `message_agent` or `assign_task_to_agent` to involve them directly. Do NOT tell the user to do it themselves.' +
+    AGENT_COMMS_GUIDANCE +
     SPAWN_GUIDANCE_TEXT
   );
 }
@@ -87,7 +114,10 @@ function buildTeamSection(currentAgentId: string, allAgents: AgentRecord[]): str
   );
   if (peers.length === 0) return '';
   const lines = peers.map(a => `- @${a.name}${a.description ? ' — ' + a.description : ''}`).join('\n');
-  return '\n\n---\nActive team members:\n' + lines;
+  return (
+    '\n\n---\nActive team members (use `message_agent` to contact them directly):\n' + lines +
+    '\nDo NOT tell the user to contact agents themselves — call the tool and do it for them.'
+  );
 }
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -129,29 +159,68 @@ function getOrCreateHistory(
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 function buildTools(agent: AgentRecord | undefined): ChatCompletionTool[] {
-  if (!config.spawning.enabled) return [];
   if (!agent || agent.status !== 'active') return [];
-  if ((agent.spawn_depth ?? 0) >= 3) return [];
 
-  return [{
-    type: 'function',
-    function: {
-      name:        'spawn_agent',
-      description: 'Create a temporary specialized agent to handle a complex or parallel task',
-      parameters: {
-        type:       'object',
-        properties: {
-          name:            { type: 'string', description: 'Unique name for the temporary agent' },
-          role:            { type: 'string', description: 'Agent role, e.g. specialist, analyst' },
-          description:     { type: 'string', description: 'One-line description of what this agent does' },
-          capabilities:    { type: 'array', items: { type: 'string' }, description: 'List of capability tags' },
-          systemPrompt:    { type: 'string', description: 'Full system prompt for the agent' },
-          taskDescription: { type: 'string', description: 'The specific task for the agent to execute immediately' },
+  const tools: ChatCompletionTool[] = [
+    {
+      type: 'function',
+      function: {
+        name:        'message_agent',
+        description: 'Send a direct message to another agent and receive their response synchronously',
+        parameters: {
+          type:       'object',
+          properties: {
+            to:      { type: 'string', description: 'Name of the agent to message' },
+            message: { type: 'string', description: 'The message to send' },
+            context: { type: 'string', description: 'Optional background context for the message' },
+          },
+          required: ['to', 'message'],
         },
-        required: ['name', 'role', 'description', 'systemPrompt', 'taskDescription'],
       },
     },
-  }];
+    {
+      type: 'function',
+      function: {
+        name:        'assign_task_to_agent',
+        description: 'Create a task and assign it to a specific agent; optionally execute it immediately',
+        parameters: {
+          type:       'object',
+          properties: {
+            to:          { type: 'string',  description: 'Name of the agent to assign the task to' },
+            title:       { type: 'string',  description: 'Short task title' },
+            description: { type: 'string',  description: 'Detailed task description' },
+            priority:    { type: 'number',  description: 'Priority 0-100 (default 50)' },
+            execute_now: { type: 'boolean', description: 'If true, run the task immediately and return the result' },
+          },
+          required: ['to', 'title'],
+        },
+      },
+    },
+  ];
+
+  if (config.spawning.enabled && (agent.spawn_depth ?? 0) < 3) {
+    tools.push({
+      type: 'function',
+      function: {
+        name:        'spawn_agent',
+        description: 'Create a temporary specialized agent to handle a complex or parallel task',
+        parameters: {
+          type:       'object',
+          properties: {
+            name:            { type: 'string', description: 'Unique name for the temporary agent' },
+            role:            { type: 'string', description: 'Agent role, e.g. specialist, analyst' },
+            description:     { type: 'string', description: 'One-line description of what this agent does' },
+            capabilities:    { type: 'array', items: { type: 'string' }, description: 'List of capability tags' },
+            systemPrompt:    { type: 'string', description: 'Full system prompt for the agent' },
+            taskDescription: { type: 'string', description: 'The specific task for the agent to execute immediately' },
+          },
+          required: ['name', 'role', 'description', 'systemPrompt', 'taskDescription'],
+        },
+      },
+    });
+  }
+
+  return tools;
 }
 
 // ── Tool execution ────────────────────────────────────────────────────────────
@@ -161,7 +230,85 @@ async function executeTool(
   argsStr: string,
   parentAgentId: string | undefined,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  sessionId?: string,
 ): Promise<string> {
+  // ── message_agent ──────────────────────────────────────────────────────────
+  if (name === 'message_agent') {
+    let args: { to: string; message: string; context?: string };
+    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: 'Invalid message_agent arguments' }); }
+
+    const sender     = parentAgentId ? getAgentById(parentAgentId) : undefined;
+    const recipient  = getAgentByName(args.to);
+
+    if (!recipient || recipient.status !== 'active') {
+      return JSON.stringify({ error: `Agent "${args.to}" not found or inactive` });
+    }
+    if (!sender) {
+      return JSON.stringify({ error: 'Sender agent not found' });
+    }
+
+    const fullMessage = args.context
+      ? `[Context: ${args.context}]\n\n${args.message}`
+      : args.message;
+
+    const msgRecord = createAgentMessage(sender.id, sender.name, recipient.id, recipient.name, args.message, sessionId);
+
+    await onMeta?.({ type: 'agent_message', fromName: sender.name, toName: recipient.name, preview: args.message.slice(0, 80) });
+    logHive('agent_message_sent', `${sender.name} → ${recipient.name}: "${args.message.slice(0, 60)}"`, sender.id, { toAgentId: recipient.id, preview: args.message.slice(0, 80) });
+
+    // Run the target agent synchronously to get a response
+    const commSessId = createSession(recipient.id, `Comms: ${sender.name} → ${recipient.name}`);
+    let response = '';
+    try {
+      await chatStream(fullMessage, commSessId, (chunk) => { response += chunk; }, recipient.system_prompt ?? '', recipient.id);
+      updateAgentMessageResponse(msgRecord.id, response, 'responded');
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      updateAgentMessageResponse(msgRecord.id, errMsg, 'failed');
+      return JSON.stringify({ error: `Agent "${args.to}" failed to respond: ${errMsg}` });
+    }
+
+    return JSON.stringify({ from: recipient.name, response });
+  }
+
+  // ── assign_task_to_agent ───────────────────────────────────────────────────
+  if (name === 'assign_task_to_agent') {
+    let args: { to: string; title: string; description?: string; priority?: number; execute_now?: boolean };
+    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: 'Invalid assign_task_to_agent arguments' }); }
+
+    const sender    = parentAgentId ? getAgentById(parentAgentId) : undefined;
+    const recipient = getAgentByName(args.to);
+
+    if (!recipient || recipient.status !== 'active') {
+      return JSON.stringify({ error: `Agent "${args.to}" not found or inactive` });
+    }
+
+    const task = await createTask(args.title, args.description, sessionId, recipient.id, args.priority ?? 50);
+
+    await onMeta?.({ type: 'agent_task_assigned', fromName: sender?.name ?? 'system', toName: recipient.name, title: args.title, taskId: task.id, executing: !!args.execute_now });
+    logHive('agent_task_assigned', `${sender?.name ?? 'system'} assigned task "${args.title}" to ${recipient.name}`, recipient.id, { taskId: task.id, executeNow: !!args.execute_now });
+
+    // Notify the tasks watch SSE so the dashboard refreshes immediately
+    taskEvents.emit('task_created', { taskId: task.id, title: task.title, toName: recipient.name, fromName: sender?.name ?? 'system', status: task.status });
+
+    if (args.execute_now) {
+      const taskSessId = createSession(recipient.id, `Task: ${args.title.slice(0, 50)}`);
+      let result = '';
+      try {
+        const taskMsg = args.description ? `${args.title}\n\n${args.description}` : args.title;
+        await chatStream(taskMsg, taskSessId, (chunk) => { result += chunk; }, recipient.system_prompt ?? '', recipient.id);
+        updateAgentMessageResponse(task.id, result);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'failed', error: errMsg });
+      }
+      return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'completed', result });
+    }
+
+    return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'queued', title: args.title });
+  }
+
+  // ── spawn_agent ────────────────────────────────────────────────────────────
   if (name !== 'spawn_agent') {
     return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -174,6 +321,23 @@ async function executeTool(
   }
 
   if (!parentAgentId) return JSON.stringify({ error: 'No parent agent ID for spawn' });
+
+  // Intelligent spawn evaluation — only spawn if no existing agent can do the job well
+  if (config.spawning.enabled) {
+    const existing   = getAllAgents().filter(a => a.status === 'active' && !a.temporary);
+    const evaluation = await evaluateSpawn(args.taskDescription ?? args.description, existing);
+
+    await onMeta?.({ type: 'spawn_eval', task: args.name, shouldSpawn: evaluation.shouldSpawn, benefit: evaluation.expectedBenefit, reason: evaluation.reason });
+    logHive('spawn_evaluated', `Spawn evaluation for "${args.name}": ${evaluation.shouldSpawn ? 'APPROVED' : 'DENIED'} (benefit ${evaluation.expectedBenefit}) — ${evaluation.reason}`, parentAgentId, evaluation);
+
+    if (!evaluation.shouldSpawn) {
+      return JSON.stringify({
+        spawn_blocked: true,
+        reason: evaluation.reason,
+        suggestion: 'Use an existing agent instead. Available: ' + existing.map(a => a.name).join(', '),
+      });
+    }
+  }
 
   const result = spawnAgent({ ...args, parentAgentId });
   if (!result.ok || !result.agent) {
@@ -318,7 +482,7 @@ export async function chatStream(
     }
 
     if (finishReason === 'tool_calls' && Object.keys(toolAcc).length > 0) {
-      generation?.end({ output: '[tool_calls]', endTime: new Date() });
+      generation?.end({ output: '[tool_calls]' });
 
       const toolCalls = Object.values(toolAcc).map(tc => ({
         id:       tc.id || randomId(),
@@ -338,7 +502,7 @@ export async function chatStream(
       for (const tc of toolCalls) {
         logger.info('Executing tool call', { name: tc.function.name });
         const toolStart = Date.now();
-        const result = await executeTool(tc.function.name, tc.function.arguments, agentId, onMeta);
+        const result = await executeTool(tc.function.name, tc.function.arguments, agentId, onMeta, sessionId);
         logToolSpan(trace, tc.function.name, tc.function.arguments, result, Date.now() - toolStart);
         const toolMsg: ChatCompletionToolMessageParam = {
           role:         'tool',
@@ -352,13 +516,13 @@ export async function chatStream(
 
     } else if (textAccum) {
       const outputTokens = estimateTokens(textAccum);
-      generation?.end({ output: textAccum, endTime: new Date(), metadata: { outputTokens } });
+      generation?.end({ output: textAccum, metadata: { outputTokens } });
       history.push({ role: 'assistant', content: textAccum });
       saveMessage(sessionId, 'assistant', textAccum, agentId);
       logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId, outputTokens }, sessionId);
       logger.debug('Agent responded', { agentId, chars: textAccum.length });
     } else {
-      generation?.end({ endTime: new Date() });
+      generation?.end({});
     }
   }
 
@@ -373,6 +537,107 @@ export async function chatStream(
 
   // Non-blocking flush — don't await in hot path
   lf?.flushAsync().catch(() => {});
+}
+
+// ── Multi-agent orchestration ─────────────────────────────────────────────────
+
+/**
+ * Orchestrates a potentially complex task across multiple agents.
+ * - Simple messages → single chatStream call (Alfred handles)
+ * - Complex messages → decompose → execute steps → merge results
+ */
+export async function orchestrateMultiAgent(
+  rawMessage: string,
+  sessionIdIn: string | undefined,
+  onChunk: (chunk: string) => void | Promise<void>,
+  alfredId: string,
+  onMeta?: (e: MetaEvent) => void | Promise<void>,
+): Promise<string> {
+  const alfred = getAgentById(alfredId);
+  if (!alfred) throw new Error('Alfred not found');
+
+  const allAgents   = getAllAgents();
+  const sessionId   = sessionIdIn ?? createSession(alfredId, rawMessage.slice(0, 60));
+
+  // Decompose: decide if this is a single-agent or multi-agent task
+  const decomp = await decomposeTask(rawMessage, allAgents);
+
+  logHive(
+    'task_decomposed',
+    decomp.isComplex
+      ? `Multi-agent plan: ${decomp.steps.length} steps — ${decomp.reason}`
+      : `Single-agent task — ${decomp.reason}`,
+    alfredId,
+    { isComplex: decomp.isComplex, steps: decomp.steps },
+  );
+
+  // Simple path — Alfred handles directly
+  if (!decomp.isComplex || decomp.steps.length < 2) {
+    await chatStream(rawMessage, sessionId, onChunk, alfred.system_prompt ?? '', alfredId, onMeta);
+    return sessionId;
+  }
+
+  // Multi-agent path
+  await onMeta?.({
+    type:  'plan',
+    steps: decomp.steps.map((s, i) => ({ index: i, task: s.task, agent: s.agent, parallel: s.parallel })),
+  });
+
+  // Save the user message once to the parent session
+  saveMessage(sessionId, 'user', rawMessage);
+
+  const stepResults: Array<{ task: string; agent: string; result: string }> = [];
+
+  for (let i = 0; i < decomp.steps.length; i++) {
+    const step      = decomp.steps[i];
+    const stepAgent = getAgentByName(step.agent) ?? alfred;
+
+    await onMeta?.({ type: 'step_start', stepIndex: i, task: step.task, agentName: stepAgent.name });
+
+    let stepResult  = '';
+    const stepSess  = createSession(stepAgent.id, `Step ${i + 1}: ${step.task.slice(0, 50)}`);
+
+    // Build task message with context from prior steps
+    const context = stepResults.length > 0
+      ? `Context from previous steps:\n${stepResults.map(r => `${r.agent}: ${r.result.slice(0, 600)}`).join('\n\n')}\n\n---\n\nYour task: ${step.task}`
+      : step.task;
+
+    await chatStream(
+      context,
+      stepSess,
+      async (chunk) => {
+        stepResult += chunk;
+        await onMeta?.({ type: 'step_chunk', stepIndex: i, agentName: stepAgent.name, content: chunk });
+      },
+      stepAgent.system_prompt ?? '',
+      stepAgent.id,
+    );
+
+    stepResults.push({ task: step.task, agent: stepAgent.name, result: stepResult });
+    await onMeta?.({ type: 'step_done', stepIndex: i, agentName: stepAgent.name });
+
+    logHive(
+      'multi_agent_step',
+      `Step ${i + 1}/${decomp.steps.length}: "${step.task.slice(0, 60)}" by ${stepAgent.name}`,
+      stepAgent.id,
+      { stepIndex: i, chars: stepResult.length },
+    );
+  }
+
+  // Merge all step results into a final cohesive response
+  await onMeta?.({ type: 'merge_start' });
+  logHive('result_merged', `Merging ${stepResults.length} agent results`, alfredId, { steps: stepResults.length });
+
+  const merged = await mergeResults(rawMessage, stepResults);
+
+  // Stream the merged result as regular chunks
+  await onChunk(merged);
+
+  // Persist final response on the parent session
+  saveMessage(sessionId, 'assistant', merged, alfredId);
+  logAnalytics('message_sent', { role: 'assistant', length: merged.length, agentId: alfredId, multiAgent: true }, sessionId);
+
+  return sessionId;
 }
 
 // ── Agent resolution (async — may call classifier) ────────────────────────────

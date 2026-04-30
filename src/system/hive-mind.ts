@@ -13,7 +13,15 @@ export type HiveAction =
   | 'task_created'
   | 'task_updated'
   | 'agent_activated'
-  | 'agent_deactivated';
+  | 'agent_deactivated'
+  | 'task_decomposed'
+  | 'multi_agent_step'
+  | 'result_merged'
+  | 'spawn_evaluated'
+  | 'background_task_complete'
+  | 'background_task_failed'
+  | 'agent_message_sent'
+  | 'agent_task_assigned';
 
 export interface HiveEvent {
   id:         string;

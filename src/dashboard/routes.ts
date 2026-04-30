@@ -4,6 +4,7 @@ import {
   getDb, createSession, getAllAgents, getAgentById,
   createAgentRecord, updateAgentRecord, deactivateAgent, activateAgent,
   getSessions, getSessionById, getSessionMessages, updateSessionTitle, deleteSession,
+  getAgentMessages,
   type SessionRecord, type MessageRecord,
 } from '../db';
 import { config } from '../config';
@@ -12,7 +13,7 @@ import { getRecentLogs } from '../system/audit';
 import { getMemories, saveMemory } from '../memory/memory-service';
 import { getTasks, createTask, updateTask, type TaskStatus } from '../system/task-manager';
 import { configEvents } from '../system/config-watcher';
-import { chatStream, resolveAgent, type MetaEvent } from '../agent/alfred';
+import { chatStream, orchestrateMultiAgent, resolveAgent, type MetaEvent } from '../agent/alfred';
 import { spawnAgent } from '../system/spawner';
 import { getHiveEvents } from '../system/hive-mind';
 import { taskEvents, getTasksBySession, type BackgroundTask } from '../system/background-tasks';
@@ -240,7 +241,8 @@ export function registerApiRoutes(app: Hono<any>): void {
   });
     app.get('/api/analytics', (c) => { try { return c.json(getAnalyticsSummary()); } catch(e) { console.error('Analytics:',e); return c.json({error:String(e)},500); } });
   app.get('/api/logs',      (c) => c.json(getRecentLogs()));
-  app.get('/api/hive',      (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));
+  app.get('/api/hive',          (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));
+  app.get('/api/agent-messages', (c) => c.json(getAgentMessages(parseInt(c.req.query('limit') ?? '100', 10))));
 
   app.get('/api/config', (c) => {
     type Row = { key: string; value: string; description: string | null; is_secret: number };
@@ -282,14 +284,37 @@ export function registerApiRoutes(app: Hono<any>): void {
             await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_chunk', agentName: e.agentName, content: e.content }) });
           } else if (e.type === 'spawn_done') {
             await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_done', agentName: e.agentName, result: e.result }) });
+          } else if (e.type === 'plan') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'plan', steps: e.steps }) });
+          } else if (e.type === 'step_start') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'step_start', stepIndex: e.stepIndex, task: e.task, agentName: e.agentName }) });
+          } else if (e.type === 'step_chunk') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'step_chunk', stepIndex: e.stepIndex, agentName: e.agentName, content: e.content }) });
+          } else if (e.type === 'step_done') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'step_done', stepIndex: e.stepIndex, agentName: e.agentName }) });
+          } else if (e.type === 'merge_start') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'merge_start' }) });
+          } else if (e.type === 'spawn_eval') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'spawn_eval', task: e.task, shouldSpawn: e.shouldSpawn, benefit: e.benefit, reason: e.reason }) });
+          } else if (e.type === 'agent_message') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'agent_message', fromName: e.fromName, toName: e.toName, preview: e.preview }) });
+          } else if (e.type === 'agent_task_assigned') {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'agent_task_assigned', fromName: e.fromName, toName: e.toName, title: e.title, taskId: e.taskId, executing: e.executing }) });
           }
         } catch { /* stream closed */ }
       };
 
       try {
-        await chatStream(message, sessionId, async (chunk) => {
-          await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
-        }, systemPrompt, agent.id, onMeta);
+        // Use multi-agent orchestration when Alfred is handling the message
+        if (agent.name === 'Alfred') {
+          await orchestrateMultiAgent(message, sessionId, async (chunk) => {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
+          }, agent.id, onMeta);
+        } else {
+          await chatStream(message, sessionId, async (chunk) => {
+            await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
+          }, systemPrompt, agent.id, onMeta);
+        }
         await stream.writeSSE({ data: JSON.stringify({ type: 'done' }) });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -332,8 +357,15 @@ export function registerApiRoutes(app: Hono<any>): void {
         }
       };
 
+      const onCreated = async (info: { taskId: string; title: string; toName: string; fromName: string; status: string }) => {
+        try {
+          await stream.writeSSE({ data: JSON.stringify({ type: 'task_created', ...info }) });
+        } catch { /* closed */ }
+      };
+
       taskEvents.on('task_complete', onComplete);
       taskEvents.on('task_failed', onFailed);
+      taskEvents.on('task_created', onCreated);
 
       const pingId = setInterval(async () => {
         try { await stream.writeSSE({ data: JSON.stringify({ type: 'ping' }) }); }
@@ -344,6 +376,7 @@ export function registerApiRoutes(app: Hono<any>): void {
         stream.onAbort(() => {
           taskEvents.off('task_complete', onComplete);
           taskEvents.off('task_failed', onFailed);
+          taskEvents.off('task_created', onCreated);
           clearInterval(pingId);
           resolve();
         });

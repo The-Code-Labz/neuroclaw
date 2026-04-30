@@ -135,12 +135,13 @@ select:focus{border-color:var(--blue)}
     <a data-s="overview"  class="active">📊 Overview</a>
     <a data-s="chat">💬 Chat</a>
     <a data-s="agents">🤖 Agents</a>
-    <a data-s="tasks">📋 Tasks</a>
+    <a data-s="tasks">📋 Tasks<span id="tasks-badge" style="display:none;margin-left:6px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;vertical-align:middle">0</span></a>
     <a data-s="sessions">🗂 Sessions</a>
     <a data-s="memory">🧠 Memory</a>
     <a data-s="config">⚙️ Config</a>
     <a data-s="analytics">📈 Analytics</a>
     <a data-s="hive">🌐 Hive Mind</a>
+    <a data-s="comms">💌 Comms</a>
     <a data-s="logs">📜 Logs</a>
   </nav>
 </aside>
@@ -312,6 +313,13 @@ select:focus{border-color:var(--blue)}
   </div>
 
   <!-- Logs -->
+  <!-- Comms -->
+  <div id="s-comms" class="section">
+    <div class="page-header"><h2>Agent Comms</h2><button class="btn btn-primary" onclick="loadComms()">↻ Refresh</button></div>
+    <div class="tbl-wrap"><table><thead><tr><th>From</th><th>To</th><th>Message</th><th>Response</th><th>Status</th><th>Time</th></tr></thead>
+    <tbody id="tb-comms"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table></div>
+  </div>
+
   <div id="s-logs" class="section">
     <div class="page-header"><h2>Audit Logs</h2><button class="btn btn-primary" onclick="load('logs')">↻ Refresh</button></div>
     <div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Entity</th><th>ID</th><th>Details</th><th>Time</th></tr></thead>
@@ -833,6 +841,24 @@ function loadHive() {
   }).catch(function(e) { document.getElementById('tb-hive').innerHTML = '<tr><td colspan="4">' + errHtml(e.message) + '</td></tr>'; });
 }
 
+function loadComms() {
+  api('/api/agent-messages').then(function(rows) {
+    var tb = document.getElementById('tb-comms');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">No agent communications yet</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(r) {
+      var statusColor = r.status === 'responded' ? '#22c55e' : r.status === 'failed' ? '#ef4444' : '#94a3b8';
+      return '<tr>'
+        + '<td><strong>' + esc(r.from_name) + '</strong></td>'
+        + '<td>' + esc(r.to_name) + '</td>'
+        + '<td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.content) + '</td>'
+        + '<td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" class="muted">' + esc(r.response || '—') + '</td>'
+        + '<td><span style="color:' + statusColor + '">' + esc(r.status) + '</span></td>'
+        + '<td class="muted">' + ago(r.created_at) + '</td>'
+        + '</tr>';
+    }).join('');
+  }).catch(function(e) { document.getElementById('tb-comms').innerHTML = '<tr><td colspan="6">' + errHtml(e.message) + '</td></tr>'; });
+}
+
 function loadLogs() {
   api('/api/logs').then(function(rows) {
     var tb = document.getElementById('tb-logs');
@@ -975,6 +1001,7 @@ function sendChat() {
   var assistantDiv = appendMsg('assistant', '', true, null);
   var bubbleEl = assistantDiv.querySelector('.msg-bubble');
   var accText = '';
+  var stepTextMap = {};
 
   var reqBody = JSON.stringify({ message: message, agentId: agentId, sessionId: chatSessionId });
 
@@ -1038,15 +1065,99 @@ function sendChat() {
               document.getElementById('chat-messages').insertBefore(smeta, assistantDiv);
               document.getElementById('chat-messages').scrollTop = 9999;
             } else if (ev.type === 'spawn_started') {
-              // Sub-agent is now running in background — no longer blocks chat
               var smeta = document.createElement('div');
               smeta.className = 'msg meta';
               var smb = document.createElement('div');
               smb.className = 'msg-meta spawn';
-              smb.textContent = '🚀 Sub-agent "' + ev.agentName + '" working in background (task: ' + ev.taskId.slice(0,8) + '…)';
+              smb.textContent = '🚀 Sub-agent "' + ev.agentName + '" working in background…';
               smeta.appendChild(smb);
               document.getElementById('chat-messages').appendChild(smeta);
               document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'plan') {
+              // Show the multi-agent execution plan
+              var planMeta = document.createElement('div');
+              planMeta.className = 'msg meta';
+              var planMb = document.createElement('div');
+              planMb.className = 'msg-meta';
+              planMb.style.cssText = 'background:rgba(188,140,255,.1);border-color:rgba(188,140,255,.3);color:var(--purple);max-width:420px;white-space:normal;line-height:1.5';
+              planMb.innerHTML = '🧠 <strong>Multi-agent plan (' + ev.steps.length + ' steps)</strong><br>'
+                + ev.steps.map(function(s, i) {
+                  return '<span id="plan-step-'+i+'" style="display:block;margin-top:3px;opacity:.7">⬜ Step '+(i+1)+': '+esc(s.task)+' → <em>'+esc(s.agent)+'</em></span>';
+                }).join('');
+              planMeta.appendChild(planMb);
+              document.getElementById('chat-messages').insertBefore(planMeta, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'step_start') {
+              // Mark step as running
+              var stepEl = document.getElementById('plan-step-'+ev.stepIndex);
+              if (stepEl) { stepEl.style.opacity = '1'; stepEl.textContent = '▶ Step '+(ev.stepIndex+1)+': '+ev.task+' → '+ev.agentName; }
+              // Create step output bubble
+              var stepDiv = document.createElement('div');
+              stepDiv.id = 'step-bubble-'+ev.stepIndex;
+              stepDiv.className = 'msg assistant streaming';
+              var stepWho = document.createElement('div');
+              stepWho.className = 'msg-who';
+              stepWho.textContent = ev.agentName + ' · step ' + (ev.stepIndex+1);
+              var stepBub = document.createElement('div');
+              stepBub.className = 'msg-bubble';
+              stepDiv.appendChild(stepWho);
+              stepDiv.appendChild(stepBub);
+              document.getElementById('chat-messages').insertBefore(stepDiv, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
+              stepTextMap[ev.stepIndex] = '';
+            } else if (ev.type === 'step_chunk') {
+              var sb = document.getElementById('step-bubble-'+ev.stepIndex);
+              if (sb) {
+                stepTextMap[ev.stepIndex] = (stepTextMap[ev.stepIndex] || '') + ev.content;
+                var bub = sb.querySelector('.msg-bubble');
+                if (bub) bub.textContent = stepTextMap[ev.stepIndex];
+                document.getElementById('chat-messages').scrollTop = 9999;
+              }
+            } else if (ev.type === 'step_done') {
+              var sd = document.getElementById('step-bubble-'+ev.stepIndex);
+              if (sd) sd.classList.remove('streaming');
+              var stepEl = document.getElementById('plan-step-'+ev.stepIndex);
+              if (stepEl) { stepEl.textContent = '✅ Step '+(ev.stepIndex+1)+': '+ev.agentName+' — done'; stepEl.style.color = 'var(--green)'; }
+            } else if (ev.type === 'merge_start') {
+              var mMeta = document.createElement('div');
+              mMeta.className = 'msg meta';
+              var mMb = document.createElement('div');
+              mMb.className = 'msg-meta';
+              mMb.style.cssText = 'background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.3);color:var(--blue)';
+              mMb.textContent = '🔀 Synthesizing results…';
+              mMeta.appendChild(mMb);
+              document.getElementById('chat-messages').insertBefore(mMeta, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'spawn_eval') {
+              var seMeta = document.createElement('div');
+              seMeta.className = 'msg meta';
+              var seMb = document.createElement('div');
+              seMb.className = 'msg-meta ' + (ev.shouldSpawn ? 'spawn' : '');
+              seMb.style.cssText = ev.shouldSpawn ? '' : 'background:rgba(139,148,158,.1);border-color:rgba(139,148,158,.3)';
+              seMb.textContent = (ev.shouldSpawn ? '🧬 Spawn approved' : '🚫 Spawn blocked') + ' — ' + ev.reason + ' (benefit: ' + Math.round(ev.benefit*100) + '%)';
+              seMeta.appendChild(seMb);
+              document.getElementById('chat-messages').insertBefore(seMeta, assistantDiv);
+            } else if (ev.type === 'agent_message') {
+              var amMeta = document.createElement('div');
+              amMeta.className = 'msg meta';
+              var amMb = document.createElement('div');
+              amMb.className = 'msg-meta';
+              amMb.style.cssText = 'background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35);color:#fbbf24';
+              amMb.textContent = '💬 ' + ev.fromName + ' → ' + ev.toName + ': "' + ev.preview + (ev.preview.length >= 80 ? '…' : '') + '"';
+              amMeta.appendChild(amMb);
+              document.getElementById('chat-messages').insertBefore(amMeta, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
+            } else if (ev.type === 'agent_task_assigned') {
+              var atMeta = document.createElement('div');
+              atMeta.className = 'msg meta';
+              var atMb = document.createElement('div');
+              atMb.className = 'msg-meta';
+              atMb.style.cssText = 'background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);color:#22c55e';
+              atMb.textContent = '📋 ' + ev.fromName + ' assigned "' + ev.title + '" to ' + ev.toName + (ev.executing ? ' (executing now)' : '');
+              atMeta.appendChild(atMb);
+              document.getElementById('chat-messages').insertBefore(atMeta, assistantDiv);
+              document.getElementById('chat-messages').scrollTop = 9999;
+              bumpTaskBadge();
             } else if (ev.type === 'done') {
               assistantDiv.classList.remove('streaming');
               chatStreaming = false;
@@ -1113,7 +1224,10 @@ function connectTaskWatch() {
   es.onmessage = function(e) {
     try {
       var data = JSON.parse(e.data);
-      if (data.type === 'task_complete') {
+      if (data.type === 'task_created') {
+        bumpTaskBadge();
+        showToast('📋 Task "' + data.title + '" assigned to ' + data.toName, 4000);
+      } else if (data.type === 'task_complete') {
         // Show the completed sub-agent result as a new message bubble
         var container = document.getElementById('chat-messages');
         if (container) {
@@ -1180,9 +1294,23 @@ var loaders = {
   config:   loadConfig,
   analytics:loadAnalytics,
   hive:     loadHive,
+  comms:    loadComms,
   logs:     loadLogs
 };
 var current = 'overview';
+
+var taskBadgeCount = 0;
+function bumpTaskBadge() {
+  if (current === 'tasks') { loadTasks(); return; }
+  taskBadgeCount++;
+  var b = document.getElementById('tasks-badge');
+  if (b) { b.textContent = String(taskBadgeCount); b.style.display = 'inline'; }
+}
+function clearTaskBadge() {
+  taskBadgeCount = 0;
+  var b = document.getElementById('tasks-badge');
+  if (b) { b.style.display = 'none'; b.textContent = '0'; }
+}
 
 function show(name) {
   document.querySelectorAll('.section').forEach(function(el) { el.classList.remove('active'); });
@@ -1192,6 +1320,7 @@ function show(name) {
   if (sec)  sec.classList.add('active');
   if (link) link.classList.add('active');
   current = name;
+  if (name === 'tasks') clearTaskBadge();
   load(name);
 }
 

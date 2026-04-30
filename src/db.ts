@@ -110,6 +110,21 @@ function initSchema(database: Database.Database): void {
       metadata   TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id            TEXT PRIMARY KEY,
+      from_agent_id TEXT REFERENCES agents(id),
+      from_name     TEXT NOT NULL,
+      to_agent_id   TEXT REFERENCES agents(id),
+      to_name       TEXT NOT NULL,
+      content       TEXT NOT NULL,
+      response      TEXT,
+      status        TEXT DEFAULT 'pending' CHECK(status IN ('pending','delivered','responded','failed')),
+      session_id    TEXT,
+      task_id       TEXT,
+      created_at    TEXT DEFAULT (datetime('now')),
+      updated_at    TEXT DEFAULT (datetime('now'))
+    );
   `);
   logger.info('Database schema initialized');
 }
@@ -470,4 +485,68 @@ export function logAnalytics(eventType: string, data?: unknown, sessionId?: stri
     data !== undefined ? JSON.stringify(data) : null,
     sessionId ?? null,
   );
+}
+
+// ── Agent messages (inter-agent comms) ───────────────────────────────────────
+
+export interface AgentMessageRecord {
+  id:            string;
+  from_agent_id: string;
+  from_name:     string;
+  to_agent_id:   string;
+  to_name:       string;
+  content:       string;
+  response:      string | null;
+  status:        'pending' | 'delivered' | 'responded' | 'failed';
+  session_id:    string | null;
+  task_id:       string | null;
+  created_at:    string;
+  updated_at:    string;
+}
+
+export function createAgentMessage(
+  fromAgentId: string,
+  fromName: string,
+  toAgentId: string,
+  toName: string,
+  content: string,
+  sessionId?: string,
+): AgentMessageRecord {
+  const id = randomUUID();
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO agent_messages
+      (id, from_agent_id, from_name, to_agent_id, to_name, content, session_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, fromAgentId, fromName, toAgentId, toName, content, sessionId ?? null);
+  return db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(id) as AgentMessageRecord;
+}
+
+export function updateAgentMessageResponse(
+  id: string,
+  response: string,
+  status: 'responded' | 'failed' = 'responded',
+  taskId?: string,
+): void {
+  getDb().prepare(`
+    UPDATE agent_messages
+    SET response = ?, status = ?, task_id = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(response, status, taskId ?? null, id);
+}
+
+export function getAgentMessages(limit = 100): AgentMessageRecord[] {
+  return getDb()
+    .prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as AgentMessageRecord[];
+}
+
+export function getAgentMessagesByAgent(agentId: string, limit = 50): AgentMessageRecord[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM agent_messages
+      WHERE from_agent_id = ? OR to_agent_id = ?
+      ORDER BY created_at DESC LIMIT ?
+    `)
+    .all(agentId, agentId, limit) as AgentMessageRecord[];
 }

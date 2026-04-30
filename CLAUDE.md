@@ -31,6 +31,10 @@ Two entry points share the same SQLite database and agent registry:
 
 **Dynamic team awareness**: Every call to `chatStream()` refreshes the system message (history[0]) from the live DB. Alfred gets a fully rebuilt orchestrator prompt listing all active non-temp agents. Sub-agents get their stored prompt plus a "Active team members" section appended. This means user-created agents are immediately visible to all agents without a restart.
 
+**Task decomposition + multi-agent orchestration** (`src/system/decomposer.ts`, `src/agent/alfred.ts → orchestrateMultiAgent()`): When Alfred handles a message, `decomposeTask()` makes an LLM call to decide if it needs multiple specialists. If complex, `orchestrateMultiAgent()` runs steps sequentially (with prior-step context chaining), collects results, and calls `mergeResults()` to produce a unified final response. All steps are streamed via `step_chunk` SSE events; the merged output comes via regular `chunk` events.
+
+**Spawn intelligence** (`src/system/decomposer.ts → evaluateSpawn()`): Before any `spawn_agent` tool call executes, `evaluateSpawn()` makes an LLM call to decide if spawning is genuinely justified (benefit > threshold, no existing agent can handle it). If not justified, spawn is blocked and the LLM is told to use an existing agent. The decision is logged to Hive Mind as `spawn_evaluated`.
+
 **Temporary agent spawning** (`src/system/spawner.ts`): When `SPAWN_AGENTS_ENABLED=true`, agents with `spawn_depth < 3` get the `spawn_agent` LLM tool. Spawned agents run their task **in the background** (non-blocking) so the main chat remains responsive. When the background task completes, the temp agent is **auto-deactivated**.
 
 **Background task runner** (`src/system/background-tasks.ts`): Manages async sub-agent execution. Emits `task_complete` and `task_failed` events for SSE delivery. Auto-deactivates temp agents on completion.
@@ -94,7 +98,8 @@ Task status flow: `todo` → `doing` → `review` → `done`.
 
 | File | Purpose |
 |---|---|
-| `src/agent/alfred.ts` | `chatStream()`, `resolveAgent()`, dynamic prompt builders |
+| `src/agent/alfred.ts` | `chatStream()`, `orchestrateMultiAgent()`, `resolveAgent()`, dynamic prompt builders |
+| `src/system/decomposer.ts` | `decomposeTask()`, `mergeResults()`, `evaluateSpawn()` |
 | `src/system/router.ts` | `classifyRoute()` — LLM classifier for auto-delegation |
 | `src/system/background-tasks.ts` | Async sub-agent task runner, auto-deactivates temp agents |
 | `src/system/spawner.ts` | `spawnAgent()` — validates and creates temp agents |
