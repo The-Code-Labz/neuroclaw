@@ -346,7 +346,22 @@ select:focus{border-color:var(--blue)}
         <option value="agent">agent</option>
       </select>
     </div>
-    <div class="field"><label>Model</label><input type="text" id="af-model" placeholder="gpt-5.1 (leave blank for default)"/></div>
+    <div class="field">
+      <label>Provider</label>
+      <select id="af-provider" onchange="updateAgentModelField()">
+        <option value="openai" selected>OpenAI / VoidAI</option>
+        <option value="anthropic">Claude (Anthropic)</option>
+      </select>
+    </div>
+    <div class="field" id="af-model-openai-wrap"><label>Model</label><input type="text" id="af-model" placeholder="gpt-5.1 (leave blank for default)"/></div>
+    <div class="field" id="af-model-claude-wrap" style="display:none">
+      <label>Claude Model</label>
+      <select id="af-model-claude">
+        <option value="claude-opus-4-7">claude-opus-4-7 (most capable)</option>
+        <option value="claude-sonnet-4-6" selected>claude-sonnet-4-6 (balanced)</option>
+        <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001 (fast)</option>
+      </select>
+    </div>
     <div class="field"><label>Capabilities (comma-separated)</label><input type="text" id="af-caps" placeholder="research, summarize, fact-check"/></div>
     <div class="field"><label>System Prompt</label><textarea id="af-prompt" rows="7" placeholder="You are…"></textarea></div>
     <div class="modal-actions">
@@ -446,15 +461,31 @@ function closeModal(name) { document.getElementById(name + '-modal').style.displ
 
 var editingAgentId = null;
 
+function updateAgentModelField() {
+  var provider = document.getElementById('af-provider').value;
+  var openAiWrap = document.getElementById('af-model-openai-wrap');
+  var claudeWrap = document.getElementById('af-model-claude-wrap');
+  if (provider === 'anthropic') {
+    openAiWrap.style.display = 'none';
+    claudeWrap.style.display = '';
+  } else {
+    openAiWrap.style.display = '';
+    claudeWrap.style.display = 'none';
+  }
+}
+
 function openNewAgent() {
   editingAgentId = null;
   document.getElementById('agent-modal-title').textContent = 'New Agent';
-  document.getElementById('af-name').value   = '';
-  document.getElementById('af-desc').value   = '';
-  document.getElementById('af-role').value   = 'specialist';
-  document.getElementById('af-model').value  = '';
-  document.getElementById('af-caps').value   = '';
-  document.getElementById('af-prompt').value = '';
+  document.getElementById('af-name').value     = '';
+  document.getElementById('af-desc').value     = '';
+  document.getElementById('af-role').value     = 'specialist';
+  document.getElementById('af-provider').value = 'openai';
+  document.getElementById('af-model').value    = '';
+  document.getElementById('af-model-claude').value = 'claude-sonnet-4-6';
+  document.getElementById('af-caps').value     = '';
+  document.getElementById('af-prompt').value   = '';
+  updateAgentModelField();
   document.getElementById('agent-modal').style.display = 'flex';
   setTimeout(function() { document.getElementById('af-name').focus(); }, 80);
 }
@@ -464,10 +495,19 @@ function openEditAgent(id) {
   if (!a) return;
   editingAgentId = id;
   document.getElementById('agent-modal-title').textContent = 'Edit Agent — ' + a.name;
-  document.getElementById('af-name').value   = a.name || '';
-  document.getElementById('af-desc').value   = a.description || '';
-  document.getElementById('af-role').value   = a.role || 'agent';
-  document.getElementById('af-model').value  = a.model || '';
+  document.getElementById('af-name').value     = a.name || '';
+  document.getElementById('af-desc').value     = a.description || '';
+  document.getElementById('af-role').value     = a.role || 'agent';
+  var provider = a.provider || 'openai';
+  document.getElementById('af-provider').value = provider;
+  if (provider === 'anthropic') {
+    document.getElementById('af-model-claude').value = a.model || 'claude-sonnet-4-6';
+    document.getElementById('af-model').value = '';
+  } else {
+    document.getElementById('af-model').value = a.model || '';
+    document.getElementById('af-model-claude').value = 'claude-sonnet-4-6';
+  }
+  updateAgentModelField();
   var caps = [];
   try { caps = JSON.parse(a.capabilities || '[]'); } catch(_) {}
   document.getElementById('af-caps').value   = caps.join(', ');
@@ -481,12 +521,16 @@ function submitAgent() {
 
   var capsRaw = document.getElementById('af-caps').value.trim();
   var caps = capsRaw ? capsRaw.split(',').map(function(c) { return c.trim(); }).filter(Boolean) : [];
-  var modelVal = document.getElementById('af-model').value.trim();
+  var provider = document.getElementById('af-provider').value;
+  var modelVal = provider === 'anthropic'
+    ? document.getElementById('af-model-claude').value
+    : document.getElementById('af-model').value.trim();
 
   var body = {
     name:          name,
     description:   document.getElementById('af-desc').value.trim(),
     role:          document.getElementById('af-role').value,
+    provider:      provider,
     model:         modelVal || undefined,
     capabilities:  caps,
     system_prompt: document.getElementById('af-prompt').value.trim()
@@ -547,14 +591,21 @@ function filterAgents(filter) {
 /* ── Section loaders ────────────────────────────────────────────────────────── */
 function loadOverview() {
   api('/api/status').then(function(s) {
+    var an = s.anthropic || {};
+    var anLabel = an.source === 'cli_oauth'
+      ? (an.expired ? '⚠ CLI (expired)' : '✓ Claude CLI (' + (an.subscriptionType || 'oauth') + ')')
+      : an.source === 'api_key' ? '✓ API Key'
+      : '✗ Not configured';
+    var anColor = (an.source !== 'none' && !an.expired) ? 'var(--green)' : an.expired ? 'var(--yellow)' : 'var(--red)';
     var cards = [
-      {l:'Status',      v:'<span class="dot"></span>Online', sub:'System running'},
-      {l:'Model',       v:s.model||'—',                      sub:'Active model'},
-      {l:'Agents',      v:s.agents,                          sub:'Active agents'},
-      {l:'Temp Agents', v:s.tempAgents||0,                   sub:'Spawned, running'},
-      {l:'Sessions',    v:s.sessions,                        sub:'Total sessions'},
-      {l:'Messages',    v:s.messages,                        sub:'Total messages'},
-      {l:'Uptime',      v:Math.floor(s.uptime)+'s',          sub:'Since last start'},
+      {l:'Status',      v:'<span class="dot"></span>Online',                            sub:'System running'},
+      {l:'Model',       v:s.model||'—',                                                 sub:'VoidAI model'},
+      {l:'Claude Auth', v:'<span style="color:'+anColor+'">'+esc(anLabel)+'</span>',   sub:'Anthropic / Claude CLI'},
+      {l:'Agents',      v:s.agents,                                                     sub:'Active agents'},
+      {l:'Temp Agents', v:s.tempAgents||0,                                              sub:'Spawned, running'},
+      {l:'Sessions',    v:s.sessions,                                                   sub:'Total sessions'},
+      {l:'Messages',    v:s.messages,                                                   sub:'Total messages'},
+      {l:'Uptime',      v:Math.floor(s.uptime)+'s',                                    sub:'Since last start'},
     ];
     document.getElementById('ov-stats').innerHTML = cards.map(function(c) {
       return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div><div class="card-sub">'+c.sub+'</div></div>';
@@ -608,6 +659,7 @@ function loadAgents() {
         +'<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
         +badge(a.status)
         +badge(a.role)
+        +(a.provider === 'anthropic' ? '<span style="font-size:10px;background:rgba(210,120,255,.15);color:#d278ff;border:1px solid rgba(210,120,255,.35);border-radius:4px;padding:1px 6px">Claude</span>' : '')
         +'<span class="muted" style="font-size:11px">'+esc(a.model||'')+'</span>'
         +'</div></div>'
         +(a.system_prompt

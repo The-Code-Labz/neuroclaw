@@ -139,6 +139,7 @@ function runMigrations(database: Database.Database): void {
     "ALTER TABLE agents ADD COLUMN created_by_agent_id TEXT",
     "ALTER TABLE agents ADD COLUMN expires_at TEXT",
     'ALTER TABLE messages ADD COLUMN agent_id TEXT',
+    "ALTER TABLE agents ADD COLUMN provider TEXT DEFAULT 'openai'",
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -294,6 +295,7 @@ export interface AgentRecord {
   parent_agent_id:     string | null;
   created_by_agent_id: string | null;
   expires_at:          string | null;
+  provider:            string;
   created_at:          string;
   updated_at:          string;
 }
@@ -322,23 +324,27 @@ export function createAgentRecord(
     model?: string;
     role?: string;
     capabilities?: string[];
+    provider?: string;
   } = {},
 ): AgentRecord {
   const id = randomUUID();
   const db = getDb();
+  const provider = opts.provider ?? 'openai';
+  const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-6' : config.voidai.model;
   db.prepare(`
-    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities, provider)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     name,
     opts.description ?? null,
     opts.systemPrompt ?? null,
-    opts.model ?? config.voidai.model,
+    opts.model ?? defaultModel,
     opts.role ?? 'agent',
     JSON.stringify(opts.capabilities ?? []),
+    provider,
   );
-  logAudit('agent_created', 'agent', id, { name });
+  logAudit('agent_created', 'agent', id, { name, provider });
   return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord;
 }
 
@@ -352,6 +358,7 @@ export function updateAgentRecord(
     role?: string;
     capabilities?: string[];
     status?: string;
+    provider?: string;
   },
 ): void {
   const sets: string[] = ["updated_at = datetime('now')"];
@@ -364,6 +371,7 @@ export function updateAgentRecord(
   if (fields.role          !== undefined) { sets.push('role = ?');          params.push(fields.role); }
   if (fields.capabilities  !== undefined) { sets.push('capabilities = ?');  params.push(JSON.stringify(fields.capabilities)); }
   if (fields.status        !== undefined) { sets.push('status = ?');        params.push(fields.status); }
+  if (fields.provider      !== undefined) { sets.push('provider = ?');      params.push(fields.provider); }
 
   if (sets.length === 1) return;
   params.push(id);

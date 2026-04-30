@@ -44,4 +44,10 @@ export const config = {
       enabled:    !!(process.env.LANGFUSE_SECRET_KEY?.trim() && process.env.LANGFUSE_PUBLIC_KEY?.trim()),
     };
   },
+  get anthropic() {
+    return {
+      apiKey:  process.env.ANTHROPIC_API_KEY?.trim() ?? '',
+      enabled: !!(process.env.ANTHROPIC_API_KEY?.trim()),
+    };
+  },
 };

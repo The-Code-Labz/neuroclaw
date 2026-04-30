@@ -17,6 +17,7 @@ import { chatStream, orchestrateMultiAgent, resolveAgent, type MetaEvent } from 
 import { spawnAgent } from '../system/spawner';
 import { getHiveEvents } from '../system/hive-mind';
 import { taskEvents, getTasksBySession, type BackgroundTask } from '../system/background-tasks';
+import { getAnthropicAuthStatus } from '../agent/anthropic-client';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerApiRoutes(app: Hono<any>): void {
@@ -30,14 +31,16 @@ export function registerApiRoutes(app: Hono<any>): void {
   // ── Status ───────────────────────────────────────────────────────────────
   app.get('/api/status', (c) => {
     const db = getDb();
+    const anthropic = getAnthropicAuthStatus();
     return c.json({
-      status:   'online',
-      model:    config.voidai.model,
-      uptime:   process.uptime(),
-      agents:   (db.prepare("SELECT COUNT(*) as n FROM agents WHERE status = 'active'").get() as { n: number }).n,
-      sessions: (db.prepare('SELECT COUNT(*) as n FROM sessions').get() as { n: number }).n,
-      messages: (db.prepare('SELECT COUNT(*) as n FROM messages').get() as { n: number }).n,
+      status:     'online',
+      model:      config.voidai.model,
+      uptime:     process.uptime(),
+      agents:     (db.prepare("SELECT COUNT(*) as n FROM agents WHERE status = 'active'").get() as { n: number }).n,
+      sessions:   (db.prepare('SELECT COUNT(*) as n FROM sessions').get() as { n: number }).n,
+      messages:   (db.prepare('SELECT COUNT(*) as n FROM messages').get() as { n: number }).n,
       tempAgents: (db.prepare("SELECT COUNT(*) as n FROM agents WHERE temporary = 1 AND status = 'active'").get() as { n: number }).n,
+      anthropic,
     });
   });
 
@@ -100,7 +103,7 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.get('/api/agents', (c) => c.json(getAllAgents()));
 
   app.post('/api/agents', async (c) => {
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[] };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const name = (body.name ?? '').trim();
@@ -109,12 +112,15 @@ export function registerApiRoutes(app: Hono<any>): void {
       return c.json({ error: 'An agent with that name already exists' }, 409);
     }
 
+    const provider    = body.provider ?? 'openai';
+    const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-6' : config.voidai.model;
     const agent = createAgentRecord(name, {
       description:  body.description?.trim(),
       systemPrompt: body.system_prompt?.trim(),
-      model:        body.model?.trim() || config.voidai.model,
+      model:        body.model?.trim() || defaultModel,
       role:         body.role ?? 'agent',
       capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+      provider,
     });
     return c.json(agent, 201);
   });
@@ -124,7 +130,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     const agent = getAgentById(id);
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
 
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     if (agent.name === 'Alfred' && body.name && body.name.trim() !== 'Alfred') {
@@ -139,6 +145,7 @@ export function registerApiRoutes(app: Hono<any>): void {
       role:          body.role,
       capabilities:  Array.isArray(body.capabilities) ? body.capabilities : undefined,
       status:        body.status,
+      provider:      body.provider,
     });
     return c.json(getAgentById(id));
   });

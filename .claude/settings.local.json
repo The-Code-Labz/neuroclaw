@@ -11,7 +11,18 @@
       "Bash(node --input-type=module)",
       "Bash(echo \"JS PARSE: $?\")",
       "Bash(pkill -f \"tsx src/dashboard\")",
-      "Bash(kill %%)"
+      "Bash(kill %%)",
+      "Bash(npm install *)",
+      "Bash(node -e \"const a = require\\('@anthropic-ai/sdk'\\); console.log\\(Object.keys\\(a\\)\\)\")",
+      "Read(//root/.claude/**)",
+      "Read(//root/.config/**)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['claudeAiOauth']['refreshToken'][:30]\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); o=d.get\\('claudeAiOauth',{}\\); print\\('hasAccessToken:', bool\\(o.get\\('accessToken'\\)\\)\\); print\\('subscriptionType:', o.get\\('subscriptionType'\\)\\); print\\('expiresAt:', o.get\\('expiresAt'\\)\\); print\\('scopes:', o.get\\('scopes'\\)\\)\")",
+      "Bash(printenv ANTHROPIC_API_KEY)",
+      "Bash(npm view *)",
+      "WebFetch(domain:docs.claude.com)",
+      "Bash(grep -aoE \"anthropic-billing-header[^A-Z]{0,40}|billing-header['\\\\\"][^'\\\\\"]+['\\\\\"]\" /root/.local/share/claude/versions/2.1.123)",
+      "Bash(grep -aoE \"['\\\\\"]User-Agent['\\\\\"][^,}]{0,100}|setHeader\\\\\\(['\\\\\"][^'\\\\\"]+['\\\\\"], ['\\\\\"][^'\\\\\"]+['\\\\\"]\\\\\\)\" /root/.local/share/claude/versions/2.1.123)"
     ]
   }
 }

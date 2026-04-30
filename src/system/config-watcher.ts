@@ -4,6 +4,7 @@ import { EventEmitter } from 'events';
 import dotenv from 'dotenv';
 import { getDb } from '../db';
 import { resetClient } from '../agent/openai-client';
+import { resetAnthropicClient } from '../agent/anthropic-client';
 import { logger } from '../utils/logger';
 
 // Subscribers (dashboard SSE connections) listen on this emitter
@@ -51,7 +52,8 @@ export function startConfigWatcher(): void {
         lastMtime = stat.mtimeMs;
         dotenv.config({ path: envPath, override: true });
         syncConfigToDb();
-        resetClient(); // force new OpenAI client with updated key
+        resetClient();           // force new OpenAI client with updated key
+        resetAnthropicClient(); // force new Anthropic client with updated key
         configEvents.emit('change');
         logger.info('.env changed — config reloaded and client reset');
       }

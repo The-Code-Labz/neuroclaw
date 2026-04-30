@@ -4,7 +4,9 @@ import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionToolMessageParam,
 } from 'openai/resources';
+import Anthropic from '@anthropic-ai/sdk';
 import { getClient } from './openai-client';
+import { getAnthropicClient, prefixSystemPromptForOAuth } from './anthropic-client';
 import { config } from '../config';
 import {
   saveMessage, logAnalytics, createSession,
@@ -154,6 +156,26 @@ function getOrCreateHistory(
     }
   }
   return sessionHistories.get(key)!;
+}
+
+// Anthropic history — keyed the same way as OpenAI history
+const sessionHistoriesAnthropic = new Map<string, Anthropic.MessageParam[]>();
+
+function getOrCreateAnthropicHistory(
+  sessionId: string,
+  agentId?: string,
+): Anthropic.MessageParam[] {
+  const key = historyKey(sessionId, agentId);
+  if (!sessionHistoriesAnthropic.has(key)) {
+    const dbMessages = getSessionMessages(sessionId);
+    const restored: Anthropic.MessageParam[] = [];
+    for (const m of dbMessages) {
+      if (m.role === 'user') restored.push({ role: 'user', content: m.content });
+      else if (m.role === 'assistant') restored.push({ role: 'assistant', content: m.content });
+    }
+    sessionHistoriesAnthropic.set(key, restored);
+  }
+  return sessionHistoriesAnthropic.get(key)!;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
@@ -400,7 +422,7 @@ async function executeTool(
  *
  * @param onMeta  Optional callback for structured events (route, spawn) to relay via SSE.
  */
-export async function chatStream(
+async function chatStreamOpenAI(
   userMessage: string,
   sessionId: string,
   onChunk: (chunk: string) => void | Promise<void>,
@@ -537,6 +559,160 @@ export async function chatStream(
 
   // Non-blocking flush — don't await in hot path
   lf?.flushAsync().catch(() => {});
+}
+
+// ── Anthropic streaming ───────────────────────────────────────────────────────
+
+async function chatStreamAnthropic(
+  userMessage: string,
+  sessionId: string,
+  onChunk: (chunk: string) => void | Promise<void>,
+  systemPrompt: string,
+  agentId?: string,
+  onMeta?: (e: MetaEvent) => void | Promise<void>,
+): Promise<void> {
+  const history = getOrCreateAnthropicHistory(sessionId, agentId);
+  history.push({ role: 'user', content: userMessage });
+  saveMessage(sessionId, 'user', userMessage);
+  logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
+
+  const agentRecord = agentId ? getAgentById(agentId) : undefined;
+  const openAiTools = buildTools(agentRecord);
+  const anthropicTools: Anthropic.Messages.Tool[] = openAiTools.map(t => ({
+    name:         t.function.name,
+    description:  t.function.description ?? '',
+    input_schema: t.function.parameters as Anthropic.Messages.Tool.InputSchema,
+  }));
+
+  // Refresh dynamic system prompt (same logic as OpenAI path)
+  const allAgents = getAllAgents();
+  let activeSystemPrompt = systemPrompt;
+  if (agentRecord?.name === 'Alfred') {
+    activeSystemPrompt = buildOrchestratorPrompt(allAgents);
+  } else if (agentRecord) {
+    activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
+  }
+
+  const model = agentRecord?.model ?? 'claude-sonnet-4-6';
+  const lf     = getLangfuse();
+  const trace  = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
+
+  const MAX_TOOL_ITERATIONS = 5;
+  let iteration    = 0;
+  let continueLoop = true;
+
+  while (continueLoop && iteration < MAX_TOOL_ITERATIONS) {
+    iteration++;
+    continueLoop = false;
+
+    const genStart  = Date.now();
+    const inputText = history.map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('');
+    const generation = trace?.generation({
+      name:      `completion-${iteration}`,
+      model,
+      input:     history,
+      startTime: new Date(genStart),
+      metadata:  { inputTokens: estimateTokens(inputText), iteration },
+    });
+
+    const stream = getAnthropicClient().messages.stream({
+      model,
+      max_tokens: 8096,
+      system: prefixSystemPromptForOAuth(activeSystemPrompt),
+      messages: history,
+      ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
+    });
+
+    let textAccum = '';
+    const toolBlocks = new Map<number, { id: string; name: string; inputAcc: string }>();
+    let stopReason: string | null = null;
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_start') {
+        if (event.content_block.type === 'tool_use') {
+          toolBlocks.set(event.index, { id: event.content_block.id, name: event.content_block.name, inputAcc: '' });
+        }
+      } else if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          await onChunk(event.delta.text);
+          textAccum += event.delta.text;
+        } else if (event.delta.type === 'input_json_delta') {
+          const tb = toolBlocks.get(event.index);
+          if (tb) tb.inputAcc += event.delta.partial_json;
+        }
+      } else if (event.type === 'message_delta') {
+        stopReason = event.delta.stop_reason ?? null;
+      }
+    }
+
+    if (stopReason === 'tool_use' && toolBlocks.size > 0) {
+      generation?.end({ output: '[tool_use]' });
+
+      // Assistant message with text + tool_use content blocks
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const assistantContent: any[] = [];
+      if (textAccum) assistantContent.push({ type: 'text', text: textAccum });
+      for (const [, tb] of toolBlocks) {
+        assistantContent.push({
+          type:  'tool_use',
+          id:    tb.id,
+          name:  tb.name,
+          input: (() => { try { return JSON.parse(tb.inputAcc || '{}'); } catch { return {}; } })(),
+        });
+      }
+      history.push({ role: 'assistant', content: assistantContent as Anthropic.Messages.ContentBlockParam[] });
+
+      // Execute tools and build tool_result user message
+      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+      for (const [, tb] of toolBlocks) {
+        logger.info('Executing tool call (Anthropic)', { name: tb.name });
+        const toolStart = Date.now();
+        const result = await executeTool(tb.name, tb.inputAcc, agentId, onMeta, sessionId);
+        logToolSpan(trace, tb.name, tb.inputAcc, result, Date.now() - toolStart);
+        toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
+      }
+      history.push({ role: 'user', content: toolResults });
+      continueLoop = true;
+
+    } else if (textAccum) {
+      const outputTokens = estimateTokens(textAccum);
+      generation?.end({ output: textAccum, metadata: { outputTokens } });
+      history.push({ role: 'assistant', content: textAccum });
+      saveMessage(sessionId, 'assistant', textAccum, agentId);
+      logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId, outputTokens }, sessionId);
+      logger.debug('Anthropic agent responded', { agentId, chars: textAccum.length });
+    } else {
+      generation?.end({});
+    }
+  }
+
+  if (trace) {
+    const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+    const output = typeof lastAssistant?.content === 'string' ? lastAssistant.content : undefined;
+    trace.update({ output, metadata: { iterations: iteration } });
+  }
+
+  lf?.flushAsync().catch(() => {});
+}
+
+// ── Public chatStream dispatcher ─────────────────────────────────────────────
+
+/**
+ * Routes to the correct streaming implementation based on agent provider.
+ */
+export async function chatStream(
+  userMessage: string,
+  sessionId: string,
+  onChunk: (chunk: string) => void | Promise<void>,
+  systemPrompt: string,
+  agentId?: string,
+  onMeta?: (e: MetaEvent) => void | Promise<void>,
+): Promise<void> {
+  const agentRecord = agentId ? getAgentById(agentId) : undefined;
+  if (agentRecord?.provider === 'anthropic') {
+    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
+  }
+  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
 }
 
 // ── Multi-agent orchestration ─────────────────────────────────────────────────
@@ -709,9 +885,13 @@ export async function chat(userMessage: string, sessionId: string): Promise<void
 export function clearHistory(sessionId: string, agentId?: string): void {
   if (agentId) {
     sessionHistories.delete(historyKey(sessionId, agentId));
+    sessionHistoriesAnthropic.delete(historyKey(sessionId, agentId));
   } else {
     for (const key of sessionHistories.keys()) {
       if (key.startsWith(sessionId)) sessionHistories.delete(key);
+    }
+    for (const key of sessionHistoriesAnthropic.keys()) {
+      if (key.startsWith(sessionId)) sessionHistoriesAnthropic.delete(key);
     }
   }
 }
