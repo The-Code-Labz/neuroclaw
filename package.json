@@ -9,9 +9,11 @@
     "dev:cli": "tsx src/index.ts",
     "dashboard:once": "tsx src/dashboard/server.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "check:claude": "tsx src/diagnostics/claude-check.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.123",
     "@anthropic-ai/sdk": "^0.91.1",
     "@hono/node-server": "^1.12.0",
     "better-sqlite3": "^11.1.2",

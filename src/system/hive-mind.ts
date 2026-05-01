@@ -21,7 +21,14 @@ export type HiveAction =
   | 'background_task_complete'
   | 'background_task_failed'
   | 'agent_message_sent'
-  | 'agent_task_assigned';
+  | 'agent_task_assigned'
+  | 'claude_cli_throttled'
+  | 'memory_extracted'
+  | 'memory_skipped'
+  | 'memory_capped'
+  | 'triage_llm_used'
+  | 'triage_depth_penalty'
+  | 'triage_budget_downgrade';
 
 export interface HiveEvent {
   id:         string;

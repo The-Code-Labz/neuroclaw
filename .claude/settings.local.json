@@ -22,7 +22,25 @@
       "Bash(npm view *)",
       "WebFetch(domain:docs.claude.com)",
       "Bash(grep -aoE \"anthropic-billing-header[^A-Z]{0,40}|billing-header['\\\\\"][^'\\\\\"]+['\\\\\"]\" /root/.local/share/claude/versions/2.1.123)",
-      "Bash(grep -aoE \"['\\\\\"]User-Agent['\\\\\"][^,}]{0,100}|setHeader\\\\\\(['\\\\\"][^'\\\\\"]+['\\\\\"], ['\\\\\"][^'\\\\\"]+['\\\\\"]\\\\\\)\" /root/.local/share/claude/versions/2.1.123)"
+      "Bash(grep -aoE \"['\\\\\"]User-Agent['\\\\\"][^,}]{0,100}|setHeader\\\\\\(['\\\\\"][^'\\\\\"]+['\\\\\"], ['\\\\\"][^'\\\\\"]+['\\\\\"]\\\\\\)\" /root/.local/share/claude/versions/2.1.123)",
+      "Bash(grep -aoE \"anthropic-client-platform['\\\\\"]?[^a-zA-Z0-9_]{1,5}['\\\\\"]?[a-zA-Z_0-9-]+|LH\\\\\\(\\\\\\)\\\\{[^}]{1,200}\" /root/.local/share/claude/versions/2.1.123)",
+      "Bash(claude -p --output-format text --model claude-sonnet-4-6)",
+      "Bash(claude -p --debug api --output-format text --model claude-sonnet-4-6)",
+      "Bash(claude -p --debug --output-format text --model claude-sonnet-4-6)",
+      "Bash(npm ls *)",
+      "Bash(npm run *)",
+      "Bash(curl -s \"http://localhost:3141/api/claude/status?token=change-me\")",
+      "Bash(wait)",
+      "Bash(claude mcp *)",
+      "Bash(sqlite3 neuroclaw.db \"SELECT action, datetime\\(created_at,'localtime'\\), substr\\(details, 1, 100\\) FROM audit_logs WHERE action LIKE 'exec_%' ORDER BY created_at DESC LIMIT 10\")",
+      "Bash(grep -n \"history.push.*role: 'user', content: userMessage\\\\|history.push\\({ role: 'user', content: userMessage }\\)\" src/agent/alfred.ts)",
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(zcat /root/.claude/projects/-home-neuroclaw-v1/e6d994f6-5871-4e31-87d5-b197075adf60/tool-results/webfetch-1777648780290-q51i4p.bin)",
+      "Bash(tar -xzf /root/.claude/projects/-home-neuroclaw-v1/e6d994f6-5871-4e31-87d5-b197075adf60/tool-results/webfetch-1777648780290-q51i4p.bin -C /tmp/neuroclaw-design)",
+      "Bash(file /tmp/neuroclaw-design/neuroclaw/project/uploads/*)",
+      "Bash(cp '/tmp/neuroclaw-design/neuroclaw/project/src/*.jsx' /home/neuroclaw-v1/src/dashboard/v2/src/)",
+      "Bash(cp '/tmp/neuroclaw-design/neuroclaw/project/uploads/*' /home/neuroclaw-v1/src/dashboard/v2/uploads/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://localhost:3141/dashboard-v2\")"
     ]
   }
 }

@@ -125,6 +125,65 @@ function initSchema(database: Database.Database): void {
       created_at    TEXT DEFAULT (datetime('now')),
       updated_at    TEXT DEFAULT (datetime('now'))
     );
+
+    -- v1.4: long-term memory index. Mirrors notes that live in NeuroVault MCP.
+    -- One row per memory; vault_note_id/vault_path point at the canonical copy.
+    CREATE TABLE IF NOT EXISTS memory_index (
+      id            TEXT PRIMARY KEY,
+      type          TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      summary       TEXT,
+      tags          TEXT,
+      importance    REAL DEFAULT 0.5,
+      salience      REAL DEFAULT 0.5,
+      agent_id      TEXT REFERENCES agents(id),
+      session_id    TEXT REFERENCES sessions(id),
+      vault_note_id TEXT,
+      vault_path    TEXT,
+      created_at    TEXT DEFAULT (datetime('now')),
+      last_accessed TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_index_session ON memory_index(session_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_agent   ON memory_index(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_type    ON memory_index(type);
+    CREATE INDEX IF NOT EXISTS idx_memory_index_recent  ON memory_index(created_at DESC);
+
+    -- v1.5: live model catalog. Refreshed hourly from each provider's /v1/models
+    -- (or hardcoded list, for providers with no API). tier_overridden=1 means
+    -- the user has manually pinned the tier; auto-classify will not change it.
+    CREATE TABLE IF NOT EXISTS model_catalog (
+      id              TEXT PRIMARY KEY,    -- 'provider:model_id'
+      provider        TEXT NOT NULL,
+      model_id        TEXT NOT NULL,
+      tier            TEXT NOT NULL DEFAULT 'mid',
+      tier_overridden INTEGER NOT NULL DEFAULT 0,
+      context_window  INTEGER,
+      is_available    INTEGER NOT NULL DEFAULT 1,
+      last_seen_at    TEXT,
+      created_at      TEXT DEFAULT (datetime('now')),
+      updated_at      TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_model_catalog_provider ON model_catalog(provider);
+    CREATE INDEX IF NOT EXISTS idx_model_catalog_tier     ON model_catalog(tier);
+
+    -- v1.5: model spend log. One row per LLM call. Used by the budget guard
+    -- and the future spend dashboard.
+    CREATE TABLE IF NOT EXISTS model_spend (
+      id            TEXT PRIMARY KEY,
+      provider      TEXT NOT NULL,
+      model_id      TEXT NOT NULL,
+      tier          TEXT NOT NULL,
+      input_tokens  INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      agent_id      TEXT,
+      session_id    TEXT,
+      created_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_model_spend_session ON model_spend(session_id);
+    CREATE INDEX IF NOT EXISTS idx_model_spend_recent  ON model_spend(created_at DESC);
   `);
   logger.info('Database schema initialized');
 }
@@ -140,6 +199,11 @@ function runMigrations(database: Database.Database): void {
     "ALTER TABLE agents ADD COLUMN expires_at TEXT",
     'ALTER TABLE messages ADD COLUMN agent_id TEXT',
     "ALTER TABLE agents ADD COLUMN provider TEXT DEFAULT 'openai'",
+    'ALTER TABLE agents ADD COLUMN exec_enabled INTEGER DEFAULT 0',
+    "ALTER TABLE agents ADD COLUMN model_tier TEXT DEFAULT 'pinned'",
+    'ALTER TABLE model_catalog ADD COLUMN cost_per_1k_input REAL',
+    'ALTER TABLE model_catalog ADD COLUMN cost_per_1k_output REAL',
+    'ALTER TABLE model_catalog ADD COLUMN price_overridden INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -296,6 +360,8 @@ export interface AgentRecord {
   created_by_agent_id: string | null;
   expires_at:          string | null;
   provider:            string;
+  exec_enabled:        number;
+  model_tier:          string;
   created_at:          string;
   updated_at:          string;
 }
@@ -325,6 +391,8 @@ export function createAgentRecord(
     role?: string;
     capabilities?: string[];
     provider?: string;
+    exec_enabled?: boolean;
+    model_tier?: string;
   } = {},
 ): AgentRecord {
   const id = randomUUID();
@@ -332,8 +400,8 @@ export function createAgentRecord(
   const provider = opts.provider ?? 'openai';
   const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-6' : config.voidai.model;
   db.prepare(`
-    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities, provider)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities, provider, exec_enabled, model_tier)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     name,
@@ -343,8 +411,10 @@ export function createAgentRecord(
     opts.role ?? 'agent',
     JSON.stringify(opts.capabilities ?? []),
     provider,
+    opts.exec_enabled ? 1 : 0,
+    opts.model_tier ?? 'pinned',
   );
-  logAudit('agent_created', 'agent', id, { name, provider });
+  logAudit('agent_created', 'agent', id, { name, provider, exec_enabled: !!opts.exec_enabled });
   return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord;
 }
 
@@ -359,6 +429,8 @@ export function updateAgentRecord(
     capabilities?: string[];
     status?: string;
     provider?: string;
+    exec_enabled?: boolean;
+    model_tier?: string;
   },
 ): void {
   const sets: string[] = ["updated_at = datetime('now')"];
@@ -372,6 +444,8 @@ export function updateAgentRecord(
   if (fields.capabilities  !== undefined) { sets.push('capabilities = ?');  params.push(JSON.stringify(fields.capabilities)); }
   if (fields.status        !== undefined) { sets.push('status = ?');        params.push(fields.status); }
   if (fields.provider      !== undefined) { sets.push('provider = ?');      params.push(fields.provider); }
+  if (fields.exec_enabled  !== undefined) { sets.push('exec_enabled = ?');  params.push(fields.exec_enabled ? 1 : 0); }
+  if (fields.model_tier    !== undefined) { sets.push('model_tier = ?');    params.push(fields.model_tier); }
 
   if (sets.length === 1) return;
   params.push(id);

@@ -240,6 +240,32 @@ select:focus{border-color:var(--blue)}
         <button class="btn" onclick="load('memory')">↻ Refresh</button>
       </div>
     </div>
+
+    <!-- Long-term memory (v1.4+) -->
+    <h3 style="margin-top:12px;margin-bottom:8px;color:var(--text-dim)">Long-term memory (memory_index)</h3>
+    <div id="ov-memory-stats" class="grid" style="margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <label style="margin:0;font-size:12px;color:var(--text-dim)">Filter:</label>
+      <select id="mi-filter" onchange="loadMemoryIndex()" style="width:auto;padding:4px 8px">
+        <option value="">All types</option>
+        <option value="procedural">Procedural</option>
+        <option value="insight">Insights</option>
+        <option value="semantic">Semantic</option>
+        <option value="episodic">Episodic</option>
+        <option value="preference">Preferences</option>
+        <option value="session_summary">Session summaries</option>
+        <option value="project">Projects</option>
+        <option value="working">Working</option>
+      </select>
+    </div>
+    <div class="tbl-wrap"><table><thead><tr><th>Type</th><th>Title</th><th>Imp</th><th>Sal</th><th>Vault</th><th>Last accessed</th><th>Actions</th></tr></thead>
+    <tbody id="tb-memory-index"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table></div>
+
+    <h3 style="margin-top:24px;margin-bottom:8px;color:var(--text-dim)">Recent memory events</h3>
+    <div class="tbl-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Summary</th><th>Agent</th></tr></thead>
+    <tbody id="tb-memory-hive"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
+
+    <h3 style="margin-top:24px;margin-bottom:8px;color:var(--text-dim)">Legacy memory store</h3>
     <div class="tbl-wrap"><table><thead><tr><th>Content</th><th>Type</th><th>Importance</th><th>Created</th><th>Actions</th></tr></thead>
     <tbody id="tb-memory"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
   </div>
@@ -353,7 +379,25 @@ select:focus{border-color:var(--blue)}
         <option value="anthropic">Claude (Anthropic)</option>
       </select>
     </div>
-    <div class="field" id="af-model-openai-wrap"><label>Model</label><input type="text" id="af-model" placeholder="gpt-5.1 (leave blank for default)"/></div>
+    <div class="field" id="af-model-openai-wrap">
+      <label>Model strategy</label>
+      <select id="af-tier" onchange="onAfTierChange()">
+        <option value="pinned">Pinned — use exactly the model below</option>
+        <option value="auto">Auto-triage — pick by task complexity (low/mid/high)</option>
+        <option value="low">Always low tier (cheap)</option>
+        <option value="mid">Always mid tier</option>
+        <option value="high">Always high tier (most capable)</option>
+      </select>
+      <div style="margin-top:8px"><label style="font-size:12px;color:var(--text-dim)">Model (used when Pinned, or as fallback)</label></div>
+      <div style="display:flex;gap:6px">
+        <select id="af-model-select" onchange="onAfModelSelectChange()" style="flex:1">
+          <option value="">(default — VOIDAI_MODEL)</option>
+        </select>
+        <button class="btn btn-sm" type="button" onclick="refreshModelCatalog()" title="Refresh from VoidAI /v1/models">↻</button>
+      </div>
+      <input type="text" id="af-model" placeholder="or type a custom model id" style="margin-top:6px;font-size:12px"/>
+      <div id="af-model-warn" style="font-size:11px;margin-top:4px;color:#ffaa50;display:none"></div>
+    </div>
     <div class="field" id="af-model-claude-wrap" style="display:none">
       <label>Claude Model</label>
       <select id="af-model-claude">
@@ -364,6 +408,10 @@ select:focus{border-color:var(--blue)}
     </div>
     <div class="field"><label>Capabilities (comma-separated)</label><input type="text" id="af-caps" placeholder="research, summarize, fact-check"/></div>
     <div class="field"><label>System Prompt</label><textarea id="af-prompt" rows="7" placeholder="You are…"></textarea></div>
+    <div class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="af-exec" style="width:auto;margin:0"/>
+      <label for="af-exec" style="margin:0;cursor:pointer">Exec enabled — grants this agent shell + filesystem tools (bash_run, fs_read/write/list/search). For Claude-CLI agents, also unlocks the bundled Bash/Read/Write/Edit/Grep/Glob.</label>
+    </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('agent')">Cancel</button>
       <button class="btn btn-primary" onclick="submitAgent()">Save Agent</button>
@@ -461,6 +509,84 @@ function closeModal(name) { document.getElementById(name + '-modal').style.displ
 
 var editingAgentId = null;
 
+var modelCatalog = [];
+function loadModelCatalog(force) {
+  return api('/api/models?provider=voidai').then(function(rows) {
+    modelCatalog = rows || [];
+    populateModelSelect();
+  }).catch(function(){ modelCatalog = []; });
+}
+
+function refreshModelCatalog() {
+  apiPost('/api/models/refresh?provider=voidai', {}).then(function() {
+    loadModelCatalog(true).then(function(){ showToast('Model catalog refreshed (' + modelCatalog.length + ' models)'); });
+  }).catch(function(e) { showToast('Refresh failed: ' + e.message, 5000); });
+}
+
+function tierBadge(tier) {
+  var col = tier === 'high' ? '#ffaa50' : tier === 'low' ? '#7fc8ff' : '#a0e0a0';
+  return '<span style="font-size:9px;color:'+col+';border:1px solid '+col+';border-radius:3px;padding:0 4px;margin-left:4px">'+tier.toUpperCase()+'</span>';
+}
+
+function populateModelSelect() {
+  var sel = document.getElementById('af-model-select');
+  if (!sel) return;
+  var current = sel.value;
+  var groups = { high: [], mid: [], low: [] };
+  modelCatalog.forEach(function(m) { (groups[m.tier] || groups.mid).push(m); });
+  var html = '<option value="">(default — VOIDAI_MODEL)</option>';
+  ['high','mid','low'].forEach(function(t) {
+    if (!groups[t].length) return;
+    html += '<optgroup label="'+t.toUpperCase()+' tier ('+groups[t].length+')">';
+    groups[t].forEach(function(m) {
+      var price = (m.cost_per_1k_input != null)
+        ? ' — $' + (m.cost_per_1k_input).toFixed(2) + '/$' + (m.cost_per_1k_output).toFixed(2) + '/1k'
+        : '';
+      html += '<option value="'+m.model_id+'">'+m.model_id+' ['+t+']'+price+(m.tier_overridden ? ' ★' : '')+'</option>';
+    });
+    html += '</optgroup>';
+  });
+  sel.innerHTML = html;
+  if (current) sel.value = current;
+}
+
+function onAfModelSelectChange() {
+  var sel = document.getElementById('af-model-select');
+  document.getElementById('af-model').value = sel.value || '';
+  checkAfModelExists();
+}
+
+function onAfTierChange() {
+  var tier = document.getElementById('af-tier').value;
+  var modelSel = document.getElementById('af-model-select');
+  var modelInp = document.getElementById('af-model');
+  var hint = document.getElementById('af-model-warn');
+  var dim = (tier !== 'pinned');
+  modelSel.style.opacity = dim ? '0.55' : '1';
+  modelInp.style.opacity = dim ? '0.55' : '1';
+  if (dim) {
+    hint.textContent = 'Model dropdown is a fallback only — auto-triage / fixed-tier picks the model from the live catalog.';
+    hint.style.display = 'block';
+  } else {
+    checkAfModelExists();
+  }
+}
+
+function checkAfModelExists() {
+  var input = document.getElementById('af-model');
+  var warn  = document.getElementById('af-model-warn');
+  if (!input || !warn) return;
+  var val = input.value.trim();
+  if (!val || !modelCatalog.length) { warn.style.display = 'none'; return; }
+  var found = modelCatalog.some(function(m) { return m.model_id === val; });
+  if (found) {
+    warn.style.display = 'none';
+  } else {
+    warn.textContent = '⚠ "' + val + '" is not in the live VoidAI catalog. The agent may fail at chat time.';
+    warn.style.display = 'block';
+  }
+}
+
 function updateAgentModelField() {
   var provider = document.getElementById('af-provider').value;
   var openAiWrap = document.getElementById('af-model-openai-wrap');
@@ -485,7 +611,15 @@ function openNewAgent() {
   document.getElementById('af-model-claude').value = 'claude-sonnet-4-6';
   document.getElementById('af-caps').value     = '';
   document.getElementById('af-prompt').value   = '';
+  document.getElementById('af-exec').checked   = false;
+  document.getElementById('af-tier').value     = 'pinned';
   updateAgentModelField();
+  onAfTierChange();
+  loadModelCatalog().then(function(){
+    var sel = document.getElementById('af-model-select');
+    if (sel) sel.value = '';
+    checkAfModelExists();
+  });
   document.getElementById('agent-modal').style.display = 'flex';
   setTimeout(function() { document.getElementById('af-name').focus(); }, 80);
 }
@@ -506,12 +640,20 @@ function openEditAgent(id) {
   } else {
     document.getElementById('af-model').value = a.model || '';
     document.getElementById('af-model-claude').value = 'claude-sonnet-4-6';
+    loadModelCatalog().then(function(){
+      var sel = document.getElementById('af-model-select');
+      if (sel) sel.value = a.model || '';
+      checkAfModelExists();
+    });
   }
   updateAgentModelField();
   var caps = [];
   try { caps = JSON.parse(a.capabilities || '[]'); } catch(_) {}
   document.getElementById('af-caps').value   = caps.join(', ');
   document.getElementById('af-prompt').value = a.system_prompt || '';
+  document.getElementById('af-exec').checked = !!a.exec_enabled;
+  document.getElementById('af-tier').value = a.model_tier || 'pinned';
+  onAfTierChange();
   document.getElementById('agent-modal').style.display = 'flex';
 }
 
@@ -533,7 +675,9 @@ function submitAgent() {
     provider:      provider,
     model:         modelVal || undefined,
     capabilities:  caps,
-    system_prompt: document.getElementById('af-prompt').value.trim()
+    system_prompt: document.getElementById('af-prompt').value.trim(),
+    exec_enabled:  document.getElementById('af-exec').checked,
+    model_tier:    document.getElementById('af-tier').value
   };
 
   var url = editingAgentId ? '/api/agents/' + editingAgentId : '/api/agents';
@@ -590,22 +734,51 @@ function filterAgents(filter) {
 
 /* ── Section loaders ────────────────────────────────────────────────────────── */
 function loadOverview() {
-  api('/api/status').then(function(s) {
+  Promise.all([
+    api('/api/status'),
+    api('/api/claude/status').catch(function(){return null;}),
+    api('/api/models/spend').catch(function(){return null;}),
+  ]).then(function(results) {
+    var s = results[0];
+    var cs = results[1];
+    var spend = results[2];
     var an = s.anthropic || {};
     var anLabel = an.source === 'cli_oauth'
       ? (an.expired ? '⚠ CLI (expired)' : '✓ Claude CLI (' + (an.subscriptionType || 'oauth') + ')')
       : an.source === 'api_key' ? '✓ API Key'
       : '✗ Not configured';
     var anColor = (an.source !== 'none' && !an.expired) ? 'var(--green)' : an.expired ? 'var(--yellow)' : 'var(--red)';
+
+    var backendLabel = '—', backendColor = 'var(--muted)', backendSub = 'Claude backend';
+    if (cs) {
+      if (cs.backend === 'claude-cli') {
+        backendLabel = cs.cliBinaryFound ? '✓ claude-cli (' + (cs.cliVersion||'') + ')' : '✗ claude-cli (binary missing)';
+        backendColor = cs.cliBinaryFound ? 'var(--green)' : 'var(--red)';
+        backendSub   = 'Subscription auth · queue ' + cs.queueLength + (cs.throttled1h ? ' · ' + cs.throttled1h + '× 429/1h' : '');
+      } else {
+        backendLabel = cs.anthropicApiKeySet ? '✓ anthropic-api' : '✗ anthropic-api (no key)';
+        backendColor = cs.anthropicApiKeySet ? 'var(--green)' : 'var(--red)';
+        backendSub   = 'Direct Anthropic API · per-token billing';
+      }
+    }
+
+    var spendUsd = (spend && spend.lastHour && typeof spend.lastHour.est_cost_usd === 'number')
+      ? '$' + spend.lastHour.est_cost_usd.toFixed(4)
+      : '—';
+    var spendTokens = (spend && spend.lastHour) ? (spend.lastHour.total_tokens||0) : 0;
+    var spendCalls  = (spend && spend.lastHour) ? (spend.lastHour.call_count||0)   : 0;
+
     var cards = [
-      {l:'Status',      v:'<span class="dot"></span>Online',                            sub:'System running'},
-      {l:'Model',       v:s.model||'—',                                                 sub:'VoidAI model'},
-      {l:'Claude Auth', v:'<span style="color:'+anColor+'">'+esc(anLabel)+'</span>',   sub:'Anthropic / Claude CLI'},
-      {l:'Agents',      v:s.agents,                                                     sub:'Active agents'},
-      {l:'Temp Agents', v:s.tempAgents||0,                                              sub:'Spawned, running'},
-      {l:'Sessions',    v:s.sessions,                                                   sub:'Total sessions'},
-      {l:'Messages',    v:s.messages,                                                   sub:'Total messages'},
-      {l:'Uptime',      v:Math.floor(s.uptime)+'s',                                    sub:'Since last start'},
+      {l:'Status',         v:'<span class="dot"></span>Online',                                                 sub:'System running'},
+      {l:'Model',          v:s.model||'—',                                                                      sub:'VoidAI model'},
+      {l:'Claude Backend', v:'<span style="color:'+backendColor+'">'+esc(backendLabel)+'</span>',               sub:backendSub},
+      {l:'Claude Auth',    v:'<span style="color:'+anColor+'">'+esc(anLabel)+'</span>',                         sub:'Anthropic / Claude CLI'},
+      {l:'Spend (1h)',     v:spendUsd,                                                                          sub:spendTokens.toLocaleString()+' tokens · '+spendCalls+' calls'},
+      {l:'Agents',         v:s.agents,                                                                          sub:'Active agents'},
+      {l:'Temp Agents',    v:s.tempAgents||0,                                                                   sub:'Spawned, running'},
+      {l:'Sessions',       v:s.sessions,                                                                        sub:'Total sessions'},
+      {l:'Messages',       v:s.messages,                                                                        sub:'Total messages'},
+      {l:'Uptime',         v:Math.floor(s.uptime)+'s',                                                          sub:'Since last start'},
     ];
     document.getElementById('ov-stats').innerHTML = cards.map(function(c) {
       return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div><div class="card-sub">'+c.sub+'</div></div>';
@@ -660,6 +833,8 @@ function loadAgents() {
         +badge(a.status)
         +badge(a.role)
         +(a.provider === 'anthropic' ? '<span style="font-size:10px;background:rgba(210,120,255,.15);color:#d278ff;border:1px solid rgba(210,120,255,.35);border-radius:4px;padding:1px 6px">Claude</span>' : '')
+        +(a.exec_enabled ? '<span title="Shell + filesystem tools enabled" style="font-size:10px;background:rgba(255,170,80,.15);color:#ffaa50;border:1px solid rgba(255,170,80,.35);border-radius:4px;padding:1px 6px;margin-left:4px">EXEC</span>' : '')
+        +(a.model_tier && a.model_tier !== 'pinned' ? '<span title="Auto-triage: model picked by task complexity ('+a.model_tier+')" style="font-size:10px;background:rgba(127,200,255,.15);color:#7fc8ff;border:1px solid rgba(127,200,255,.35);border-radius:4px;padding:1px 6px;margin-left:4px">'+a.model_tier.toUpperCase()+'</span>' : '')
         +'<span class="muted" style="font-size:11px">'+esc(a.model||'')+'</span>'
         +'</div></div>'
         +(a.system_prompt
@@ -749,6 +924,9 @@ function loadSessions() {
 }
 
 function loadMemory() {
+  loadMemoryIndex();
+  loadMemoryHive();
+  loadMemoryStats();
   api('/api/memory').then(function(rows) {
     var tb = document.getElementById('tb-memory');
     if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No memories stored</td></tr>'; return; }
@@ -757,6 +935,80 @@ function loadMemory() {
             +'<td><button class="btn btn-sm btn-danger" data-id="'+r.id+'" onclick="deleteMemory(this.dataset.id)">🗑</button></td></tr>';
     }).join('');
   }).catch(function(e) { document.getElementById('tb-memory').innerHTML = '<tr><td colspan="5">'+errHtml(e.message)+'</td></tr>'; });
+}
+
+function loadMemoryStats() {
+  api('/api/memory/index/stats').then(function(s) {
+    var grid = document.getElementById('ov-memory-stats');
+    if (!grid) return;
+    var topType = (s.byType && s.byType[0]) ? s.byType[0].type : '—';
+    var cards = [
+      {l:'Total memories', v:s.total, sub:'in memory_index'},
+      {l:'Last hour',      v:s.lastHour, sub:'newly extracted'},
+      {l:'Last 24h',       v:s.lastDay,  sub:'extraction volume'},
+      {l:'Auto-compactions (24h)', v:s.compactedDay, sub:'sessions condensed'},
+      {l:'Vault-capped (1h)', v:s.cappedHour, sub:'over per-hour limit'},
+      {l:'Top type',       v:topType, sub:'most common'},
+    ];
+    grid.innerHTML = cards.map(function(c) {
+      return '<div class="card"><div class="card-label">'+c.l+'</div><div class="card-value">'+c.v+'</div><div class="card-sub">'+c.sub+'</div></div>';
+    }).join('');
+  }).catch(function(){});
+}
+
+function loadMemoryIndex() {
+  var filterEl = document.getElementById('mi-filter');
+  var type = filterEl ? filterEl.value : '';
+  var qs = type ? ('?type=' + encodeURIComponent(type) + '&limit=200') : '?limit=200';
+  api('/api/memory/index' + qs).then(function(rows) {
+    var tb = document.getElementById('tb-memory-index');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" class="muted">No long-term memories yet — they appear automatically after assistant turns.</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(r) {
+      var imp = (typeof r.importance === 'number') ? r.importance.toFixed(2) : '—';
+      var sal = (typeof r.salience === 'number')   ? r.salience.toFixed(2)   : '—';
+      var typeColors = {procedural:'#7fc8ff', insight:'#ffaa50', semantic:'#a0e0a0', episodic:'#d278ff', preference:'#ffe080', session_summary:'#888', project:'#7fc8ff', working:'#888'};
+      var col = typeColors[r.type] || '#888';
+      var vault = r.vault_path
+        ? '<span class="muted" style="font-size:11px" title="'+esc(r.vault_path)+'">'+esc(r.vault_path.split('/').pop())+'</span>'
+        : '<span class="muted">—</span>';
+      var lastAcc = r.last_accessed ? ago(r.last_accessed) : '<span class="muted">never</span>';
+      return '<tr>'
+        + '<td><span style="font-size:10px;background:rgba(255,255,255,.05);color:'+col+';border:1px solid '+col+';border-radius:4px;padding:1px 6px">'+esc(r.type)+'</span></td>'
+        + '<td title="'+esc(r.summary || '')+'">'+esc(r.title)+'</td>'
+        + '<td>'+imp+'</td>'
+        + '<td>'+sal+'</td>'
+        + '<td>'+vault+'</td>'
+        + '<td class="muted">'+lastAcc+'</td>'
+        + '<td><button class="btn btn-sm btn-danger" data-id="'+r.id+'" onclick="deleteMemoryIndex(this.dataset.id)">🗑</button></td>'
+        + '</tr>';
+    }).join('');
+  }).catch(function(e) { document.getElementById('tb-memory-index').innerHTML = '<tr><td colspan="7">'+errHtml(e.message)+'</td></tr>'; });
+}
+
+function loadMemoryHive() {
+  api('/api/memory/hive?limit=50').then(function(rows) {
+    var tb = document.getElementById('tb-memory-hive');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No memory events yet</td></tr>'; return; }
+    var actionColors = {memory_extracted:'#a0e0a0', memory_skipped:'#888', memory_capped:'#ff8888'};
+    tb.innerHTML = rows.map(function(r) {
+      var col = actionColors[r.action] || '#888';
+      return '<tr>'
+        + '<td class="muted" style="white-space:nowrap">'+ago(r.created_at)+'</td>'
+        + '<td><span style="font-size:10px;color:'+col+';border:1px solid '+col+';border-radius:4px;padding:1px 6px">'+esc(r.action)+'</span></td>'
+        + '<td>'+esc(r.summary)+'</td>'
+        + '<td class="muted" style="font-size:11px">'+esc(r.agent_id ? r.agent_id.slice(0,8) : '—')+'</td>'
+        + '</tr>';
+    }).join('');
+  }).catch(function(){});
+}
+
+function deleteMemoryIndex(id) {
+  if (!confirm('Delete this memory? (Vault note is not deleted.)')) return;
+  apiPost('/api/memory/index/' + id, {}, 'DELETE').then(function() {
+    loadMemoryIndex();
+    loadMemoryStats();
+    showToast('Memory deleted from index');
+  }).catch(function(e) { showToast('Error: ' + e.message, 5000); });
 }
 
 function openAddMemory() {

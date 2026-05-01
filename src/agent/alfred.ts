@@ -6,7 +6,19 @@ import type {
 } from 'openai/resources';
 import Anthropic from '@anthropic-ai/sdk';
 import { getClient } from './openai-client';
-import { getAnthropicClient, prefixSystemPromptForOAuth } from './anthropic-client';
+import { getAnthropicClient } from './anthropic-client';
+import {
+  streamClaudeCliChat,
+  ClaudeCliRateLimitError,
+  ClaudeCliAuthError,
+} from '../providers/claude-cli';
+import { ingestExchangeAsync } from '../memory/memory-pipeline';
+import { pickModel } from '../system/model-triage';
+import { logSpend } from '../system/model-spend';
+import {
+  maybeCompactHistory,
+  type HistoryTurn,
+} from '../memory/context-compactor';
 import { config } from '../config';
 import {
   saveMessage, logAnalytics, createSession,
@@ -17,7 +29,7 @@ import {
 } from '../db';
 import { logger } from '../utils/logger';
 import { classifyRoute } from '../system/router';
-import { spawnAgent, type SpawnRequest } from '../system/spawner';
+import { spawnAgentAsync, type SpawnRequest } from '../system/spawner';
 import { logHive } from '../system/hive-mind';
 import { getLangfuse, createChatTrace, logToolSpan, estimateTokens } from '../system/langfuse';
 import {
@@ -106,7 +118,42 @@ function buildOrchestratorPrompt(allAgents: AgentRecord[]): string {
     agentLines +
     '\n\nWhen a request needs a specialist, USE `message_agent` or `assign_task_to_agent` to involve them directly. Do NOT tell the user to do it themselves.' +
     AGENT_COMMS_GUIDANCE +
-    SPAWN_GUIDANCE_TEXT
+    SPAWN_GUIDANCE_TEXT +
+    buildMemorySection()
+  );
+}
+
+/**
+ * Resolve the concrete model for an agent at chat time. Honors:
+ *   - model_tier === 'pinned' (or unset) → agent.model
+ *   - model_tier === 'auto'              → triage on the user's message
+ *   - model_tier === 'low'|'mid'|'high'  → cheapest available in that tier
+ * Returns the agent's pinned model as a final fallback.
+ */
+function resolveAgentModel(agent: AgentRecord | undefined, taskText: string, providerHint?: string): string {
+  const fallback = agent?.model ?? config.voidai.model;
+  if (!agent) return fallback;
+  const tier = agent.model_tier ?? 'pinned';
+  if (tier === 'pinned') return fallback;
+  const provider = providerHint ?? agent.provider ?? 'voidai';
+  const result = pickModel({
+    text:        taskText,
+    provider,
+    agentTier:   tier,
+    pinnedModel: fallback,
+  });
+  return result.model ?? fallback;
+}
+
+function buildMemorySection(): string {
+  if (!config.mcp.enabled) return '';
+  return (
+    '\n\n---\nMemory awareness:\n' +
+    '- Before answering: consider calling `search_memory` (or `retrieve_relevant_memory`) when the user references prior work, asks "do you remember", or seems to expect continuity.\n' +
+    '- After answering: if the exchange contains a decision, a procedure, a preference, or an insight worth keeping, call `write_vault_note` with the distilled lesson — never the raw chat.\n' +
+    '- Prefer reusing an existing procedure over re-deriving it. If you find one in `search_memory` results, cite it back to the user.\n' +
+    '- For long sessions, call `save_session_summary` before context fills up. You can also use `compact_context` to replace stale turns with a summary.\n' +
+    '- The auto-extractor already runs after every assistant turn — do not duplicate that work; only call `write_vault_note` for something the auto-extractor would miss (e.g. a user-stated preference, an insight you yourself derived).'
   );
 }
 
@@ -114,12 +161,12 @@ function buildTeamSection(currentAgentId: string, allAgents: AgentRecord[]): str
   const peers = allAgents.filter(
     a => a.status === 'active' && a.id !== currentAgentId && !a.temporary,
   );
-  if (peers.length === 0) return '';
-  const lines = peers.map(a => `- @${a.name}${a.description ? ' — ' + a.description : ''}`).join('\n');
-  return (
-    '\n\n---\nActive team members (use `message_agent` to contact them directly):\n' + lines +
-    '\nDo NOT tell the user to contact agents themselves — call the tool and do it for them.'
-  );
+  const teamSection = peers.length > 0
+    ? '\n\n---\nActive team members (use `message_agent` to contact them directly):\n' +
+      peers.map(a => `- @${a.name}${a.description ? ' — ' + a.description : ''}`).join('\n') +
+      '\nDo NOT tell the user to contact agents themselves — call the tool and do it for them.'
+    : '';
+  return teamSection + buildMemorySection();
 }
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -242,6 +289,169 @@ function buildTools(agent: AgentRecord | undefined): ChatCompletionTool[] {
     });
   }
 
+  if (config.mcp.enabled) {
+    tools.push(
+      {
+        type: 'function',
+        function: {
+          name:        'search_memory',
+          description: 'Search across memory_index + NeuroVault (and ResearchLM/InsightsLM if configured). Returns categorized hits ranked by salience, importance, and recency.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'What to look up (2-8 keywords).' },
+              limit: { type: 'number', description: 'Max hits (default 20).' },
+            },
+            required: ['query'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'search_vault',
+          description: 'Search the NeuroVault MCP directly (no SQLite). Useful when you specifically want vault-stored notes.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              limit: { type: 'number' },
+              vault: { type: 'string', description: 'Vault name (defaults to NEUROVAULT_DEFAULT_VAULT).' },
+            },
+            required: ['query'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'write_vault_note',
+          description: 'Persist a structured memory: indexes locally and mirrors to NeuroVault. Use for procedures, insights, decisions, or preferences worth keeping. Do NOT save raw chat — write the distilled lesson.',
+          parameters: {
+            type: 'object',
+            properties: {
+              title:      { type: 'string', description: '4-8 words.' },
+              type:       { type: 'string', description: 'One of: episodic, semantic, procedural, preference, insight, project.' },
+              summary:    { type: 'string', description: '1-2 sentence summary.' },
+              content:    { type: 'string', description: 'Optional richer body (2-5 sentences).' },
+              tags:       { type: 'array', items: { type: 'string' } },
+              importance: { type: 'number', description: '0-1, default 0.7.' },
+            },
+            required: ['title', 'type', 'summary'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'save_session_summary',
+          description: 'Save a summary of the current session to memory + vault. Call before context pressure forces a compaction.',
+          parameters: {
+            type: 'object',
+            properties: {
+              summary:    { type: 'string', description: 'Distilled summary of what happened.' },
+              title:      { type: 'string' },
+              tags:       { type: 'array', items: { type: 'string' } },
+              importance: { type: 'number' },
+            },
+            required: ['summary'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'compact_context',
+          description: 'Compact the conversation: provide a summary you want to keep; the rest of the prior context is replaced with that summary plus any retrieved relevant memories.',
+          parameters: {
+            type: 'object',
+            properties: {
+              conversation: { type: 'string', description: 'Serialized recent turns to compact.' },
+            },
+            required: ['conversation'],
+          },
+        },
+      },
+    );
+  }
+
+  if (agent.exec_enabled) {
+    tools.push(
+      {
+        type: 'function',
+        function: {
+          name:        'bash_run',
+          description: 'Run a shell command on the host. Returns stdout, stderr, exit code, duration. Output is byte-capped; some destructive patterns are hard-blocked.',
+          parameters: {
+            type:       'object',
+            properties: {
+              command:    { type: 'string', description: 'The full shell command to run (executed via bash -lc).' },
+              cwd:        { type: 'string', description: 'Working directory. Defaults to EXEC_DEFAULT_CWD.' },
+              timeout_ms: { type: 'number', description: 'Per-call timeout in ms; capped server-side.' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'fs_read',
+          description: 'Read the contents of a file on the host. Output is byte-capped; truncated if too large.',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string', description: 'Absolute or relative file path.' } },
+            required: ['path'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'fs_write',
+          description: 'Write to a file on the host. mode=overwrite (default), append, or create (fails if exists). Creates parent dirs.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path:    { type: 'string' },
+              content: { type: 'string' },
+              mode:    { type: 'string', enum: ['create', 'overwrite', 'append'] },
+            },
+            required: ['path', 'content'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'fs_list',
+          description: 'List the contents of a directory.',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name:        'fs_search',
+          description: 'Recursively search for a regex/pattern across files (uses ripgrep when available, else grep -rn).',
+          parameters: {
+            type: 'object',
+            properties: {
+              pattern:     { type: 'string' },
+              path:        { type: 'string', description: 'Directory to search (defaults to EXEC_DEFAULT_CWD).' },
+              max_results: { type: 'number' },
+            },
+            required: ['pattern'],
+          },
+        },
+      },
+    );
+  }
+
   return tools;
 }
 
@@ -254,6 +464,97 @@ async function executeTool(
   onMeta?: (e: MetaEvent) => void | Promise<void>,
   sessionId?: string,
 ): Promise<string> {
+  // ── memory tools (gated on MCP enabled at registration time) ─────────────
+  if (name === 'search_memory' || name === 'search_vault' || name === 'write_vault_note' || name === 'save_session_summary' || name === 'compact_context') {
+    let args: Record<string, unknown>;
+    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: `Invalid ${name} arguments` }); }
+    const tools = await import('../memory/memory-tools');
+    const agent = parentAgentId ? getAgentById(parentAgentId) : undefined;
+    try {
+      let result: unknown;
+      if (name === 'search_memory') {
+        result = await tools.searchMemoryTool({
+          query: String(args.query ?? ''),
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+          agentId: parentAgentId ?? null,
+        });
+      } else if (name === 'search_vault') {
+        result = await tools.searchVaultTool({
+          query: String(args.query ?? ''),
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+          vault: typeof args.vault === 'string' ? args.vault : undefined,
+        });
+      } else if (name === 'write_vault_note') {
+        result = await tools.writeVaultNoteTool({
+          title:      String(args.title ?? ''),
+          type:       String(args.type ?? 'episodic'),
+          summary:    String(args.summary ?? ''),
+          content:    typeof args.content === 'string' ? args.content : undefined,
+          tags:       Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
+          importance: typeof args.importance === 'number' ? args.importance : undefined,
+          agent_id:   parentAgentId ?? null,
+          agent_name: agent?.name,
+          session_id: sessionId ?? null,
+        });
+      } else if (name === 'save_session_summary') {
+        result = await tools.saveSessionSummaryTool({
+          summary:    String(args.summary ?? ''),
+          title:      typeof args.title === 'string' ? args.title : undefined,
+          tags:       Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
+          importance: typeof args.importance === 'number' ? args.importance : undefined,
+          agent_id:   parentAgentId ?? null,
+          agent_name: agent?.name,
+          session_id: sessionId ?? null,
+        });
+      } else {
+        result = await tools.compactContextTool({
+          conversation: String(args.conversation ?? ''),
+          agent_id:     parentAgentId ?? null,
+          agent_name:   agent?.name,
+          session_id:   sessionId ?? null,
+        });
+      }
+      return JSON.stringify(result);
+    } catch (err) {
+      return JSON.stringify({ ok: false, error: (err as Error).message });
+    }
+  }
+
+  // ── exec tools (gated on agent.exec_enabled at registration time) ─────────
+  if (name === 'bash_run' || name === 'fs_read' || name === 'fs_write' || name === 'fs_list' || name === 'fs_search') {
+    let args: Record<string, unknown>;
+    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: `Invalid ${name} arguments` }); }
+    const exec = await import('../system/exec-tools');
+    let result: unknown;
+    if (name === 'bash_run') {
+      result = await exec.bashRun({
+        command:    String(args.command ?? ''),
+        cwd:        typeof args.cwd === 'string' ? args.cwd : undefined,
+        timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        agentId:    parentAgentId,
+      });
+    } else if (name === 'fs_read') {
+      result = await exec.fsRead({ path: String(args.path ?? ''), agentId: parentAgentId });
+    } else if (name === 'fs_write') {
+      result = await exec.fsWrite({
+        path:    String(args.path ?? ''),
+        content: String(args.content ?? ''),
+        mode:    args.mode === 'create' || args.mode === 'append' ? args.mode : 'overwrite',
+        agentId: parentAgentId,
+      });
+    } else if (name === 'fs_list') {
+      result = await exec.fsList({ path: String(args.path ?? ''), agentId: parentAgentId });
+    } else {
+      result = await exec.fsSearch({
+        pattern:     String(args.pattern ?? ''),
+        path:        typeof args.path === 'string' ? args.path : undefined,
+        max_results: typeof args.max_results === 'number' ? args.max_results : undefined,
+        agentId:     parentAgentId,
+      });
+    }
+    return JSON.stringify(result);
+  }
+
   // ── message_agent ──────────────────────────────────────────────────────────
   if (name === 'message_agent') {
     let args: { to: string; message: string; context?: string };
@@ -361,7 +662,7 @@ async function executeTool(
     }
   }
 
-  const result = spawnAgent({ ...args, parentAgentId });
+  const result = await spawnAgentAsync({ ...args, parentAgentId });
   if (!result.ok || !result.agent) {
     return JSON.stringify({ error: result.reason ?? 'Spawn failed' });
   }
@@ -431,6 +732,8 @@ async function chatStreamOpenAI(
   onMeta?: (e: MetaEvent) => void | Promise<void>,
 ): Promise<void> {
   const history = getOrCreateHistory(sessionId, systemPrompt, agentId);
+  const _agentRecordForCompaction = agentId ? getAgentById(agentId) : undefined;
+  await compactOpenAi(history, userMessage, agentId, _agentRecordForCompaction?.name, sessionId);
   history.push({ role: 'user', content: userMessage });
   saveMessage(sessionId, 'user', userMessage);
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
@@ -469,12 +772,16 @@ async function chatStreamOpenAI(
       metadata:  { inputTokens, iteration },
     });
 
+    const resolvedModel = resolveAgentModel(agentRecord, userMessage, 'voidai');
     const stream = await getClient().chat.completions.create({
-      model:    config.voidai.model,
-      messages: history,
-      stream:   true,
+      model:           resolvedModel,
+      messages:        history,
+      stream:          true,
+      stream_options:  { include_usage: true },
       ...(tools.length > 0 ? { tools } : {}),
     });
+    let realInputTokens:  number | null = null;
+    let realOutputTokens: number | null = null;
 
     let textAccum = '';
     // Accumulate tool call chunks: index → { id, name, args }
@@ -482,6 +789,14 @@ async function chatStreamOpenAI(
     let finishReason: string | null = null;
 
     for await (const chunk of stream) {
+      // Final chunk carries usage when stream_options.include_usage is true.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const usage = (chunk as any).usage;
+      if (usage) {
+        if (typeof usage.prompt_tokens === 'number')     realInputTokens  = usage.prompt_tokens;
+        if (typeof usage.completion_tokens === 'number') realOutputTokens = usage.completion_tokens;
+      }
+
       const choice = chunk.choices[0];
       if (choice?.finish_reason) finishReason = choice.finish_reason;
 
@@ -543,6 +858,22 @@ async function chatStreamOpenAI(
       saveMessage(sessionId, 'assistant', textAccum, agentId);
       logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId, outputTokens }, sessionId);
       logger.debug('Agent responded', { agentId, chars: textAccum.length });
+      logSpend({
+        provider:      'voidai',
+        model_id:      resolvedModel,
+        input_tokens:  realInputTokens  ?? inputTokens,
+        output_tokens: realOutputTokens ?? outputTokens,
+        agent_id:      agentId ?? null,
+        session_id:    sessionId,
+      });
+      ingestExchangeAsync({
+        source:         'chat',
+        agent_id:       agentId,
+        agent_name:     agentRecord?.name,
+        session_id:     sessionId,
+        user_text:      userMessage,
+        assistant_text: textAccum,
+      });
     } else {
       generation?.end({});
     }
@@ -571,7 +902,14 @@ async function chatStreamAnthropic(
   agentId?: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
 ): Promise<void> {
+  if (config.claude.backend === 'claude-cli') {
+    // Subscription auth path. No silent fallback to anthropic-api on failure.
+    return chatStreamClaudeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
+  }
+
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
+  const _agentRecordForCompaction = agentId ? getAgentById(agentId) : undefined;
+  await compactAnthropic(history, userMessage, agentId, _agentRecordForCompaction?.name, sessionId);
   history.push({ role: 'user', content: userMessage });
   saveMessage(sessionId, 'user', userMessage);
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
@@ -593,7 +931,7 @@ async function chatStreamAnthropic(
     activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
   }
 
-  const model = agentRecord?.model ?? 'claude-sonnet-4-6';
+  const model = resolveAgentModel(agentRecord, userMessage, 'anthropic') || 'claude-sonnet-4-6';
   const lf     = getLangfuse();
   const trace  = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
 
@@ -618,7 +956,7 @@ async function chatStreamAnthropic(
     const stream = getAnthropicClient().messages.stream({
       model,
       max_tokens: 8096,
-      system: prefixSystemPromptForOAuth(activeSystemPrompt),
+      system: activeSystemPrompt,
       messages: history,
       ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
     });
@@ -626,9 +964,15 @@ async function chatStreamAnthropic(
     let textAccum = '';
     const toolBlocks = new Map<number, { id: string; name: string; inputAcc: string }>();
     let stopReason: string | null = null;
+    let realInputTokens:  number | null = null;
+    let realOutputTokens: number | null = null;
 
     for await (const event of stream) {
-      if (event.type === 'content_block_start') {
+      if (event.type === 'message_start') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const u = (event as any).message?.usage;
+        if (u && typeof u.input_tokens === 'number') realInputTokens = u.input_tokens;
+      } else if (event.type === 'content_block_start') {
         if (event.content_block.type === 'tool_use') {
           toolBlocks.set(event.index, { id: event.content_block.id, name: event.content_block.name, inputAcc: '' });
         }
@@ -642,6 +986,9 @@ async function chatStreamAnthropic(
         }
       } else if (event.type === 'message_delta') {
         stopReason = event.delta.stop_reason ?? null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const u = (event as any).usage;
+        if (u && typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
       }
     }
 
@@ -681,6 +1028,22 @@ async function chatStreamAnthropic(
       saveMessage(sessionId, 'assistant', textAccum, agentId);
       logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId, outputTokens }, sessionId);
       logger.debug('Anthropic agent responded', { agentId, chars: textAccum.length });
+      logSpend({
+        provider:      'anthropic',
+        model_id:      model,
+        input_tokens:  realInputTokens  ?? estimateTokens(inputText),
+        output_tokens: realOutputTokens ?? outputTokens,
+        agent_id:      agentId ?? null,
+        session_id:    sessionId,
+      });
+      ingestExchangeAsync({
+        source:         'chat',
+        agent_id:       agentId,
+        agent_name:     agentRecord?.name,
+        session_id:     sessionId,
+        user_text:      userMessage,
+        assistant_text: textAccum,
+      });
     } else {
       generation?.end({});
     }
@@ -693,6 +1056,197 @@ async function chatStreamAnthropic(
   }
 
   lf?.flushAsync().catch(() => {});
+}
+
+// ── Claude CLI streaming (subscription auth) ─────────────────────────────────
+
+// ── Auto-compaction adapters ────────────────────────────────────────────────
+
+function openAiHistoryToTurns(history: ChatCompletionMessageParam[]): HistoryTurn[] {
+  return history.map(m => {
+    const role = (m.role === 'system' || m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+      ? m.role : 'system';
+    let text = '';
+    if (typeof m.content === 'string') text = m.content;
+    else if (Array.isArray(m.content)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      text = m.content.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).filter(Boolean).join('\n');
+    }
+    return { role, text };
+  });
+}
+
+function anthropicHistoryToTurns(history: Anthropic.Messages.MessageParam[]): HistoryTurn[] {
+  return history.map(m => {
+    let text = '';
+    if (typeof m.content === 'string') text = m.content;
+    else if (Array.isArray(m.content)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      text = (m.content as any[]).map(b => (b?.type === 'text' ? b.text : '')).filter(Boolean).join('\n');
+    }
+    return { role: m.role as 'user' | 'assistant', text };
+  });
+}
+
+async function compactOpenAi(
+  history: ChatCompletionMessageParam[],
+  newUserText: string,
+  agentId?: string,
+  agentName?: string | null,
+  sessionId?: string | null,
+): Promise<void> {
+  const turns = openAiHistoryToTurns(history);
+  const plan  = await maybeCompactHistory({ history: turns, newUserText, agentId, agentName: agentName ?? null, sessionId: sessionId ?? null });
+  if (!plan) return;
+  history.splice(plan.from, plan.to - plan.from + 1, { role: 'system', content: plan.replacement.text });
+  logger.info('compactor: OpenAI history compacted', { reclaimed: plan.tokensReclaimed, vault: plan.summaryWritten.vault_path });
+}
+
+async function compactAnthropic(
+  history: Anthropic.Messages.MessageParam[],
+  newUserText: string,
+  agentId?: string,
+  agentName?: string | null,
+  sessionId?: string | null,
+): Promise<void> {
+  const turns = anthropicHistoryToTurns(history);
+  const plan  = await maybeCompactHistory({ history: turns, newUserText, agentId, agentName: agentName ?? null, sessionId: sessionId ?? null });
+  if (!plan) return;
+  // Anthropic messages must alternate user/assistant. Splice in as a user message
+  // labeled clearly so the model treats it as prior-turn context.
+  const replacement: Anthropic.Messages.MessageParam = {
+    role: 'user',
+    content: plan.replacement.text,
+  };
+  history.splice(plan.from, plan.to - plan.from + 1, replacement);
+  logger.info('compactor: Anthropic history compacted', { reclaimed: plan.tokensReclaimed, vault: plan.summaryWritten.vault_path });
+}
+
+function flattenAnthropicHistoryAsText(history: Anthropic.Messages.MessageParam[]): string {
+  if (history.length === 0) return '';
+  const lines: string[] = [];
+  for (const msg of history) {
+    const role = msg.role === 'user' ? 'User' : 'Assistant';
+    if (typeof msg.content === 'string') {
+      lines.push(`[${role}] ${msg.content}`);
+    } else {
+      const text = msg.content
+        .map(b => (b.type === 'text' ? b.text : ''))
+        .filter(Boolean)
+        .join('\n');
+      if (text) lines.push(`[${role}] ${text}`);
+    }
+  }
+  return lines.join('\n\n');
+}
+
+async function chatStreamClaudeCli(
+  userMessage: string,
+  sessionId: string,
+  onChunk: (chunk: string) => void | Promise<void>,
+  systemPrompt: string,
+  agentId?: string,
+  _onMeta?: (e: MetaEvent) => void | Promise<void>,
+): Promise<void> {
+  const history = getOrCreateAnthropicHistory(sessionId, agentId);
+  const agentRecord = agentId ? getAgentById(agentId) : undefined;
+  await compactAnthropic(history, userMessage, agentId, agentRecord?.name, sessionId);
+  saveMessage(sessionId, 'user', userMessage);
+  logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
+
+  const allAgents = getAllAgents();
+  let activeSystemPrompt = systemPrompt;
+  if (agentRecord?.name === 'Alfred') {
+    activeSystemPrompt = buildOrchestratorPrompt(allAgents);
+  } else if (agentRecord) {
+    activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
+  }
+
+  const priorHistoryText = flattenAnthropicHistoryAsText(history);
+  const finalSystemPrompt = priorHistoryText
+    ? `${activeSystemPrompt}\n\n## Recent conversation\n${priorHistoryText}`
+    : activeSystemPrompt;
+
+  const model = resolveAgentModel(agentRecord, userMessage, 'anthropic') || 'claude-sonnet-4-6';
+  const trace = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
+  const generation = trace?.generation({
+    name: 'claude-cli-completion',
+    model,
+    input: { systemPrompt: finalSystemPrompt, prompt: userMessage },
+    startTime: new Date(),
+  });
+
+  const maxRetries = config.claude.retryMax;
+  const baseMs     = config.claude.retryBaseMs;
+  let attempt = 0;
+  let textAccum = '';
+  let realInputTokens:  number | null = null;
+  let realOutputTokens: number | null = null;
+
+  while (true) {
+    try {
+      textAccum = '';
+      for await (const chunk of streamClaudeCliChat({
+        prompt:       userMessage,
+        systemPrompt: finalSystemPrompt,
+        sessionId,
+        model,
+        execEnabled:  !!agentRecord?.exec_enabled,
+        onUsage:      (u) => {
+          if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
+          if (typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
+        },
+      })) {
+        await onChunk(chunk);
+        textAccum += chunk;
+      }
+      break;
+    } catch (err) {
+      if (err instanceof ClaudeCliRateLimitError && attempt < maxRetries) {
+        const delay = baseMs * Math.pow(2, attempt);
+        attempt++;
+        logger.warn('Claude CLI 429 — backing off', { attempt, delayMs: delay });
+        try {
+          logHive('claude_cli_throttled', 'Claude CLI 429, retrying with backoff', agentId, {
+            attempt,
+            delayMs: delay,
+          });
+        } catch {
+          // hive logging is best-effort
+        }
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      generation?.end({ output: '[error]', metadata: { error: (err as Error).message } });
+      if (err instanceof ClaudeCliAuthError) {
+        logger.error('Claude CLI auth failed — run `claude` to refresh credentials');
+      }
+      throw err;
+    }
+  }
+
+  history.push({ role: 'user',      content: userMessage });
+  history.push({ role: 'assistant', content: textAccum });
+  saveMessage(sessionId, 'assistant', textAccum, agentId);
+  logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId }, sessionId);
+  generation?.end({ output: textAccum, metadata: { outputTokens: estimateTokens(textAccum) } });
+  trace?.update({ output: textAccum });
+  logSpend({
+    provider:      'anthropic',
+    model_id:      model,
+    input_tokens:  realInputTokens  ?? estimateTokens(finalSystemPrompt + userMessage),
+    output_tokens: realOutputTokens ?? estimateTokens(textAccum),
+    agent_id:      agentId ?? null,
+    session_id:    sessionId,
+  });
+  ingestExchangeAsync({
+    source:         'chat',
+    agent_id:       agentId,
+    agent_name:     agentRecord?.name,
+    session_id:     sessionId,
+    user_text:      userMessage,
+    assistant_text: textAccum,
+  });
 }
 
 // ── Public chatStream dispatcher ─────────────────────────────────────────────

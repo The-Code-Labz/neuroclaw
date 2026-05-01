@@ -18,6 +18,12 @@ import { spawnAgent } from '../system/spawner';
 import { getHiveEvents } from '../system/hive-mind';
 import { taskEvents, getTasksBySession, type BackgroundTask } from '../system/background-tasks';
 import { getAnthropicAuthStatus } from '../agent/anthropic-client';
+import { getClaudeCliQueueLength, probeClaudeCli } from '../providers/claude-cli';
+import {
+  listCatalog, refreshCatalog, setTierOverride, setPriceOverride,
+  type ModelTier, type ModelProvider,
+} from '../system/model-catalog';
+import { spendLastHourWithCost, spendByTierLastHour, spendByModelLastHour } from '../system/model-spend';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerApiRoutes(app: Hono<any>): void {
@@ -44,7 +50,31 @@ export function registerApiRoutes(app: Hono<any>): void {
     });
   });
 
-  // ── Sessions / Messages ──────────────────────────────────────────────────
+  // ── Claude backend status ────────────────────────────────────────────────
+  app.get('/api/claude/status', async (c) => {
+    const probe = await probeClaudeCli();
+    const apiKey = process.env.ANTHROPIC_API_KEY?.trim() ?? '';
+    const recent429 = (getDb().prepare(
+      "SELECT COUNT(*) as n FROM hive_mind WHERE action = 'claude_cli_throttled' AND created_at > datetime('now', '-1 hour')"
+    ).get() as { n: number }).n;
+    return c.json({
+      backend:           config.claude.backend,
+      cliCommand:        config.claude.cliCommand,
+      cliBinaryFound:    probe.ok,
+      cliVersion:        probe.version,
+      cliError:          probe.error,
+      maxTurns:          config.claude.maxTurns,
+      timeoutMs:         config.claude.timeoutMs,
+      concurrencyLimit:  config.claude.concurrencyLimit,
+      queueLength:       getClaudeCliQueueLength(),
+      retryMax:          config.claude.retryMax,
+      retryBaseMs:       config.claude.retryBaseMs,
+      anthropicApiKeySet: !!apiKey,
+      auth:              getAnthropicAuthStatus(),
+      throttled1h:       recent429,
+    });
+  });
+
   // ── Sessions / Messages ──────────────────────────────────────────────────
   app.get('/api/sessions', (c) => {
     const sessions = getSessions(100);
@@ -103,7 +133,7 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.get('/api/agents', (c) => c.json(getAllAgents()));
 
   app.post('/api/agents', async (c) => {
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string; exec_enabled?: boolean; model_tier?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const name = (body.name ?? '').trim();
@@ -121,6 +151,8 @@ export function registerApiRoutes(app: Hono<any>): void {
       role:         body.role ?? 'agent',
       capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
       provider,
+      exec_enabled: !!body.exec_enabled,
+      model_tier:   body.model_tier,
     });
     return c.json(agent, 201);
   });
@@ -130,7 +162,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     const agent = getAgentById(id);
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
 
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; model_tier?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     if (agent.name === 'Alfred' && body.name && body.name.trim() !== 'Alfred') {
@@ -146,6 +178,8 @@ export function registerApiRoutes(app: Hono<any>): void {
       capabilities:  Array.isArray(body.capabilities) ? body.capabilities : undefined,
       status:        body.status,
       provider:      body.provider,
+      exec_enabled:  body.exec_enabled,
+      model_tier:    body.model_tier,
     });
     return c.json(getAgentById(id));
   });
@@ -244,6 +278,123 @@ export function registerApiRoutes(app: Hono<any>): void {
     const exists = getDb().prepare('SELECT id FROM memories WHERE id = ?').get(id);
     if (!exists) return c.json({ error: 'Memory not found' }, 404);
     getDb().prepare('DELETE FROM memories WHERE id = ?').run(id);
+    return c.json({ ok: true });
+  });
+
+  // ── memory_index (v1.4+ long-term memory) ────────────────────────────────
+  app.get('/api/memory/index', (c) => {
+    const limit = Math.min(500, parseInt(c.req.query('limit') ?? '100', 10));
+    const type  = c.req.query('type');
+    const sessionId = c.req.query('sessionId');
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (type)      { where.push('type = ?');       args.push(type); }
+    if (sessionId) { where.push('session_id = ?'); args.push(sessionId); }
+    const sql = `
+      SELECT id, type, title, summary, tags, importance, salience,
+             agent_id, session_id, vault_note_id, vault_path,
+             created_at, last_accessed
+      FROM memory_index
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY datetime(COALESCE(last_accessed, created_at)) DESC
+      LIMIT ?
+    `;
+    args.push(limit);
+    return c.json(getDb().prepare(sql).all(...args));
+  });
+
+  app.get('/api/memory/index/stats', (c) => {
+    const db = getDb();
+    const total      = (db.prepare('SELECT COUNT(*) as n FROM memory_index').get() as { n: number }).n;
+    const byType     = db.prepare(`
+      SELECT type, COUNT(*) as n,
+             AVG(importance) as avg_importance,
+             AVG(salience)   as avg_salience
+      FROM memory_index GROUP BY type ORDER BY n DESC
+    `).all();
+    const lastHour   = (db.prepare(`
+      SELECT COUNT(*) as n FROM memory_index WHERE created_at > datetime('now','-1 hour')
+    `).get() as { n: number }).n;
+    const lastDay    = (db.prepare(`
+      SELECT COUNT(*) as n FROM memory_index WHERE created_at > datetime('now','-1 day')
+    `).get() as { n: number }).n;
+    const cappedHour = (db.prepare(`
+      SELECT COUNT(*) as n FROM hive_mind
+       WHERE action = 'memory_capped' AND created_at > datetime('now','-1 hour')
+    `).get() as { n: number }).n;
+    const compactedDay = (db.prepare(`
+      SELECT COUNT(*) as n FROM hive_mind
+       WHERE action = 'memory_extracted'
+         AND metadata LIKE '%"source":"auto_compact"%'
+         AND created_at > datetime('now','-1 day')
+    `).get() as { n: number }).n;
+    return c.json({ total, byType, lastHour, lastDay, cappedHour, compactedDay });
+  });
+
+  app.get('/api/memory/hive', (c) => {
+    const limit = Math.min(500, parseInt(c.req.query('limit') ?? '100', 10));
+    const rows = getDb().prepare(`
+      SELECT id, agent_id, action, summary, metadata, created_at
+      FROM hive_mind
+      WHERE action IN ('memory_extracted','memory_skipped','memory_capped')
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit);
+    return c.json(rows);
+  });
+
+  // ── Model catalog ────────────────────────────────────────────────────────
+  app.get('/api/models', (c) => {
+    const provider = c.req.query('provider');
+    const tier = c.req.query('tier') as ModelTier | undefined;
+    const includeUnavailable = c.req.query('includeUnavailable') === '1';
+    return c.json(listCatalog({ provider, tier, includeUnavailable }));
+  });
+
+  app.post('/api/models/refresh', async (c) => {
+    const provider = (c.req.query('provider') ?? 'voidai') as ModelProvider;
+    try {
+      const result = await refreshCatalog(provider);
+      return c.json({ ok: true, provider, ...result });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/models/:provider/:modelId/tier', async (c) => {
+    const provider = c.req.param('provider');
+    const modelId  = c.req.param('modelId');
+    let body: { tier?: ModelTier | null };
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (body.tier !== null && !['low', 'mid', 'high'].includes(String(body.tier))) {
+      return c.json({ error: 'tier must be low|mid|high|null' }, 400);
+    }
+    setTierOverride(provider, modelId, body.tier ?? null);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/models/:provider/:modelId/price', async (c) => {
+    const provider = c.req.param('provider');
+    const modelId  = c.req.param('modelId');
+    let body: { input?: number | null; output?: number | null };
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    setPriceOverride(provider, modelId, body.input ?? null, body.output ?? null);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/models/spend', (c) => {
+    return c.json({
+      lastHour:    spendLastHourWithCost(),
+      byTier:      spendByTierLastHour(),
+      byModel:     spendByModelLastHour(20),
+    });
+  });
+
+  app.delete('/api/memory/index/:id', (c) => {
+    const id = c.req.param('id');
+    const exists = getDb().prepare('SELECT id FROM memory_index WHERE id = ?').get(id);
+    if (!exists) return c.json({ error: 'Memory not found' }, 404);
+    getDb().prepare('DELETE FROM memory_index WHERE id = ?').run(id);
     return c.json({ ok: true });
   });
     app.get('/api/analytics', (c) => { try { return c.json(getAnalyticsSummary()); } catch(e) { console.error('Analytics:',e); return c.json({error:String(e)},500); } });
