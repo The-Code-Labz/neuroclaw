@@ -240,6 +240,14 @@ export const config = {
       maxTtsChars:  parseInt(process.env.AUDIO_MAX_TTS_CHARS ?? '4000', 10),
     };
   },
+  get browser() {
+    return {
+      url:       process.env.BROWSERLESS_URL?.trim() ?? '',
+      token:     process.env.BROWSERLESS_TOKEN?.trim() ?? '',
+      timeoutMs: parseInt(process.env.BROWSERLESS_TIMEOUT_MS ?? '60000', 10),
+      enabled:   !!(process.env.BROWSERLESS_URL?.trim() && process.env.BROWSERLESS_TOKEN?.trim()),
+    };
+  },
   get composio() {
     const apiKey = process.env.COMPOSIO_API_KEY?.trim();
     return {
