@@ -1496,13 +1496,14 @@ Eight new tools, all gated behind `gateBrowserSession` (see [Per-agent gating](#
 | Tool | Purpose | Args → Result |
 |---|---|---|
 | `browser_open_tab` | Open a new tab in the agent's browser session and load a URL. | `(url: string, viewport?: {width:number, height:number}, wait_until?: 'load'\|'domcontentloaded'\|'networkidle')` → `{tabId, url, title, snapshot}` |
-| `browser_snapshot` | Re-extract the semantic snapshot of the current tab without navigating. Use after a wait or to refresh stale refs. | `(tabId: string, full?: boolean)` → `{snapshot, snapshotVersion, url, title}` |
+| `browser_snapshot` | Re-extract the semantic snapshot of the current tab without navigating. Use after a wait or to refresh stale refs. `mode:'diff'` returns a JSON-patch against the prior `snapshotVersion` (token-saver for multi-step flows); `text_content:true` includes inner text of `main`/`article` landmarks (capped ~10k chars) for article-summarization flows. | `(tabId: string, full?: boolean, mode?: 'full'\|'diff', text_content?: boolean)` → `{snapshot, snapshotVersion, url, title, diff?: JSONPatch[], text?: string}` |
 | `browser_click` | Click element by ref. | `(tabId: string, ref: string, button?: 'left'\|'right'\|'middle', clickCount?: number)` → `{snapshot, snapshotVersion, navigated: boolean}` |
 | `browser_type` | Type into an input/textarea ref. Pass `submit:true` to press Enter after. | `(tabId: string, ref: string, text: string, submit?: boolean, clear_first?: boolean)` → `{snapshot, snapshotVersion}` |
 | `browser_select` | Pick an option in a `<select>` or combobox by visible label or value. | `(tabId: string, ref: string, option: string)` → `{snapshot, snapshotVersion}` |
 | `browser_navigate` | Direct navigation on an existing tab — back/forward/reload/goto. | `(tabId: string, action: 'goto'\|'back'\|'forward'\|'reload', url?: string)` → `{snapshot, snapshotVersion, url, title}` |
 | `browser_wait_for` | Block until a condition holds (selector visible, ref disappears, URL match, or fixed ms). Returns the post-wait snapshot. | `(tabId: string, condition: {ref?: string, selector?: string, url_includes?: string, ms?: number}, timeout_ms?: number)` → `{snapshot, snapshotVersion, matched: string}` |
 | `browser_close_tab` | Close a tab and free its slot. The session itself stays open until idle TTL. | `(tabId: string)` → `{closed: true, remaining_tabs: number}` |
+| `browser_upload` | Upload one or more files to a file-input ref. Requires both `browser_session_enabled` AND `exec_enabled` on the agent — file paths are routed through the existing `gateExec` allowlist before Browserless sees them. | `(tabId: string, ref: string, file_paths: string[])` → `{snapshot, snapshotVersion, uploaded: number}` |
 
 ### Semantic locator protocol (`@e1...@eN`)
 
@@ -1760,6 +1761,7 @@ Connection lives in `src/system/browser-sessions.ts`:
   ```
 
 - **New dep:** `puppeteer-core` (NOT `puppeteer`). Puppeteer-core ships without the bundled Chromium download — we don't need it because Browserless brings its own Chrome on the remote side. Saves ~170MB on `npm install` and avoids platform-specific headaches in CI.
+- **Popup auto-attach.** Every connected `Page` gets a `page.on('popup', child => attachAsTab(child, openerRef))` listener. New tabs opened by `target=_blank` links, `window.open`, or OAuth redirects are inserted into `browser_sessions` with the same `agent_id` and a fresh `tabId`. The parent tab's next action response surfaces them under `meta.new_tabs: [{ tabId, opener_ref, url }]` so the agent can switch focus. Popups that would push the agent over `BROWSER_MAX_TABS_PER_AGENT` are closed immediately with a warning logged to hive-mind.
 
 ### Per-agent gating
 
@@ -1843,7 +1845,7 @@ The agent never sees a CSS selector. The handler resolves `@e9` against the refM
 | `BROWSER_USER_AGENT` | No | recent Chrome on Linux | Override the UA string sent on every request. |
 | `BROWSER_DEFAULT_VIEWPORT` | No | `1280x800` | Default viewport when `browser_open_tab` doesn't pass one. |
 | `BROWSER_SNAPSHOT_TOKEN_BUDGET` | No | `3500` | Soft budget the snapshot truncator targets before it starts collapsing landmarks. |
-| `BROWSER_PROFILE_PERSIST` | No | `false` | When true, sessions reuse a per-agent Browserless profile so cookies survive past TTL. See open question #3. |
+| `BROWSER_PROFILE_PERSIST` | No | `false` | When true (and the agent's `browser_profile_persist` column is set), the session reuses a per-agent Browserless profile (`--user-data-dir=/profiles/agent-<id>`) so cookies survive past TTL. Opt-in per agent because it persists every saved login for that agent's blast radius. Startup hard-fails if the configured Browserless tier doesn't support the launch flag. |
 
 ### Hive Mind actions added by Phase C
 
@@ -1883,12 +1885,16 @@ Phase B (`browser_fetch`, `browser_screenshot`, `browser_pdf`, `browser_run_js`)
 
 No Phase B deprecation planned. Phase B tools stay un-gated (just the global `MCP_ENABLED` check via `gateMcp` when applicable). Phase C tools are gated per-agent. New `Researcher`-class agents (long-running, multi-step) get the `browser_session_enabled` flag at seed time; default specialists (Coder, Planner) keep only Phase B.
 
-### Open questions
+### Resolved scope decisions
 
-1. **Diff snapshots.** Should `browser_snapshot` on a tab whose `snapshotVersion > 1` return only a JSON-patch diff against the previous snapshot (with the agent reconstructing the full tree), to save tokens on multi-step flows? Token win is large on long forms; complexity cost is the agent has to keep state. Lean: ship full snapshots first, add diff mode as an opt-in `browser_snapshot(tabId, format:'diff')` if real flows hit budget pain.
-2. **Multi-tab pop-ups (OAuth, "Open in new window" links).** Auto-attach popups to the same session and surface them as new `tabId`s in the next snapshot's `meta.new_tabs`, or require the agent to explicitly call `browser_open_tab` for the popup URL? Auto-attach is more honest about what the page did; explicit-only is safer against runaway popups.
-3. **Cookie/profile persistence across sessions.** When a session expires, do we keep the cookies in a per-agent Browserless **profile** (`?launch={"args":["--user-data-dir=/profiles/agent-xyz"]}`) so the next session starts already logged in? Big UX win for "researcher checks Jira every morning"; security exposure is real (any compromise of that agent leaks every saved login). Default-off, opt-in per agent feels right.
-4. **File uploads.** Browserless supports `page.elementHandle.uploadFile()` — do we expose `browser_upload(tabId, ref, file_path)` in Phase C, or push that to Phase D? It needs a story for *where* the file comes from (host fs via exec tools? a vault attachment?).
-5. **Concurrent tabs per agent.** Cap at how many simultaneous open tabs per `agent_id`? A confused agent can spawn 30 tabs on infinite-scroll. Suggest `BROWSER_MAX_TABS_PER_AGENT=5` with the same `closed_at IS NULL` accounting we use for temp agents.
-6. **Snapshot for non-interactive content (long article body).** Right now the snapshot only emits structural roles. For "summarize this article," the agent has to follow up with `browser_run_js({ tabId, code: 'document.querySelector("main").innerText' })`. Worth adding a `text_content: true` flag to `browser_snapshot` that includes inner text for `main`/`article` landmarks (capped at ~10k chars), or keep the separation clean?
+The six open questions raised during plan review were resolved before finalization and are folded into the spec above. Recorded here so the rationale isn't lost:
+
+1. **Diff snapshots → hybrid (both modes ship in v1).** `browser_snapshot(tabId, mode:'full')` is the default; `mode:'diff'` returns a JSON-patch against the prior `snapshotVersion`. Agents pick per call. Diff is the right token-saver for multi-step flows where the page mutates incrementally; full is correct on first read or after a navigation.
+2. **Multi-tab popups → both auto-attach and explicit.** A `page.on('popup')` listener attaches OAuth/`target=_blank`/`window.open` popups as new `tabId`s in the same session and surfaces them in the parent's next snapshot under `meta.new_tabs`. `browser_open_tab(url)` still works for explicit cases. Auto-attach is honest about what the page did; the per-agent tab cap (#5 below) bounds the runaway-popup risk.
+3. **Cookie/profile persistence → opt-in if Browserless tier supports it.** `BROWSER_PROFILE_PERSIST=true` plus a per-agent `browser_profile_persist` column enables a Browserless `--user-data-dir` per agent so cookies survive past TTL. Default off. Startup hard-fails if the configured Browserless tier rejects the launch flag (so we don't silently lose persistence in prod).
+4. **File uploads → ship in Phase C.** `browser_upload(tabId, ref, file_paths)` is in the v1 tool surface. File paths route through the existing `gateExec` allowlist, so only agents with both `exec_enabled` AND `browser_session_enabled` can upload. Vault-attachment and inline-base64 sources deferred to Phase D.
+5. **Concurrent tabs per agent → cap at 5.** `BROWSER_MAX_TABS_PER_AGENT=5`. Enforced inside `browser_open_tab` AND on popup auto-attach (popups over cap close immediately with a hive-mind warning).
+6. **Snapshot text_content flag → yes, default off.** `browser_snapshot(tabId, text_content:true)` (and the same flag on every action's returned snapshot) includes inner text of `main`/`article` landmarks, capped at 10k chars. Saves a `browser_run_js` round-trip for "read and summarize this article" flows. Off by default keeps the snapshot focused on interaction and avoids token bloat for the common case.
+
+No open items remain. Plan is ready for the standard `/gsd-plan-phase` (or equivalent) implementation flow when Phase C is greenlit.
 
