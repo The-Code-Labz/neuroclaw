@@ -49,6 +49,7 @@ import {
   createBackgroundTask, completeBackgroundTask, failBackgroundTask, taskEvents,
 } from '../system/background-tasks';
 import { bashRun, fsRead, fsWrite, fsList, fsSearch } from '../system/exec-tools';
+import { browserlessRequest } from '../system/browser';
 import * as S from './schemas';
 import type { ToolContext } from './context';
 import { getMcpRegistryTools, findMcpRegistryTool } from './adapters/mcp-registry-adapter';
@@ -85,6 +86,11 @@ function gateExec(ctx: ToolContext): GateResult {
   const agent = getAgentById(ctx.agentId);
   if (!agent?.exec_enabled) return { allowed: false, reason: 'exec is not enabled for this agent' };
   return ALLOW;
+}
+function gateBrowser(_ctx: ToolContext): GateResult {
+  return config.browser.enabled
+    ? ALLOW
+    : { allowed: false, reason: 'browser tools disabled (set BROWSERLESS_URL and BROWSERLESS_TOKEN in .env)' };
 }
 
 // Tools that recursively run another agent through alfred.chatStream require
@@ -999,6 +1005,180 @@ export const registry: ToolDef[] = [
           return { ok: true, deleted: args.filename };
         }
         return { ok: false, error: `unknown action "${args.action}"` };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+
+  // ── browser (browserless) ───────────────────────────────────────────────
+  // Hosted Chromium over plain HTTP — no local Chrome, no Rust daemon. Enabled
+  // by setting BROWSERLESS_URL + BROWSERLESS_TOKEN. Each handler gates on
+  // config.browser.enabled, surfaces errors as {ok:false, error}, and logs to
+  // hive_mind under the 'browser_action' action for observability.
+  {
+    name:        'browser_fetch',
+    description: 'Fetch a fully-rendered web page through a hosted Chromium (browserless /content). Returns the post-JS HTML — works for SPAs that don\'t serve content in the initial response. Set include_main_text=true to also get article text + title via @mozilla/readability. Set include_screenshot=true to also receive a base64 JPEG of the full page. wait_for accepts either a CSS selector to wait on or a millisecond delay.',
+    schema:      S.browserFetchSchema,
+    shape:       S.browserFetchShape,
+    gate:        gateBrowser,
+    handler: async (args, ctx) => {
+      try {
+        const body: Record<string, unknown> = {
+          url:         args.url,
+          gotoOptions: { waitUntil: 'networkidle2' },
+        };
+        if (args.wait_for !== undefined) body.waitFor = args.wait_for;
+
+        const htmlRaw = await browserlessRequest('/content', body, { responseType: 'text' });
+        let html = typeof htmlRaw === 'string' ? htmlRaw : String(htmlRaw);
+
+        // Cap raw HTML to keep agent contexts sane (browserless can return MBs).
+        const HTML_CAP = 500_000;
+        let html_truncated = false;
+        if (html.length > HTML_CAP) {
+          html = html.slice(0, HTML_CAP);
+          html_truncated = true;
+        }
+
+        const out: Record<string, unknown> = { ok: true, url: args.url, html, bytes: html.length };
+        if (html_truncated) {
+          out.html_truncated = true;
+          out.note = `HTML truncated to ${HTML_CAP} bytes (original was larger).`;
+        }
+
+        if (args.include_main_text) {
+          try {
+            const { JSDOM } = await import('jsdom');
+            const { Readability } = await import('@mozilla/readability');
+            const dom     = new JSDOM(html, { url: args.url });
+            const reader  = new Readability(dom.window.document);
+            const article = reader.parse();
+            if (article) {
+              out.title    = article.title;
+              out.byline   = article.byline;
+              out.length   = article.length;
+              out.mainText = article.textContent;
+            } else {
+              out.readability_failed = true;
+            }
+          } catch (err) {
+            out.readability_failed = true;
+            out.readability_error  = (err as Error).message;
+          }
+        }
+
+        if (args.include_screenshot) {
+          try {
+            const shotBuf = await browserlessRequest('/screenshot', {
+              url:     args.url,
+              options: { fullPage: true, type: 'jpeg', quality: 70 },
+            }, { responseType: 'binary' }) as Buffer;
+            out.screenshot = {
+              base64: shotBuf.toString('base64'),
+              bytes:  shotBuf.length,
+              mime:   'image/jpeg',
+            };
+          } catch (err) {
+            out.screenshot_error = (err as Error).message;
+          }
+        }
+
+        logHive('browser_action', `browser_fetch ${args.url}`, ctx.agentId ?? undefined, {
+          tool: 'browser_fetch', url: args.url, html_bytes: html.length, html_truncated,
+          included: { main_text: !!args.include_main_text, screenshot: !!args.include_screenshot },
+        });
+        return out;
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'browser_screenshot',
+    description: 'Capture a screenshot of a fully-rendered web page via browserless /screenshot. Returns {base64, bytes, mime} — feed the base64 directly to a vision model or save it. Defaults to a full-page PNG; pass full_page=false for just the viewport, format="jpeg" for smaller payloads, or viewport={width,height} to override the default 1920x1080.',
+    schema:      S.browserScreenshotSchema,
+    shape:       S.browserScreenshotShape,
+    gate:        gateBrowser,
+    handler: async (args, ctx) => {
+      try {
+        const fmt: 'png' | 'jpeg' = args.format ?? 'png';
+        const body: Record<string, unknown> = {
+          url:     args.url,
+          options: { fullPage: args.full_page ?? true, type: fmt },
+        };
+        if (args.viewport) body.viewport = args.viewport;
+
+        const buf = await browserlessRequest('/screenshot', body, { responseType: 'binary' }) as Buffer;
+        const mime = fmt === 'jpeg' ? 'image/jpeg' : 'image/png';
+
+        logHive('browser_action', `browser_screenshot ${args.url}`, ctx.agentId ?? undefined, {
+          tool: 'browser_screenshot', url: args.url, bytes: buf.length, format: fmt, full_page: args.full_page ?? true,
+        });
+        return { ok: true, url: args.url, base64: buf.toString('base64'), bytes: buf.length, mime };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'browser_pdf',
+    description: 'Render a web page to PDF via browserless /pdf. Returns {base64, bytes, mime:"application/pdf"}. Defaults to A4 portrait with backgrounds printed. Useful for archiving an article, generating an invoice from a hosted form, etc.',
+    schema:      S.browserPdfSchema,
+    shape:       S.browserPdfShape,
+    gate:        gateBrowser,
+    handler: async (args, ctx) => {
+      try {
+        const buf = await browserlessRequest('/pdf', {
+          url:     args.url,
+          options: {
+            format:          args.format ?? 'A4',
+            landscape:       !!args.landscape,
+            printBackground: true,
+          },
+        }, { responseType: 'binary' }) as Buffer;
+
+        logHive('browser_action', `browser_pdf ${args.url}`, ctx.agentId ?? undefined, {
+          tool: 'browser_pdf', url: args.url, bytes: buf.length,
+          format: args.format ?? 'A4', landscape: !!args.landscape,
+        });
+        return { ok: true, url: args.url, base64: buf.toString('base64'), bytes: buf.length, mime: 'application/pdf' };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'browser_run_js',
+    description: 'Run an arbitrary async script in the Puppeteer Node context against a loaded page (browserless /function). The page is navigated to `url` with networkidle2, then the body of `script` runs with `page` and `context` in scope. Use `await page.$eval(selector, el => el.innerText)`-style calls to extract DOM data and `return ...;` to return JSON-serializable values. Powerful for site-specific scraping that doesn\'t fit browser_fetch + readability.',
+    schema:      S.browserRunJsSchema,
+    shape:       S.browserRunJsShape,
+    gate:        gateBrowser,
+    handler: async (args, ctx) => {
+      try {
+        const wrapped = `module.exports = async ({page, context}) => {
+  await page.goto(context.url, {waitUntil: 'networkidle2'});
+  ${args.script}
+};`;
+        const resp = await browserlessRequest('/function', {
+          code:    wrapped,
+          context: { url: args.url },
+        }, { responseType: 'json' });
+
+        // Browserless /function returns either {data, type} or a bare value
+        // depending on the version. Normalise both.
+        let result: unknown = resp;
+        if (resp && typeof resp === 'object' && !Array.isArray(resp) && 'data' in (resp as Record<string, unknown>)) {
+          result = (resp as Record<string, unknown>).data;
+        }
+
+        logHive('browser_action', `browser_run_js ${args.url}`, ctx.agentId ?? undefined, {
+          tool: 'browser_run_js', url: args.url, script_chars: args.script.length,
+        });
+        const wantsValue = args.return_value !== false;
+        return wantsValue
+          ? { ok: true, url: args.url, result }
+          : { ok: true, url: args.url };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }

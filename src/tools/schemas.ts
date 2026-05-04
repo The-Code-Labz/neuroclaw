@@ -305,3 +305,42 @@ export const listSkillsShape = {
   include_body: z.boolean().optional().describe('When true, return each skill\'s full markdown body. Default false (just metadata + scripts list).'),
 };
 export const listSkillsSchema = z.object(listSkillsShape);
+
+// ── Browser tools (browserless-backed) ───────────────────────────────────
+// Hosted Chromium (https://www.browserless.io/) gives us rendered HTML,
+// screenshots, PDFs, and arbitrary JS-in-page eval over plain HTTP — no
+// local Chrome install. All four tools are gated by config.browser.enabled
+// (BROWSERLESS_URL + BROWSERLESS_TOKEN).
+
+export const browserFetchShape = {
+  url:                z.string().url().describe('Absolute URL to fetch. Browserless renders the page in a headless Chromium and returns the post-JS HTML.'),
+  wait_for:           z.union([z.string(), z.number().int()]).optional().describe('Either a CSS selector to wait for, or a number of milliseconds to delay before snapshotting the DOM. Useful for SPA pages that hydrate after load.'),
+  include_main_text:  z.boolean().optional().describe('When true, run @mozilla/readability on the HTML and include {mainText, title, byline, length} alongside the raw html. Great for article extraction.'),
+  include_screenshot: z.boolean().optional().describe('When true, also call /screenshot for the same URL and include a base64 JPEG (full page, quality 70) in the response.'),
+};
+export const browserFetchSchema = z.object(browserFetchShape);
+
+export const browserScreenshotShape = {
+  url:       z.string().url().describe('Absolute URL to screenshot.'),
+  full_page: z.boolean().optional().describe('Capture the full scrollable page. Default true.'),
+  format:    z.enum(['png', 'jpeg']).optional().describe('Image format. Default png.'),
+  viewport:  z.object({
+    width:  z.number().int().min(100).max(3840),
+    height: z.number().int().min(100).max(2160),
+  }).optional().describe('Browser viewport in pixels. Defaults to browserless\'s 1920x1080.'),
+};
+export const browserScreenshotSchema = z.object(browserScreenshotShape);
+
+export const browserPdfShape = {
+  url:       z.string().url().describe('Absolute URL to render as PDF.'),
+  format:    z.enum(['Letter','Legal','Tabloid','Ledger','A0','A1','A2','A3','A4','A5','A6']).optional().describe('Paper size. Default A4.'),
+  landscape: z.boolean().optional().describe('Rotate to landscape. Default false.'),
+};
+export const browserPdfSchema = z.object(browserPdfShape);
+
+export const browserRunJsShape = {
+  url:          z.string().url().describe('Absolute URL the script will run against. The page is loaded with networkidle2 before the script body executes.'),
+  script:       z.string().describe('Body of an async function executed in the Puppeteer Node context (NOT in the page DOM). The variables `page` and `context` are in scope; `context.url` is the URL above. Use `await page.$eval(...)` to read DOM. End with `return ...;` to return data.'),
+  return_value: z.boolean().optional().describe('When true (default), the value returned by the script is JSON-decoded and surfaced as `result`. When false, only ok/status are returned.'),
+};
+export const browserRunJsSchema = z.object(browserRunJsShape);
