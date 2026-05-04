@@ -19,6 +19,7 @@ const PAGES = {
   analytics: { label: 'Analytics', cmp: () => <Analytics/> },
   logs: { label: 'Logs', cmp: () => <Logs/> },
   settings: { label: 'Settings', cmp: () => <Settings/> },
+  docs: { label: 'Docs', cmp: () => <Docs/> },
 };
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{

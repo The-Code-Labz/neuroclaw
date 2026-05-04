@@ -5,7 +5,7 @@
 // is intentionally not supported in v1 — the spec calls for waiting on the
 // final result.
 
-import { getMcpServer, parseMcpHeaders, saveMessage, type AgentRecord } from '../db';
+import { getMcpServer, parseMcpHeaders, saveMessage, startRun, endRun, type AgentRecord } from '../db';
 import { callTool } from '../mcp/mcp-client';
 import { logger } from '../utils/logger';
 import { logHive } from '../system/hive-mind';
@@ -17,11 +17,21 @@ export async function chatStreamMcp(
   onChunk: (chunk: string) => void | Promise<void>,
   agentRecord: AgentRecord,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  runId?: string,
 ): Promise<void> {
+  const ownsRun = !runId;
+  const activeRunId = runId ?? startRun({
+    origin:            'chat',
+    sessionId,
+    initiatingAgentId: agentRecord.id,
+    userMessage,
+  });
+
   if (!agentRecord.mcp_server_id || !agentRecord.mcp_tool_name) {
     const err = `Agent "${agentRecord.name}" has provider=mcp but missing mcp_server_id or mcp_tool_name`;
     logger.error('chatStreamMcp: misconfigured agent', { agentId: agentRecord.id });
     await onMeta?.({ type: 'error', error: err });
+    if (ownsRun) endRun(activeRunId, { status: 'error', error_text: err });
     throw new Error(err);
   }
 
@@ -29,11 +39,13 @@ export async function chatStreamMcp(
   if (!server) {
     const err = `MCP server for agent "${agentRecord.name}" no longer exists (id: ${agentRecord.mcp_server_id})`;
     await onMeta?.({ type: 'error', error: err });
+    if (ownsRun) endRun(activeRunId, { status: 'error', error_text: err });
     throw new Error(err);
   }
   if (!server.enabled) {
     const err = `MCP server "${server.name}" for agent "${agentRecord.name}" is disabled`;
     await onMeta?.({ type: 'error', error: err });
+    if (ownsRun) endRun(activeRunId, { status: 'error', error_text: err });
     throw new Error(err);
   }
 
@@ -68,8 +80,10 @@ export async function chatStreamMcp(
       `${agentRecord.name} -> ${server.name}/${agentRecord.mcp_tool_name}: ${detail.slice(0, 120)}`,
       agentRecord.id,
       { error: detail },
+      activeRunId,
     );
     await onMeta?.({ type: 'error', error: detail });
+    if (ownsRun) endRun(activeRunId, { status: 'error', error_text: detail });
     throw e;
   }
 
@@ -80,7 +94,12 @@ export async function chatStreamMcp(
     'mcp_agent_call_ok',
     `${agentRecord.name} -> ${server.name}/${agentRecord.mcp_tool_name}: ${textOut.length} chars`,
     agentRecord.id,
+    undefined,
+    activeRunId,
   );
+  if (ownsRun) {
+    endRun(activeRunId, { status: 'done', final_output: textOut });
+  }
 }
 
 function extractText(result: unknown): string {

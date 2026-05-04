@@ -99,11 +99,22 @@ async function runAgentTurn(
   message: string,
   recipient: AgentRecord,
   sessionLabel: string,
+  runId?: string | null,
 ): Promise<{ sessionId: string; response: string }> {
   const { chatStream } = await import('../agent/alfred');
   const sessId = createSession(recipient.id, sessionLabel);
   let response = '';
-  await chatStream(message, sessId, (c) => { response += c; }, recipient.system_prompt ?? '', recipient.id);
+  await chatStream(
+    message,
+    sessId,
+    (c) => { response += c; },
+    recipient.system_prompt ?? '',
+    recipient.id,
+    undefined,
+    undefined,
+    undefined,
+    runId ?? undefined,
+  );
   saveMessage(sessId, 'assistant', response, recipient.id);
   return { sessionId: sessId, response };
 }
@@ -199,7 +210,7 @@ export const registry: ToolDef[] = [
       logHive('agent_message_sent', `${senderName} → ${recipient.name}: "${args.message.slice(0, 60)}"`, sender?.id, { toAgentId: recipient.id, preview: args.message.slice(0, 80) });
 
       try {
-        const { sessionId, response } = await runAgentTurn(fullMessage, recipient, `Comms: ${senderName} → ${recipient.name}`);
+        const { sessionId, response } = await runAgentTurn(fullMessage, recipient, `Comms: ${senderName} → ${recipient.name}`, ctx.runId);
         if (msgRecord) updateAgentMessageResponse(msgRecord.id, response, 'responded');
         return { ok: true, from: recipient.name, response, sessionId };
       } catch (err) {
@@ -229,7 +240,7 @@ export const registry: ToolDef[] = [
       if (args.execute_now) {
         try {
           const taskMsg = args.description ? `${args.title}\n\n${args.description}` : args.title;
-          const { response } = await runAgentTurn(taskMsg, recipient, `Task: ${args.title.slice(0, 50)}`);
+          const { response } = await runAgentTurn(taskMsg, recipient, `Task: ${args.title.slice(0, 50)}`, ctx.runId);
           updateAgentMessageResponse(task.id, response);
           return { ok: true, task_id: task.id, assigned_to: recipient.name, status: 'completed', result: response };
         } catch (err) {
@@ -290,7 +301,17 @@ export const registry: ToolDef[] = [
           let subResponse = '';
           try {
             const { chatStream } = await import('../agent/alfred');
-            await chatStream(args.taskDescription!, spawnSessionId, (c) => { subResponse += c; }, spawned.system_prompt ?? '', spawned.id);
+            await chatStream(
+              args.taskDescription!,
+              spawnSessionId,
+              (c) => { subResponse += c; },
+              spawned.system_prompt ?? '',
+              spawned.id,
+              undefined,
+              undefined,
+              undefined,
+              ctx.runId ?? undefined,
+            );
             completeBackgroundTask(taskId, subResponse, true);
             logger.info('Background sub-agent completed', { taskId, agentName: spawned.name, chars: subResponse.length });
           } catch (err) {

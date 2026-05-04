@@ -25,6 +25,7 @@ const NAV = [
     { id: 'analytics',label: 'Analytics',  icon: 'analytics' },
     { id: 'logs',     label: 'Logs',       icon: 'logs' },
     { id: 'settings', label: 'Settings',   icon: 'settings' },
+    { id: 'docs',     label: 'Docs',       icon: 'docs' },
   ]},
   { group: 'FUTURE', items: [
     { id: 'voice',    label: 'LiveKit',    icon: 'voice',   soon: true },

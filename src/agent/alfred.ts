@@ -27,8 +27,10 @@ import {
   saveMessage, logAnalytics, createSession,
   getAgentByName, getAgentById, getAllAgents,
   getSessionMessages,
+  startRun, endRun, bumpRunTokens,
   type AgentRecord,
 } from '../db';
+import { createTask } from '../system/task-manager';
 import { logger } from '../utils/logger';
 import { classifyRoute } from '../system/router';
 import { logHive } from '../system/hive-mind';
@@ -243,7 +245,15 @@ async function chatStreamOpenAI(
   onMeta?: (e: MetaEvent) => void | Promise<void>,
   attachments?: ChatImageAttachment[],
   extraSystemContext?: string,
+  runId?: string,
 ): Promise<void> {
+  const ownsRun = !runId;
+  const activeRunId = runId ?? startRun({
+    origin:            'chat',
+    sessionId,
+    initiatingAgentId: agentId,
+    userMessage,
+  });
   const history = getOrCreateHistory(sessionId, systemPrompt, agentId);
   const _agentRecordForCompaction = agentId ? getAgentById(agentId) : undefined;
   await compactOpenAi(history, userMessage, agentId, _agentRecordForCompaction?.name, sessionId);
@@ -263,7 +273,7 @@ async function chatStreamOpenAI(
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
 
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
-  const toolCtx: ToolContext = { agentId, sessionId, onMeta };
+  const toolCtx: ToolContext = { agentId, sessionId, onMeta, runId: activeRunId };
   // Match prior buildTools behavior: no tools at all when there's no active agent.
   const baseTools     = (agentRecord && agentRecord.status === 'active') ? buildOpenAiTools(toolCtx) : [];
   const composioTools = (agentRecord && agentRecord.status === 'active') ? await buildComposioOpenAiTools(toolCtx) : [];
@@ -415,6 +425,7 @@ async function chatStreamOpenAI(
         agent_id:      agentId ?? null,
         session_id:    sessionId,
       });
+      bumpRunTokens(activeRunId, realInputTokens ?? inputTokens, realOutputTokens ?? outputTokens);
       ingestExchangeAsync({
         source:         'chat',
         agent_id:       agentId,
@@ -437,6 +448,12 @@ async function chatStreamOpenAI(
     });
   }
 
+  if (ownsRun) {
+    const lastAssistant = history.filter(m => m.role === 'assistant').pop();
+    const finalText = typeof lastAssistant?.content === 'string' ? lastAssistant.content : null;
+    endRun(activeRunId, { status: 'done', final_output: finalText });
+  }
+
   // Non-blocking flush — don't await in hot path
   lf?.flushAsync().catch(() => {});
 }
@@ -451,12 +468,20 @@ async function chatStreamAnthropic(
   agentId?: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
   extraSystemContext?: string,
+  runId?: string,
 ): Promise<void> {
   if (config.claude.backend === 'claude-cli') {
     // Subscription auth path. No silent fallback to anthropic-api on failure.
-    return chatStreamClaudeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
+    return chatStreamClaudeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId);
   }
 
+  const ownsRun = !runId;
+  const activeRunId = runId ?? startRun({
+    origin:            'chat',
+    sessionId,
+    initiatingAgentId: agentId,
+    userMessage,
+  });
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
   const _agentRecordForCompaction = agentId ? getAgentById(agentId) : undefined;
   await compactAnthropic(history, userMessage, agentId, _agentRecordForCompaction?.name, sessionId);
@@ -465,7 +490,7 @@ async function chatStreamAnthropic(
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
 
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
-  const toolCtx: ToolContext = { agentId, sessionId, onMeta };
+  const toolCtx: ToolContext = { agentId, sessionId, onMeta, runId: activeRunId };
   const baseOpenAiTools = (agentRecord && agentRecord.status === 'active') ? buildOpenAiTools(toolCtx) : [];
   const composioTools   = (agentRecord && agentRecord.status === 'active') ? await buildComposioOpenAiTools(toolCtx) : [];
   const openAiTools = [...baseOpenAiTools, ...composioTools];
@@ -599,6 +624,7 @@ async function chatStreamAnthropic(
         agent_id:      agentId ?? null,
         session_id:    sessionId,
       });
+      bumpRunTokens(activeRunId, realInputTokens ?? estimateTokens(inputText), realOutputTokens ?? outputTokens);
       ingestExchangeAsync({
         source:         'chat',
         agent_id:       agentId,
@@ -616,6 +642,12 @@ async function chatStreamAnthropic(
     const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
     const output = typeof lastAssistant?.content === 'string' ? lastAssistant.content : undefined;
     trace.update({ output, metadata: { iterations: iteration } });
+  }
+
+  if (ownsRun) {
+    const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+    const finalText = typeof lastAssistant?.content === 'string' ? lastAssistant.content : null;
+    endRun(activeRunId, { status: 'done', final_output: finalText });
   }
 
   lf?.flushAsync().catch(() => {});
@@ -761,7 +793,15 @@ async function chatStreamClaudeCli(
   agentId?: string,
   _onMeta?: (e: MetaEvent) => void | Promise<void>,
   extraSystemContext?: string,
+  runId?: string,
 ): Promise<void> {
+  const ownsRun = !runId;
+  const activeRunId = runId ?? startRun({
+    origin:            'chat',
+    sessionId,
+    initiatingAgentId: agentId,
+    userMessage,
+  });
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
   await compactAnthropic(history, userMessage, agentId, agentRecord?.name, sessionId);
@@ -837,7 +877,7 @@ async function chatStreamClaudeCli(
           logHive('claude_cli_throttled', 'Claude CLI 429, retrying with backoff', agentId, {
             attempt,
             delayMs: delay,
-          });
+          }, activeRunId);
         } catch {
           // hive logging is best-effort
         }
@@ -847,6 +887,9 @@ async function chatStreamClaudeCli(
       generation?.end({ output: '[error]', metadata: { error: (err as Error).message } });
       if (err instanceof ClaudeCliAuthError) {
         logger.error('Claude CLI auth failed — run `claude` to refresh credentials');
+      }
+      if (ownsRun) {
+        endRun(activeRunId, { status: 'error', error_text: (err as Error).message });
       }
       throw err;
     }
@@ -866,6 +909,7 @@ async function chatStreamClaudeCli(
     agent_id:      agentId ?? null,
     session_id:    sessionId,
   });
+  bumpRunTokens(activeRunId, realInputTokens ?? estimateTokens(finalSystemPrompt + userMessage), realOutputTokens ?? estimateTokens(textAccum));
   ingestExchangeAsync({
     source:         'chat',
     agent_id:       agentId,
@@ -874,6 +918,9 @@ async function chatStreamClaudeCli(
     user_text:      userMessage,
     assistant_text: textAccum,
   });
+  if (ownsRun) {
+    endRun(activeRunId, { status: 'done', final_output: textAccum });
+  }
 }
 
 // ── Codex CLI streaming (ChatGPT subscription auth via local `codex` binary) ─
@@ -886,7 +933,15 @@ async function chatStreamCodexCli(
   agentId?: string,
   _onMeta?: (e: MetaEvent) => void | Promise<void>,
   extraSystemContext?: string,
+  runId?: string,
 ): Promise<void> {
+  const ownsRun = !runId;
+  const activeRunId = runId ?? startRun({
+    origin:            'chat',
+    sessionId,
+    initiatingAgentId: agentId,
+    userMessage,
+  });
   const { streamCodexCliChat, CodexCliAuthError, CodexCliRateLimitError } = await import('../providers/codex-cli');
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
@@ -948,6 +1003,9 @@ async function chatStreamCodexCli(
     } else if (err instanceof CodexCliRateLimitError) {
       logger.warn('Codex CLI rate-limited');
     }
+    if (ownsRun) {
+      endRun(activeRunId, { status: 'error', error_text: (err as Error).message });
+    }
     throw err;
   }
 
@@ -965,6 +1023,7 @@ async function chatStreamCodexCli(
     agent_id:      agentId ?? null,
     session_id:    sessionId,
   });
+  bumpRunTokens(activeRunId, realInputTokens ?? estimateTokens(finalSystemPrompt + userMessage), realOutputTokens ?? estimateTokens(textAccum));
   ingestExchangeAsync({
     source:         'chat',
     agent_id:       agentId,
@@ -973,6 +1032,9 @@ async function chatStreamCodexCli(
     user_text:      userMessage,
     assistant_text: textAccum,
   });
+  if (ownsRun) {
+    endRun(activeRunId, { status: 'done', final_output: textAccum });
+  }
 }
 
 // ── Public chatStream dispatcher ─────────────────────────────────────────────
@@ -1006,6 +1068,7 @@ export async function chatStream(
   onMeta?: (e: MetaEvent) => void | Promise<void>,
   attachments?: ChatImageAttachment[],
   extraSystemContext?: string,
+  runId?: string,
 ): Promise<void> {
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
   // Pre-warm fire-and-forget: if this agent's last heartbeat is stale (or
@@ -1019,13 +1082,13 @@ export async function chatStream(
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on anthropic path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
+    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId);
   }
   if (agentRecord?.provider === 'codex') {
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on codex path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
+    return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId);
   }
   if (agentRecord?.provider === 'mcp') {
     if (attachments && attachments.length > 0) {
@@ -1033,9 +1096,9 @@ export async function chatStream(
     }
     // extraSystemContext is intentionally ignored — MCP-backed agents have no
     // local system prompt; their behavior is fully owned by the remote process.
-    return chatStreamMcp(userMessage, sessionId, onChunk, agentRecord, onMeta);
+    return chatStreamMcp(userMessage, sessionId, onChunk, agentRecord, onMeta, runId);
   }
-  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext);
+  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext, runId);
 }
 
 // ── Multi-agent orchestration ─────────────────────────────────────────────────
@@ -1051,6 +1114,7 @@ export async function orchestrateMultiAgent(
   onChunk: (chunk: string) => void | Promise<void>,
   alfredId: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  origin: string = 'orchestrate',
 ): Promise<string> {
   const alfred = getAgentById(alfredId);
   if (!alfred) throw new Error('Alfred not found');
@@ -1058,85 +1122,158 @@ export async function orchestrateMultiAgent(
   const allAgents   = getAllAgents();
   const sessionId   = sessionIdIn ?? createSession(alfredId, rawMessage.slice(0, 60));
 
-  // Decompose: decide if this is a single-agent or multi-agent task
-  const decomp = await decomposeTask(rawMessage, allAgents);
-
-  logHive(
-    'task_decomposed',
-    decomp.isComplex
-      ? `Multi-agent plan: ${decomp.steps.length} steps — ${decomp.reason}`
-      : `Single-agent task — ${decomp.reason}`,
-    alfredId,
-    { isComplex: decomp.isComplex, steps: decomp.steps },
-  );
-
-  // Simple path — Alfred handles directly
-  if (!decomp.isComplex || decomp.steps.length < 2) {
-    await chatStream(rawMessage, sessionId, onChunk, alfred.system_prompt ?? '', alfredId, onMeta);
-    return sessionId;
-  }
-
-  // Multi-agent path
-  await onMeta?.({
-    type:  'plan',
-    steps: decomp.steps.map((s, i) => ({ index: i, task: s.task, agent: s.agent, parallel: s.parallel })),
+  // v2.0: open a run that ties together the decompose decision, every step, the
+  // merge, and final output. Inner chatStream calls inherit this id so every
+  // hive_mind event from this turn rolls up under one run row.
+  const runId = startRun({
+    origin,
+    sessionId,
+    initiatingAgentId: alfredId,
+    userMessage:       rawMessage,
   });
 
-  // Save the user message once to the parent session
-  saveMessage(sessionId, 'user', rawMessage);
-
-  const stepResults: Array<{ task: string; agent: string; result: string }> = [];
-
-  for (let i = 0; i < decomp.steps.length; i++) {
-    const step      = decomp.steps[i];
-    const stepAgent = getAgentByName(step.agent) ?? alfred;
-
-    await onMeta?.({ type: 'step_start', stepIndex: i, task: step.task, agentName: stepAgent.name });
-
-    let stepResult  = '';
-    const stepSess  = createSession(stepAgent.id, `Step ${i + 1}: ${step.task.slice(0, 50)}`);
-
-    // Build task message with context from prior steps
-    const context = stepResults.length > 0
-      ? `Context from previous steps:\n${stepResults.map(r => `${r.agent}: ${r.result.slice(0, 600)}`).join('\n\n')}\n\n---\n\nYour task: ${step.task}`
-      : step.task;
-
-    await chatStream(
-      context,
-      stepSess,
-      async (chunk) => {
-        stepResult += chunk;
-        await onMeta?.({ type: 'step_chunk', stepIndex: i, agentName: stepAgent.name, content: chunk });
-      },
-      stepAgent.system_prompt ?? '',
-      stepAgent.id,
-    );
-
-    stepResults.push({ task: step.task, agent: stepAgent.name, result: stepResult });
-    await onMeta?.({ type: 'step_done', stepIndex: i, agentName: stepAgent.name });
+  try {
+    // Decompose: decide if this is a single-agent or multi-agent task
+    const decomp = await decomposeTask(rawMessage, allAgents);
 
     logHive(
-      'multi_agent_step',
-      `Step ${i + 1}/${decomp.steps.length}: "${step.task.slice(0, 60)}" by ${stepAgent.name}`,
-      stepAgent.id,
-      { stepIndex: i, chars: stepResult.length },
+      'task_decomposed',
+      decomp.isComplex
+        ? `Multi-agent plan: ${decomp.steps.length} steps — ${decomp.reason}`
+        : `Single-agent task — ${decomp.reason}`,
+      alfredId,
+      { isComplex: decomp.isComplex, steps: decomp.steps },
+      runId,
     );
+
+    // Simple path — Alfred handles directly
+    if (!decomp.isComplex || decomp.steps.length < 2) {
+      let finalText = '';
+      await chatStream(
+        rawMessage,
+        sessionId,
+        async (chunk) => {
+          finalText += chunk;
+          await onChunk(chunk);
+        },
+        alfred.system_prompt ?? '',
+        alfredId,
+        onMeta,
+        undefined,
+        undefined,
+        runId,
+      );
+      endRun(runId, { status: 'done', is_multi_agent: false, step_count: 1, final_output: finalText });
+      return sessionId;
+    }
+
+    // Multi-agent path
+    await onMeta?.({
+      type:  'plan',
+      steps: decomp.steps.map((s, i) => ({ index: i, task: s.task, agent: s.agent, parallel: s.parallel })),
+    });
+
+    // Save the user message once to the parent session
+    saveMessage(sessionId, 'user', rawMessage);
+
+    // v2.0: parent task carries goal ancestry across all step tasks. Each step
+    // creates a child task linked back to this parent so the decomposed plan
+    // is queryable later (and child agents can surface "working toward: …").
+    let parentTaskId: string | null = null;
+    try {
+      const parentTask = await createTask(rawMessage.slice(0, 80), {
+        description: rawMessage,
+        agentId:     alfredId,
+        sessionId,
+      });
+      parentTaskId = parentTask.id;
+    } catch (err) {
+      logger.warn('orchestrate: parent task creation failed (non-fatal)', { error: (err as Error).message });
+    }
+
+    const stepResults: Array<{ task: string; agent: string; result: string }> = [];
+
+    for (let i = 0; i < decomp.steps.length; i++) {
+      const step      = decomp.steps[i];
+      const stepAgent = getAgentByName(step.agent) ?? alfred;
+
+      await onMeta?.({ type: 'step_start', stepIndex: i, task: step.task, agentName: stepAgent.name });
+
+      let stepResult  = '';
+      const stepSess  = createSession(stepAgent.id, `Step ${i + 1}: ${step.task.slice(0, 50)}`);
+
+      // Goal ancestry: link this step task to the parent so child agents
+      // working on it can be traced back to the originating user goal.
+      if (parentTaskId) {
+        try {
+          await createTask(step.task.slice(0, 80), {
+            description:    step.task,
+            agentId:        stepAgent.id,
+            sessionId:      stepSess,
+            parent_task_id: parentTaskId,
+          });
+        } catch {
+          // best-effort — don't block the step if task tracking trips
+        }
+      }
+
+      // Build task message with context from prior steps
+      const context = stepResults.length > 0
+        ? `Context from previous steps:\n${stepResults.map(r => `${r.agent}: ${r.result.slice(0, 600)}`).join('\n\n')}\n\n---\n\nYour task: ${step.task}`
+        : step.task;
+
+      await chatStream(
+        context,
+        stepSess,
+        async (chunk) => {
+          stepResult += chunk;
+          await onMeta?.({ type: 'step_chunk', stepIndex: i, agentName: stepAgent.name, content: chunk });
+        },
+        stepAgent.system_prompt ?? '',
+        stepAgent.id,
+        undefined,
+        undefined,
+        undefined,
+        runId,
+      );
+
+      stepResults.push({ task: step.task, agent: stepAgent.name, result: stepResult });
+      await onMeta?.({ type: 'step_done', stepIndex: i, agentName: stepAgent.name });
+
+      logHive(
+        'multi_agent_step',
+        `Step ${i + 1}/${decomp.steps.length}: "${step.task.slice(0, 60)}" by ${stepAgent.name}`,
+        stepAgent.id,
+        { stepIndex: i, chars: stepResult.length },
+        runId,
+      );
+    }
+
+    // Merge all step results into a final cohesive response
+    await onMeta?.({ type: 'merge_start' });
+    logHive('result_merged', `Merging ${stepResults.length} agent results`, alfredId, { steps: stepResults.length }, runId);
+
+    const merged = await mergeResults(rawMessage, stepResults);
+
+    // Stream the merged result as regular chunks
+    await onChunk(merged);
+
+    // Persist final response on the parent session
+    saveMessage(sessionId, 'assistant', merged, alfredId);
+    logAnalytics('message_sent', { role: 'assistant', length: merged.length, agentId: alfredId, multiAgent: true }, sessionId);
+
+    endRun(runId, {
+      status:         'done',
+      is_multi_agent: true,
+      step_count:     decomp.steps.length,
+      final_output:   merged,
+    });
+
+    return sessionId;
+  } catch (err) {
+    endRun(runId, { status: 'error', error_text: (err as Error).message });
+    throw err;
   }
-
-  // Merge all step results into a final cohesive response
-  await onMeta?.({ type: 'merge_start' });
-  logHive('result_merged', `Merging ${stepResults.length} agent results`, alfredId, { steps: stepResults.length });
-
-  const merged = await mergeResults(rawMessage, stepResults);
-
-  // Stream the merged result as regular chunks
-  await onChunk(merged);
-
-  // Persist final response on the parent session
-  saveMessage(sessionId, 'assistant', merged, alfredId);
-  logAnalytics('message_sent', { role: 'assistant', length: merged.length, agentId: alfredId, multiAgent: true }, sessionId);
-
-  return sessionId;
 }
 
 // ── Agent resolution (async — may call classifier) ────────────────────────────
@@ -1198,10 +1335,37 @@ export async function chat(userMessage: string, sessionId: string): Promise<void
   const alfred = getAgentByName('Alfred');
   const systemPrompt = alfred?.system_prompt ?? 'You are Alfred, a strategic AI butler.';
 
+  // CLI entry — open a run with origin='cli' so the dashboard run history can
+  // tell apart CLI sessions from dashboard / discord traffic.
+  const runId = startRun({
+    origin:            'cli',
+    sessionId,
+    initiatingAgentId: alfred?.id ?? null,
+    userMessage,
+  });
+
   process.stdout.write('\nAlfred: ');
-  await chatStream(userMessage, sessionId, (chunk) => {
-    process.stdout.write(chunk);
-  }, systemPrompt, alfred?.id);
+  let finalText = '';
+  try {
+    await chatStream(
+      userMessage,
+      sessionId,
+      (chunk) => {
+        finalText += chunk;
+        process.stdout.write(chunk);
+      },
+      systemPrompt,
+      alfred?.id,
+      undefined,
+      undefined,
+      undefined,
+      runId,
+    );
+    endRun(runId, { status: 'done', final_output: finalText });
+  } catch (err) {
+    endRun(runId, { status: 'error', error_text: (err as Error).message });
+    throw err;
+  }
   process.stdout.write('\n\n');
 }
 

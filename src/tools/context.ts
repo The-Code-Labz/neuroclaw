@@ -11,4 +11,8 @@ export interface ToolContext {
   sessionId?: string | null;
   /** Optional dashboard SSE event sink; only the OpenAI chat path attaches one. */
   onMeta?:    (e: MetaEvent) => void | Promise<void>;
+  /** Active run id (v2.0). Tool handlers that recursively call chatStream pass
+   *  this through so every event in the spawned turn rolls up under the same
+   *  parent run. Optional — null when the tool path has no active run. */
+  runId?:     string | null;
 }

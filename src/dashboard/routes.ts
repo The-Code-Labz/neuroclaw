@@ -7,6 +7,7 @@ import {
   getAgentMessages,
   listAreas, createArea, updateArea, deleteArea, setAgentArea,
   listProjects, getProject, createProject, updateProject, archiveProject, deleteProjectHard,
+  startRun, endRun, getRun, listRuns, getRunHiveEvents,
   type SessionRecord, type MessageRecord,
 } from '../db';
 import { config } from '../config';
@@ -26,6 +27,7 @@ import {
   type ModelTier, type ModelProvider,
 } from '../system/model-catalog';
 import { spendLastHourWithCost, spendByTierLastHour, spendByModelLastHour } from '../system/model-spend';
+import { getWikiTree, getWikiArticle } from './wiki-loader';
 import {
   vaultGetTree, vaultReadNote, vaultListFiles, vaultListCollections,
 } from '../memory/vault-client';
@@ -447,6 +449,26 @@ export function registerApiRoutes(app: Hono<any>): void {
     const status = c.req.query('status') as TaskStatus | undefined;
     const includeArchived = c.req.query('include_archived') === '1';
     return c.json(getTasks(status, { project_id: projectId, include_archived: includeArchived }));
+  });
+
+  // ── Docs / Wiki ──────────────────────────────────────────────────────────
+  app.get('/api/docs/tree', (c) => {
+    return c.json({ ok: true, sections: getWikiTree() });
+  });
+
+  app.get('/api/docs/article/:section/:slug', (c) => {
+    const section = c.req.param('section');
+    const slug    = c.req.param('slug');
+    let article;
+    try {
+      article = getWikiArticle(section, slug);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
+    if (!article) {
+      return c.json({ error: 'Article not found' }, 404);
+    }
+    return c.json({ ok: true, article });
   });
 
   // ── Memory / Config / Analytics / Logs ───────────────────────────────────
@@ -1431,6 +1453,18 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.get('/api/hive',          (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));
   app.get('/api/agent-messages', (c) => c.json(getAgentMessages(parseInt(c.req.query('limit') ?? '100', 10))));
 
+  // ── Runs (v2.0 run grouping) ──────────────────────────────────────────────
+  app.get('/api/runs', (c) => {
+    const sessionId = c.req.query('session') ?? undefined;
+    const limit     = parseInt(c.req.query('limit') ?? '100', 10);
+    return c.json(listRuns({ sessionId, limit }));
+  });
+  app.get('/api/runs/:id', (c) => {
+    const run = getRun(c.req.param('id'));
+    if (!run) return c.json({ error: 'run not found' }, 404);
+    return c.json({ run, events: getRunHiveEvents(run.id) });
+  });
+
   app.get('/api/config', (c) => {
     type Row = { key: string; value: string; description: string | null; is_secret: number };
     const items = getDb().prepare('SELECT key, value, description, is_secret FROM config_items').all() as Row[];
@@ -1572,11 +1606,28 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
         if (agent.name === 'Alfred') {
           await orchestrateMultiAgent(message, sessionId, async (chunk) => {
             await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
-          }, agent.id, onMeta);
+          }, agent.id, onMeta, 'dashboard');
         } else {
-          await chatStream(message, sessionId, async (chunk) => {
-            await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
-          }, systemPrompt, agent.id, onMeta, nativeAttachments, extraSystemContext);
+          // Non-Alfred chat — open a run with origin='dashboard' so this turn is
+          // distinguishable from CLI / discord traffic in the runs view. The
+          // chatStream variants will inherit it instead of auto-creating one.
+          const dashboardRunId = startRun({
+            origin:            'dashboard',
+            sessionId,
+            initiatingAgentId: agent.id,
+            userMessage:       message,
+          });
+          let finalText = '';
+          try {
+            await chatStream(message, sessionId, async (chunk) => {
+              finalText += chunk;
+              await stream.writeSSE({ data: JSON.stringify({ type: 'chunk', content: chunk }) });
+            }, systemPrompt, agent.id, onMeta, nativeAttachments, extraSystemContext, dashboardRunId);
+            endRun(dashboardRunId, { status: 'done', final_output: finalText });
+          } catch (err) {
+            endRun(dashboardRunId, { status: 'error', error_text: (err as Error).message });
+            throw err;
+          }
         }
         await stream.writeSSE({ data: JSON.stringify({ type: 'done' }) });
       } catch (err) {
