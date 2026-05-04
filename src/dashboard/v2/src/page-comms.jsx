@@ -1,11 +1,14 @@
-/* Comms */
+/* Comms (live-wired) */
 const Comms = () => {
   const { COMMS } = window.NC_DATA;
+  const list = COMMS || [];
+  const [search, setSearch] = React.useState('');
+  const filtered = list.filter(c => !search || ((c.from + ' ' + c.to + ' ' + c.msg) || '').toLowerCase().includes(search.toLowerCase()));
   return (
     <div>
       <PageHeader title="Comms" subtitle="// agent-to-agent relay · directives · acknowledgments" right={<>
-        <button className="nc-btn"><Icon name="search" size={12}/> Filter</button>
-        <button className="nc-btn primary"><Icon name="comms" size={12}/> Open Channel</button>
+        <input className="nc-input" placeholder="filter…" value={search} onChange={e => setSearch(e.target.value)} style={{ maxWidth: 200 }}/>
+        <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
       </>}/>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
@@ -13,7 +16,8 @@ const Comms = () => {
           <div className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 1fr 1fr 90px 80px', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--line-soft)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.14em' }}>
             <span>TIME</span><span>FROM → TO</span><span>MESSAGE / RESPONSE</span><span>TASK</span><span>STATUS</span>
           </div>
-          {COMMS.map((c, i) => (
+          {filtered.length === 0 && <div className="mono muted" style={{ padding: 30, textAlign: 'center' }}>// no agent-to-agent messages yet</div>}
+          {filtered.map((c, i) => (
             <div key={i} className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 1fr 1fr 90px 80px', gap: 10, padding: '12px 16px', borderBottom: '1px dashed rgba(0,183,255,0.06)', fontSize: 11, alignItems: 'center' }}>
               <span className="muted">{c.t}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

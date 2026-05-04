@@ -20,6 +20,7 @@ const FOLDER_ROUTES: Record<string, string> = {
   episodic:        'logs',
   session_summary: 'logs',
   working:         'logs',
+  plan:            'logs',
   insight:         'insights',
   semantic:        'insights',
   preference:      'agents',
@@ -99,22 +100,45 @@ export function clearVaultCache(): void {
 
 // ── Note path helpers ────────────────────────────────────────────────────────
 
-function slugify(title: string): string {
-  return title
+function slugify(s: string, max = 80): string {
+  return s
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'note';
+    .slice(0, max) || 'note';
 }
 
 function todayStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function defaultPathFor(type: string, title: string): string {
-  return `${folderForType(type)}/${todayStamp()}--${slugify(title)}.md`;
+function shortHash(...inputs: string[]): string {
+  // Tiny deterministic 4-char hash — used only to disambiguate on collision retry.
+  // Not cryptographic; just enough entropy to avoid same-second clashes.
+  let h = 5381;
+  const s = inputs.join('|') + '|' + Date.now() + '|' + Math.random();
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36).slice(-4).padStart(4, '0');
+}
+
+/**
+ * Builds the canonical vault path for a memory write.
+ *
+ * Layout: `<folder>/<YYYY-MM-DD>--<agent>--<session4>--<title-slug>.md`
+ *
+ * Either of the agent or session segments is omitted when not provided, so
+ * a manual write with neither becomes simply `<folder>/<date>--<title>.md`.
+ * The session segment is the last 4 chars of the session id (lowercased).
+ */
+export function defaultPathFor(type: string, title: string, opts: { agent?: string; session?: string; suffix?: string } = {}): string {
+  const parts: string[] = [todayStamp()];
+  if (opts.agent)   parts.push(slugify(opts.agent, 24));
+  if (opts.session) parts.push(opts.session.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toLowerCase() || 'sxxx');
+  parts.push(slugify(title));
+  if (opts.suffix)  parts.push(opts.suffix);
+  return `${folderForType(type)}/${parts.join('--')}.md`;
 }
 
 // ── Public types (spec-aligned) ──────────────────────────────────────────────
@@ -125,8 +149,9 @@ export interface VaultNoteCreate {
   content:     string;
   type:        string;
   tags?:       string[];
-  agent?:      string;
-  path?:       string;     // override the auto-generated path
+  agent?:      string;     // routed into the path's agent segment
+  sessionId?:  string;     // last 4 chars routed into the session segment
+  path?:       string;     // override the auto-generated path entirely
 }
 
 export interface VaultNoteUpdate {
@@ -228,20 +253,32 @@ export async function vaultReadNote(input: VaultReadInput): Promise<unknown> {
 export async function vaultCreateNote(input: VaultNoteCreate): Promise<VaultNoteRef> {
   const url = ensureEnabled();
   const vault_id = await resolveVaultId(input.vault);
-  const path = input.path ?? defaultPathFor(input.type, input.title);
-  const result = await callTool(url, 'create_file', {
-    vault_id,
-    path,
-    content: input.content,
-  });
-  logger.info('Vault: note created', { vault_id, path, type: input.type });
+  const basePath = input.path ?? defaultPathFor(input.type, input.title, { agent: input.agent, session: input.sessionId });
+  // Try the canonical path first. If create_file errors with a file-exists-style
+  // collision, retry once with a 4-char hash suffix as a final safety net.
+  let path = basePath;
+  let result: unknown;
+  try {
+    result = await callTool(url, 'create_file', { vault_id, path, content: input.content });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (/exists?|already|conflict|duplicate/i.test(msg)) {
+      const retryPath = basePath.replace(/\.md$/, '--' + shortHash(input.title, input.agent ?? '', input.sessionId ?? '') + '.md');
+      logger.warn('Vault: path collision; retrying with hash suffix', { from: basePath, to: retryPath });
+      result = await callTool(url, 'create_file', { vault_id, path: retryPath, content: input.content });
+      path = retryPath;
+    } else {
+      throw err;
+    }
+  }
+  logger.info('Vault: note created', { vault_id, path, type: input.type, agent: input.agent });
   return { note_id: path, vault_id, raw: result };
 }
 
 export async function vaultUpsertNote(input: VaultNoteCreate): Promise<VaultNoteRef> {
   const url = ensureEnabled();
   const vault_id = await resolveVaultId(input.vault);
-  const path = input.path ?? defaultPathFor(input.type, input.title);
+  const path = input.path ?? defaultPathFor(input.type, input.title, { agent: input.agent, session: input.sessionId });
   const result = await callTool(url, 'upsert_file', {
     vault_id,
     path,
@@ -292,6 +329,14 @@ export async function vaultGetRelatedNotes(input: VaultReadInput): Promise<unkno
   // The live MCP has no native "related" endpoint. Implement as a search using
   // the note's path as the query, which gets us folder-neighbours + name matches.
   return vaultSearch({ vault: input.vault, query: input.note_id, limit: 10 });
+}
+
+export async function vaultDeleteFile(input: { vault?: string; path: string }): Promise<unknown> {
+  const url = ensureEnabled();
+  const vault_id = await resolveVaultId(input.vault);
+  const result = await callTool(url, 'delete_file', { vault_id, path: input.path });
+  logger.info('Vault: file deleted', { vault_id, path: input.path });
+  return result;
 }
 
 // ── Bonus tools (per user approval — not in original spec) ───────────────────

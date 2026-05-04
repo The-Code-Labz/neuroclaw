@@ -21,21 +21,37 @@ export interface ExtractInput {
   context_hint?: string;         // optional extra context (e.g. "user said: 'remember this'")
 }
 
+export interface ExtractedEntity {
+  name:        string;          // canonical surface form, e.g. "Composio"
+  entity_type?: string;         // optional category: tool | concept | person | project | service
+}
+
+export interface ExtractedRelationship {
+  subject:     string;          // entity name (matches one of `entities`)
+  verb:        string;          // relation: uses, depends_on, prefers, owns, replaces, …
+  object:      string;          // entity name
+  confidence?: number;          // 0–1
+}
+
 export interface ExtractedMemory {
-  type:        ExtractedMemoryType;
-  title:       string;
-  summary:     string;
-  content:     string;
-  tags:        string[];
-  importance:  number;          // composite 0–1
-  confidence:  number;          // 0–1
-  components:  ImportanceComponents;
-  reasoning?:  string;
+  type:           ExtractedMemoryType;
+  title:          string;
+  summary:        string;
+  content:        string;
+  tags:           string[];
+  importance:     number;          // composite 0–1
+  confidence:     number;          // 0–1
+  components:     ImportanceComponents;
+  reasoning?:     string;
+  entities?:      ExtractedEntity[];        // graph-lite (v1.7+)
+  relationships?: ExtractedRelationship[];  // graph-lite (v1.7+)
 }
 
 const SYSTEM_PROMPT = `You are a memory extractor for an AI agent system.
 Your job is to read a single (user, assistant) exchange and decide if it
-contains anything worth remembering long-term.
+contains anything worth remembering long-term. You ALSO extract the named
+entities and subject/verb/object relationships, so the memory can be
+queried both lexically and as a knowledge-graph node.
 
 You MUST output a single JSON object with this exact shape:
 {
@@ -53,8 +69,24 @@ You MUST output a single JSON object with this exact shape:
     "correction_weight": number   // 0–1: did the assistant correct a prior mistake?
   },
   "confidence": number,      // 0–1: how sure you are this is worth saving
-  "reasoning": string        // 1 sentence: why
+  "reasoning": string,       // 1 sentence: why
+  "entities": [              // 0-8 named things mentioned: tools, projects, people, services, concepts
+    { "name": string, "entity_type": "tool" | "concept" | "person" | "project" | "service" | "framework" | "agent" }
+  ],
+  "relationships": [         // 0-6 subject/verb/object triples between entities you listed
+    { "subject": string, "verb": string, "object": string, "confidence": number }
+  ]
 }
+
+Entity rules:
+- Use the canonical name as it appeared (e.g. "Composio", "NeuroClaw", "Discord", "gpt-5.5").
+- Skip generic words ("user", "assistant", "memory", "task") unless they're a named project.
+- Empty array is fine when nothing notable was named.
+
+Relationship rules:
+- subject and object MUST appear in the entities list.
+- verb is a short snake_case relation: uses, depends_on, prefers, replaces, owns, configures, integrates_with, mentions, decides_on, etc.
+- Skip vague relations ("relates_to", "involves") — leave them out instead of guessing.
 
 Type guide:
 - episodic     = a specific event, decision, or moment
@@ -94,7 +126,10 @@ export async function extract(input: ExtractInput): Promise<ExtractedMemory | nu
   try {
     const resp = await getClient().chat.completions.create({
       model,
-      max_tokens: 600,
+      // Bumped from 600 to 1200 in v1.7 — the extractor now also returns
+      // up to 8 entities + 6 relationships. The original 600-token cap
+      // truncated the JSON mid-string and `JSON.parse` failed silently.
+      max_tokens: 1200,
       temperature: 0.2,
       response_format: { type: 'json_object' },
       messages: [
@@ -122,16 +157,44 @@ export async function extract(input: ExtractInput): Promise<ExtractedMemory | nu
     return FORCE_NULL(`importance ${importance.toFixed(2)} < threshold ${config.memory.importanceThreshold}`);
   }
 
+  const entities: ExtractedEntity[] = [];
+  if (Array.isArray(parsed.entities)) {
+    for (const e of parsed.entities.slice(0, 8)) {
+      const name = String(e?.name ?? '').trim().slice(0, 80);
+      if (!name) continue;
+      const entity_type = e?.entity_type ? String(e.entity_type).trim().toLowerCase().slice(0, 30) : undefined;
+      entities.push({ name, entity_type });
+    }
+  }
+
+  // Drop relationships whose subject/object aren't in the extracted entity
+  // list — keeps the graph well-formed. The 6-relationship cap matches the
+  // prompt and keeps any single memory from blowing up the relationship table.
+  const entityNameSet = new Set(entities.map(e => e.name.toLowerCase()));
+  const relationships: ExtractedRelationship[] = [];
+  if (Array.isArray(parsed.relationships)) {
+    for (const r of parsed.relationships.slice(0, 6)) {
+      const subject = String(r?.subject ?? '').trim().slice(0, 80);
+      const verb    = String(r?.verb    ?? '').trim().toLowerCase().replace(/\s+/g, '_').slice(0, 40);
+      const object  = String(r?.object  ?? '').trim().slice(0, 80);
+      if (!subject || !verb || !object) continue;
+      if (!entityNameSet.has(subject.toLowerCase()) || !entityNameSet.has(object.toLowerCase())) continue;
+      relationships.push({ subject, verb, object, confidence: clamp01(typeof r?.confidence === 'number' ? r.confidence : 0.7) });
+    }
+  }
+
   const memory: ExtractedMemory = {
-    type:       (parsed.type ?? 'episodic') as ExtractedMemoryType,
-    title:      String(parsed.title).slice(0, 120),
-    summary:    String(parsed.summary ?? '').slice(0, 600),
-    content:    String(parsed.content ?? parsed.summary ?? '').slice(0, 4000),
-    tags:       Array.isArray(parsed.tags) ? parsed.tags.slice(0, 10).map(t => String(t).slice(0, 30)) : [],
+    type:           (parsed.type ?? 'episodic') as ExtractedMemoryType,
+    title:          String(parsed.title).slice(0, 120),
+    summary:        String(parsed.summary ?? '').slice(0, 600),
+    content:        String(parsed.content ?? parsed.summary ?? '').slice(0, 4000),
+    tags:           Array.isArray(parsed.tags) ? parsed.tags.slice(0, 10).map(t => String(t).slice(0, 30)) : [],
     importance,
-    confidence: clamp01(parsed.confidence ?? 0.5),
+    confidence:     clamp01(parsed.confidence ?? 0.5),
     components,
-    reasoning:  parsed.reasoning ? String(parsed.reasoning).slice(0, 240) : undefined,
+    reasoning:      parsed.reasoning ? String(parsed.reasoning).slice(0, 240) : undefined,
+    entities,
+    relationships,
   };
   return memory;
 }

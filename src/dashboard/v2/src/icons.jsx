@@ -18,6 +18,7 @@ const Icon = ({ name, size = 16, className = '', style = {} }) => {
     case 'hive': return <svg {...p}><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="M12 3v18M4 7.5l16 9M20 7.5l-16 9"/></svg>;
     case 'comms': return <svg {...p}><path d="M4 4h7l2 3h7v13H4z"/><path d="M8 13h8M8 16h5"/></svg>;
     case 'mcp': return <svg {...p}><rect x="3" y="6" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><circle cx="7" cy="9" r="0.6" fill="currentColor"/><circle cx="7" cy="17" r="0.6" fill="currentColor"/></svg>;
+    case 'skills': return <svg {...p}><path d="M12 3l2.6 5.3 5.9.8-4.3 4.2 1 5.9L12 16.5 6.8 19.2l1-5.9-4.3-4.2 5.9-.8L12 3Z"/><path d="M9 13l2 2 4-4" /></svg>;
     case 'providers': return <svg {...p}><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/></svg>;
     case 'analytics': return <svg {...p}><path d="M4 19V5M4 19h16"/><path d="M8 15v-4M12 15V8M16 15v-2"/></svg>;
     case 'logs': return <svg {...p}><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/><path d="M7 12h10M7 15h10M7 18h6"/></svg>;

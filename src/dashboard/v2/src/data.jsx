@@ -16,7 +16,9 @@ const NAV = [
   { group: 'SYSTEM', items: [
     { id: 'hivemind', label: 'Hive Mind',  icon: 'hive' },
     { id: 'comms',    label: 'Comms',      icon: 'comms' },
+    { id: 'channels', label: 'Channels',   icon: 'discord' },
     { id: 'mcp',      label: 'MCP Tools',  icon: 'mcp' },
+    { id: 'skills',   label: 'Skills',     icon: 'skills' },
     { id: 'providers',label: 'Providers',  icon: 'providers' },
   ]},
   { group: 'OBSERVE', items: [
@@ -25,7 +27,6 @@ const NAV = [
     { id: 'settings', label: 'Settings',   icon: 'settings' },
   ]},
   { group: 'FUTURE', items: [
-    { id: 'discord',  label: 'Discord',    icon: 'discord', soon: true },
     { id: 'voice',    label: 'LiveKit',    icon: 'voice',   soon: true },
   ]},
 ];
@@ -182,4 +183,4 @@ const DREAM = {
   pipeline: ['Raw Chats','Wash','Extract','Categorize','Store','Insight','Tomorrow Plan'],
 };
 
-window.NC_DATA = { NAV, AGENTS, SESSIONS, TASKS, MEMORIES, HIVE_EVENTS, COMMS, MCP_SERVERS, PROVIDERS, VAULT_TREE, LOGS, ANALYTICS, DREAM };
+window.NC_DATA = { NAV, AGENTS, SESSIONS, TASKS, MEMORIES, HIVE_EVENTS, COMMS, MCP_SERVERS, PROVIDERS, VAULT_TREE, LOGS, ANALYTICS, DREAM, PROJECTS: [], SKILLS: [] };

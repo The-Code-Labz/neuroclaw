@@ -8,7 +8,7 @@ import { logger } from '../utils/logger';
 // name pattern unless the user has explicitly pinned an override.
 
 export type ModelTier = 'low' | 'mid' | 'high';
-export type ModelProvider = 'voidai' | 'anthropic';
+export type ModelProvider = 'voidai' | 'anthropic' | 'codex';
 
 export interface ModelCatalogRow {
   id:                  string;
@@ -120,16 +120,20 @@ const LOW_PATTERNS = [
 ];
 
 export function classifyTier(modelId: string): ModelTier {
-  for (const p of HIGH_PATTERNS) if (p.test(modelId)) return 'high';
+  // LOW patterns checked first so size-suffixed cheaper variants (e.g.
+  // gpt-5-mini, claude-haiku-4-5) don't get caught by their base-model HIGH
+  // regex (e.g. /gpt-5/, /opus/).
   for (const p of LOW_PATTERNS)  if (p.test(modelId)) return 'low';
+  for (const p of HIGH_PATTERNS) if (p.test(modelId)) return 'high';
   return 'mid';
 }
 
 // ── Refresh ─────────────────────────────────────────────────────────────────
 
 export async function refreshCatalog(provider: ModelProvider = 'voidai'): Promise<{ added: number; updated: number; missing: number }> {
-  if (provider === 'voidai') return refreshVoidAi();
+  if (provider === 'voidai')    return refreshVoidAi();
   if (provider === 'anthropic') return refreshAnthropic();
+  if (provider === 'codex')     return refreshCodex();
   return { added: 0, updated: 0, missing: 0 };
 }
 
@@ -165,6 +169,23 @@ async function refreshAnthropic(): Promise<{ added: number; updated: number; mis
     'claude-3-5-haiku-latest',
   ];
   return upsertSeen('anthropic', ids);
+}
+
+async function refreshCodex(): Promise<{ added: number; updated: number; missing: number }> {
+  // Codex CLI / ChatGPT subscription doesn't expose a public list endpoint.
+  // Codex's backend tightly restricts which models route through ChatGPT-account
+  // auth — only the "modern Codex models" enum (gpt-5.x family) is accepted.
+  // Everything else (gpt-5, gpt-5-codex, o3, gpt-4o, gpt-4.1, etc.) returns
+  //   "The '<model>' model is not supported when using Codex with a ChatGPT account."
+  // Verified against this account May 2026; matches OpenClaw's
+  // isModernCodexModel() allowlist in extensions/codex/provider.ts.
+  const ids = [
+    'gpt-5.5',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.2',
+  ];
+  return upsertSeen('codex', ids);
 }
 
 function upsertSeen(provider: string, modelIds: string[]): { added: number; updated: number; missing: number } {
@@ -292,6 +313,7 @@ async function runAll(): Promise<void> {
   if (config.voidai.apiKey) {
     try { await refreshCatalog('voidai'); } catch (err) { logger.warn('catalog refresh failed', { provider: 'voidai', err: (err as Error).message }); }
   }
-  // Anthropic seeded list — refresh just keeps timestamps current.
+  // Anthropic + Codex are seeded lists — refresh just keeps timestamps current.
   try { await refreshCatalog('anthropic'); } catch (err) { logger.warn('catalog refresh failed', { provider: 'anthropic', err: (err as Error).message }); }
+  try { await refreshCatalog('codex');     } catch (err) { logger.warn('catalog refresh failed', { provider: 'codex',     err: (err as Error).message }); }
 }

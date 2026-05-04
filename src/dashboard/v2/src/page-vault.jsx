@@ -1,14 +1,34 @@
 /* NeuroVault page */
 const Vault = () => {
   const { VAULT_TREE } = window.NC_DATA;
-  const [active, setActive] = React.useState('insights/2026-04-29-mcp-latency.md');
-  const noteBody = `---\ntitle: MCP Latency Insight\ntype: insight\ndate: 2026-04-29\nimportance: 0.88\n---\n\n# MCP latency drives ~70% of user frustration\n\nAcross 142 tagged frustration events in the last 14d,\n**71% correlated with tool-call latency > 1.5s**.\n\n## Levers\n- Pre-warm MCP processes during dream cycle\n- Cache vault_search by hash of query\n- Move researchlm_deep_research to background queue\n\n## Owners\n- coder · retry policy\n- archivist · cache eviction policy\n\n> Promoted to procedural memory M-9930.\n`;
+  const firstLeaf = (() => {
+    const findLeaf = (items) => {
+      for (const it of items || []) {
+        if (it.path) return it.path;
+        if (it.children) { const r = findLeaf(it.children); if (r) return r; }
+      }
+      return null;
+    };
+    return findLeaf(VAULT_TREE) || '';
+  })();
+  const [active, setActive] = React.useState(firstLeaf);
+  const [noteBody, setNoteBody] = React.useState('// click a file to load its contents from NeuroVault MCP');
+
+  React.useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    setNoteBody('// loading…');
+    window.NC_API.get('/api/vault/file?path=' + encodeURIComponent(active))
+      .then(r => { if (!cancelled) setNoteBody(r?.content ?? '// (empty)'); })
+      .catch(err => { if (!cancelled) setNoteBody('// error: ' + err.message); });
+    return () => { cancelled = true; };
+  }, [active]);
 
   const Tree = ({ items, depth = 0 }) => (
     <div>
       {items.map((it, i) => (
         <div key={i}>
-          <div onClick={() => !it.children && setActive(it.name)} style={{ padding: '4px 6px', paddingLeft: 8 + depth*14, fontFamily: 'var(--mono)', fontSize: 11, cursor: it.children ? 'default' : 'pointer', color: active === it.name ? '#fff' : 'var(--text-soft)', background: active === it.name ? 'rgba(0,183,255,0.12)' : 'transparent', borderLeft: active === it.name ? '2px solid var(--neon)' : '2px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div onClick={() => !it.children && setActive(it.path || it.name)} style={{ padding: '4px 6px', paddingLeft: 8 + depth*14, fontFamily: 'var(--mono)', fontSize: 11, cursor: it.children ? 'default' : 'pointer', color: active === (it.path || it.name) ? '#fff' : 'var(--text-soft)', background: active === (it.path || it.name) ? 'rgba(0,183,255,0.12)' : 'transparent', borderLeft: active === (it.path || it.name) ? '2px solid var(--neon)' : '2px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}>
             {it.children ? <span className="neonc">▾</span> : <span className="muted">·</span>}
             <span style={{ color: it.children ? 'var(--neon-2)' : undefined }}>{it.name}</span>
           </div>

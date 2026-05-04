@@ -4,6 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { createNeuroclawMcpServer } from '../mcp/neuroclaw-mcp-server';
+import { getComposioMcp, parseAgentToolkits } from '../composio/client';
+import { config as appConfig } from '../config';
+import { getAgentById } from '../db';
 
 function resolveCliBinary(): string | undefined {
   const cmd = config.claude.cliCommand;
@@ -46,6 +50,11 @@ export interface ClaudeCliOptions {
    * Grep/Glob) are enabled for this call. Defaults to false (text-only).
    */
   execEnabled?:  boolean;
+  /**
+   * The agent's id, threaded through to the in-process NeuroClaw MCP server
+   * so its tool handlers know which agent is calling them.
+   */
+  agentId?:      string | null;
   /**
    * Called once when the stream's terminal `result` message is observed.
    * Carries real usage and cost from the Agent SDK.
@@ -129,6 +138,74 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
     const tools: string[] = opts.execEnabled
       ? ['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob']
       : [];
+    // In-process NeuroClaw MCP server so Claude-CLI agents can call our
+    // memory / vault / agent-comms / spawn tools natively. MCP_ENABLED gates
+    // this — if MCP is off, the server is omitted and the agent is text-only.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mcpServers: Record<string, any> = {};
+    if (config.mcp.enabled) {
+      mcpServers.neuroclaw = createNeuroclawMcpServer({ agentId: opts.agentId ?? null, sessionId: opts.sessionId ?? null });
+    }
+    // Composio: per-agent identity + optional toolkit allowlist. Both the
+    // global API key AND the agent's composio_enabled flag must be set.
+    if (appConfig.composio.enabled && opts.agentId) {
+      const agent = getAgentById(opts.agentId);
+      if (agent?.composio_enabled && agent.composio_user_id) {
+        try {
+          const endpoint = await getComposioMcp(agent.composio_user_id, parseAgentToolkits(agent.composio_toolkits));
+          mcpServers.composio = { type: 'http', url: endpoint.url, headers: endpoint.headers };
+        } catch (err) {
+          logger.warn('Composio session mint failed (claude-cli path)', { agentId: opts.agentId, err: (err as Error).message });
+        }
+      }
+    }
+    // User-managed MCP server registry — every enabled, ready row is mounted
+    // directly as an `http` mcpServer so Claude can call its tools natively
+    // (it'll surface them as mcp__<server>__<tool> automatically). The same
+    // tools also appear synthesized in our unified registry, so the OpenAI
+    // and HTTP-MCP runtimes can call them via NeuroClaw's tool dispatch.
+    if (config.mcp.enabled) {
+      try {
+        const { getEnabledServersWithTools } = await import('../mcp/mcp-registry');
+        const { parseMcpHeaders } = await import('../db');
+        for (const { row } of getEnabledServersWithTools()) {
+          if (mcpServers[row.name]) continue;   // don't shadow neuroclaw/composio
+          const headers = parseMcpHeaders(row.headers);
+          mcpServers[row.name] = {
+            type:    'http',
+            url:     row.url,
+            ...(Object.keys(headers).length > 0 ? { headers } : {}),
+          };
+        }
+      } catch (err) {
+        logger.warn('MCP registry load failed (claude-cli path)', { err: (err as Error).message });
+      }
+    }
+    const hasMcpServers = Object.keys(mcpServers).length > 0;
+    // Pre-approve our own MCP tools so they don't trigger the user-permission
+    // prompt. Bash/Read/Write/etc still go through the standard permission flow.
+    const allowedTools = hasMcpServers
+      ? [
+          'mcp__neuroclaw__search_memory',
+          'mcp__neuroclaw__search_vault',
+          'mcp__neuroclaw__write_vault_note',
+          'mcp__neuroclaw__save_session_summary',
+          'mcp__neuroclaw__compact_context',
+          'mcp__neuroclaw__message_agent',
+          'mcp__neuroclaw__assign_task_to_agent',
+          'mcp__neuroclaw__list_agents',
+          'mcp__neuroclaw__spawn_agent',
+          'mcp__neuroclaw__list_temp_agents',
+          'mcp__neuroclaw__log_handoff',
+          'mcp__neuroclaw__create_checkpoint',
+          'mcp__neuroclaw__get_context_pack',
+          // User-registered MCP servers (dashboard) — auto-approve every tool
+          // they expose so the chat doesn't stall on a permission prompt.
+          ...Object.keys(mcpServers)
+            .filter(k => k !== 'neuroclaw' && k !== 'composio')
+            .map(k => `mcp__${k}__*`),
+        ]
+      : undefined;
     const iter = query({
       prompt: opts.prompt,
       options: {
@@ -141,6 +218,8 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
         env:                       buildChildEnv(),
         abortController:           abort,
         settingSources:            [],
+        ...(hasMcpServers ? { mcpServers } : {}),
+        ...(allowedTools ? { allowedTools } : {}),
         ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {}),
       },
     });

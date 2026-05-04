@@ -1,15 +1,45 @@
-/* Memory page */
+/* Memory page (live-wired) */
 const Memory = () => {
   const { MEMORIES } = window.NC_DATA;
   const [filter, setFilter] = React.useState('all');
-  const [active, setActive] = React.useState(MEMORIES[0]);
-  const types = ['all','working','episodic','semantic','procedural','preference','insight','session'];
-  const list = filter === 'all' ? MEMORIES : MEMORIES.filter(m => m.type === filter);
+  const [search, setSearch] = React.useState('');
+  const [activeRaw, setActive] = React.useState(null);
+  const empty = !MEMORIES || MEMORIES.length === 0;
+  React.useEffect(() => {
+    if (!empty && !activeRaw) setActive(MEMORIES[0]);
+  }, [empty, MEMORIES]);
+  if (empty) {
+    return (
+      <div>
+        <PageHeader title="Memory" subtitle="// neural archive · salience · promotion" right={<>
+          <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
+        </>}/>
+        <div className="nc-panel glow" style={{ padding: 30, textAlign: 'center' }}>
+          <div className="mono muted">// no memories yet — they appear automatically after assistant turns</div>
+        </div>
+      </div>
+    );
+  }
+  const active = activeRaw || MEMORIES[0];
+  const types = ['all','working','episodic','semantic','procedural','preference','insight','session_summary','project'];
+  const list = (MEMORIES || [])
+    .filter(m => filter === 'all' || m.type === filter)
+    .filter(m => !search || (m.title + ' ' + m.summary).toLowerCase().includes(search.toLowerCase()));
+
+  const onDelete = async (m) => {
+    if (!confirm(`Delete memory "${m.title}"? (Vault note is not removed.)`)) return;
+    try {
+      await fetch('/api/memory/index/' + (m._raw?.id || m.id), { method: 'DELETE', credentials: 'same-origin' });
+      await window.NC_LIVE.refresh();
+      if (activeRaw && (activeRaw._raw?.id || activeRaw.id) === (m._raw?.id || m.id)) setActive(null);
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+
   return (
     <div>
       <PageHeader title="Memory" subtitle="// neural archive · salience · promotion" right={<>
-        <button className="nc-btn"><Icon name="search" size={12}/> Search</button>
-        <button className="nc-btn primary"><Icon name="bolt" size={12}/> Run Decay</button>
+        <input className="nc-input" placeholder="search…" value={search} onChange={e => setSearch(e.target.value)} style={{ maxWidth: 200 }}/>
+        <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
       </>}/>
 
       <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr 320px', gap: 12 }}>
@@ -91,8 +121,7 @@ const Memory = () => {
             <div><span className="muted">last:</span> {active.lastSeen}</div>
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-            <button className="nc-btn primary" style={{ flex: 1, fontSize: 10 }}>Promote</button>
-            <button className="nc-btn" style={{ flex: 1, fontSize: 10 }}>Archive</button>
+            <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, color: 'var(--danger)' }} onClick={() => onDelete(active)}>Delete</button>
           </div>
         </div>
       </div>

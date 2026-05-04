@@ -27,8 +27,9 @@ const Redacted = ({ label }) => (
 );
 
 const Settings = () => {
-  const tabs = ['Routing','Spawn','Memory','Dream Cycle','Providers','MCP','Exec & Safety','Dashboard'];
+  const tabs = ['Routing','Spawn','Memory','Dream Cycle','Providers','MCP','Exec & Safety','Dashboard','Live .env'];
   const [tab, setTab] = React.useState('Routing');
+  const liveConfig = (window.NC_DATA && window.NC_DATA.CONFIG) || [];
   return (
     <div>
       <PageHeader title="Settings" subtitle="// configuration · safety · secrets" right={<>
@@ -103,6 +104,20 @@ const Settings = () => {
               {['#00b7ff','#00f5d4','#8b5cf6','#facc15'].map(c => <span key={c} style={{ width: 22, height: 22, borderRadius: 4, background: c, boxShadow: `0 0 8px ${c}`, cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)' }}/>)}
             </div>
           </SettingRow>
+        </>}
+        {tab === 'Live .env' && <>
+          <div className="mono muted" style={{ fontSize: 11, marginBottom: 10 }}>// pulled from /api/config — secrets redacted server-side</div>
+          {liveConfig.length === 0 && <div className="mono muted" style={{ fontSize: 11 }}>// loading…</div>}
+          {liveConfig.map((c, i) => (
+            <SettingRow key={i} label={c.key} hint={c.description || undefined}>
+              {c.is_secret
+                ? <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <code className="mono" style={{ background: 'rgba(2,6,23,0.7)', border: '1px solid var(--line)', padding: '6px 10px', fontSize: 11, color: 'var(--text-soft)', borderRadius: 2, flex: 1 }}>{c.value}</code>
+                    <span className="tag amber" style={{ fontSize: 9 }}>REDACTED</span>
+                  </div>
+                : <code className="mono" style={{ background: 'rgba(2,6,23,0.7)', border: '1px solid var(--line)', padding: '6px 10px', fontSize: 11, color: 'var(--text-soft)', borderRadius: 2, display: 'block' }}>{String(c.value)}</code>}
+            </SettingRow>
+          ))}
         </>}
       </div>
     </div>

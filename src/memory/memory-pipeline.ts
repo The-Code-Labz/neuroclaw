@@ -112,6 +112,25 @@ export async function ingestExchange(input: IngestExchange): Promise<IngestResul
     return { ok: false, reason: 'index_error' };
   }
 
+  // Graph-lite: persist entities + relationships extracted alongside the memory.
+  // Gated on MEMORY_GRAPH_EXTRACT_ENABLED so users can disable without touching
+  // the extractor prompt. Best-effort; never blocks the write path.
+  if (config.memoryGraph.enabled && (extracted.entities?.length || extracted.relationships?.length)) {
+    try {
+      const { attachMemoryGraph } = await import('./memory-service');
+      const counts = attachMemoryGraph({
+        memoryId:      row.id,
+        entities:      extracted.entities,
+        relationships: extracted.relationships,
+      });
+      if (counts.entities > 0 || counts.relationships > 0) {
+        try { logHive('memory_graph_attached', `${counts.entities} entities, ${counts.relationships} rels`, input.agent_id ?? undefined, { memory_id: row.id, entities: counts.entities, relationships: counts.relationships }); } catch { /* best-effort */ }
+      }
+    } catch (err) {
+      logger.warn('memory-pipeline: graph attach failed', { memory_id: row.id, error: (err as Error).message });
+    }
+  }
+
   // Decide whether to mirror to NeuroVault.
   const allowed = vaultMirrorAllowed(input.session_id ?? null);
   if (!allowed.ok) {
@@ -138,9 +157,11 @@ export async function ingestExchange(input: IngestExchange): Promise<IngestResul
         source:     `${input.source}${input.session_id ? ` (session ${input.session_id})` : ''}`,
       };
       const ref = await vaultCreateNote({
-        title:   extracted.title,
-        type:    extracted.type,
-        content: formatVaultNoteContent(noteSpec),
+        title:     extracted.title,
+        type:      extracted.type,
+        content:   formatVaultNoteContent(noteSpec),
+        agent:     input.agent_name ?? undefined,
+        sessionId: input.session_id ?? undefined,
       });
       attachVaultNote(row.id, ref.note_id, ref.note_id);
       try { logHive('memory_extracted', `${extracted.type}: ${extracted.title}`, input.agent_id ?? undefined, { memory_id: row.id, vault_path: ref.note_id, importance: extracted.importance }); } catch { /* best-effort */ }

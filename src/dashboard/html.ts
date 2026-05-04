@@ -377,6 +377,7 @@ select:focus{border-color:var(--blue)}
       <select id="af-provider" onchange="updateAgentModelField()">
         <option value="openai" selected>OpenAI / VoidAI</option>
         <option value="anthropic">Claude (Anthropic)</option>
+        <option value="codex">Codex / ChatGPT CLI</option>
       </select>
     </div>
     <div class="field" id="af-model-openai-wrap">
@@ -453,7 +454,8 @@ function api(path) {
 }
 
 function apiPost(path, body, method) {
-  return fetch(path + '?token=' + encodeURIComponent(token), {
+  var sep = path.indexOf('?') >= 0 ? '&' : '?';
+  return fetch(path + sep + 'token=' + encodeURIComponent(token), {
     method: method || 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)

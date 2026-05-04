@@ -1,5 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { logger } from '../utils/logger';
 
 export interface McpToolDefinition {
@@ -8,40 +10,73 @@ export interface McpToolDefinition {
   inputSchema: unknown;
 }
 
+/** Wire transport selector. 'auto' picks SSE for URLs ending in `/sse` or
+ *  `/sse/` (n8n's MCP node, FastAPI MCP examples), otherwise Streamable HTTP. */
+export type McpTransport = 'auto' | 'http' | 'sse';
+
 interface CachedConnection {
   client:    Client;
-  transport: StreamableHTTPClientTransport;
+  transport: Transport;
 }
 
 const connections = new Map<string, Promise<CachedConnection>>();
 
-async function connect(serverUrl: string): Promise<CachedConnection> {
-  const existing = connections.get(serverUrl);
+function resolveTransport(url: string, hint: McpTransport | undefined): 'http' | 'sse' {
+  if (hint === 'http' || hint === 'sse') return hint;
+  // Auto-detect. n8n exposes MCP at `/mcp/<name>/sse`; the official Python SDK's
+  // examples use `/sse` too. Streamable HTTP is the modern default for everything else.
+  try {
+    const path = new URL(url).pathname;
+    if (/\/sse\/?$/.test(path)) return 'sse';
+  } catch { /* malformed URL — let the connect call surface the real error */ }
+  return 'http';
+}
+
+function connectionKey(serverUrl: string, headers?: Record<string, string>, transport?: McpTransport): string {
+  // Auth-bearing headers + transport choice must invalidate the cache —
+  // different bearer tokens imply different sessions even on the same URL,
+  // and switching http↔sse needs a fresh transport object.
+  const t = transport ?? 'auto';
+  if (!headers || Object.keys(headers).length === 0) return `${serverUrl}::${t}`;
+  const sig = Object.entries(headers).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${k}:${v}`).join('|');
+  return `${serverUrl}::${t}#${sig}`;
+}
+
+async function connect(serverUrl: string, headers?: Record<string, string>, transportHint?: McpTransport): Promise<CachedConnection> {
+  const key = connectionKey(serverUrl, headers, transportHint);
+  const existing = connections.get(key);
   if (existing) return existing;
 
   const promise = (async (): Promise<CachedConnection> => {
-    const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
+    const kind = resolveTransport(serverUrl, transportHint);
+    const transport: Transport = kind === 'sse'
+      ? new SSEClientTransport(new URL(serverUrl), {
+          ...(headers ? { requestInit: { headers }, eventSourceInit: { fetch: (input, init) => fetch(input, { ...init, headers: { ...(init?.headers ?? {}), ...headers } }) } } : {}),
+        })
+      : new StreamableHTTPClientTransport(new URL(serverUrl), {
+          ...(headers ? { requestInit: { headers } } : {}),
+        });
     const client = new Client(
       { name: 'neuroclaw-v1', version: '1.4.0' },
       { capabilities: {} },
     );
     await client.connect(transport);
-    logger.info('MCP: connected', { serverUrl });
+    logger.info('MCP: connected', { serverUrl, transport: kind, hasHeaders: !!headers });
     return { client, transport };
   })();
 
-  connections.set(serverUrl, promise);
+  connections.set(key, promise);
   // If connect fails, drop the cached entry so the next call retries
   promise.catch(err => {
     logger.error('MCP: connect failed', { serverUrl, error: (err as Error).message });
-    connections.delete(serverUrl);
+    connections.delete(key);
   });
   return promise;
 }
 
-export async function listTools(serverUrl: string): Promise<McpToolDefinition[]> {
+export async function listTools(serverUrl: string, headers?: Record<string, string>, transport?: McpTransport): Promise<McpToolDefinition[]> {
   if (!serverUrl) throw new Error('listTools: serverUrl is required');
-  const { client } = await connect(serverUrl);
+  const { client } = await connect(serverUrl, headers, transport);
   const result = await client.listTools();
   return (result.tools ?? []).map(t => ({
     name:        t.name,
@@ -54,9 +89,11 @@ export async function callTool(
   serverUrl: string,
   toolName:  string,
   input:     Record<string, unknown> = {},
+  headers?:  Record<string, string>,
+  transport?: McpTransport,
 ): Promise<unknown> {
   if (!serverUrl) throw new Error('callTool: serverUrl is required');
-  const { client } = await connect(serverUrl);
+  const { client } = await connect(serverUrl, headers, transport);
   const result = await client.callTool({ name: toolName, arguments: input });
 
   if (result.isError) {

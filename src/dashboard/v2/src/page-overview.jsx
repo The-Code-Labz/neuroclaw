@@ -15,17 +15,34 @@ const Overview = () => {
         </>}
       />
 
-      {/* Top stat grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <StatCard label="ACTIVE AGENTS" value="5" sub="2 idle · 1 busy" tone="cyan" icon="agents"/>
-        <StatCard label="TEMP AGENTS" value="2" sub="exp 11m · 4m" tone="violet" icon="bolt"/>
-        <StatCard label="ACTIVE SESSIONS" value="6" sub="1 streaming" tone="cyan" icon="sessions"/>
-        <StatCard label="PENDING TASKS" value="3" sub="1 P0 · 1 P1" tone="amber" icon="tasks"/>
-        <StatCard label="MEMORIES" value="9,931" sub="+84 today · 4 promoted" tone="cyan" icon="memory"/>
-        <StatCard label="MCP STATUS" value="3 / 3" sub="1 degraded · avg 1.1s" tone="cyan" icon="mcp"/>
-        <StatCard label="CLAUDE 429s" value="12" sub="last hour" tone="amber" icon="shield"/>
-        <StatCard label="VAULT SYNC" value="OK" sub="last 12s · 0 failed" tone="cyan" icon="vault"/>
-      </div>
+      {/* Top stat grid — live values from NC_DATA */}
+      {(() => {
+        const a   = AGENTS || [];
+        const ts  = window.NC_DATA.TASKS || [];
+        const ss  = window.NC_DATA.SESSIONS || [];
+        const ms  = window.NC_DATA.MEMORIES || [];
+        const an  = window.NC_DATA.ANALYTICS || {};
+        const mcp = window.NC_DATA.MCP_SERVERS || [];
+        const live = a.filter(x => x.status === 'live').length;
+        const busy = a.filter(x => x.status === 'busy').length;
+        const idle = a.filter(x => x.status === 'idle').length;
+        const temp = a.filter(x => x.temp).length;
+        const todo = ts.filter(t => t.status === 'todo' || t.status === 'doing').length;
+        const promoted = ms.filter(m => m.promoted).length;
+        const onlineMcp = mcp.filter(m => m.status === 'online').length;
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+            <StatCard label="ACTIVE AGENTS"   value={a.length} sub={`${idle} idle · ${busy} busy`} tone="cyan" icon="agents"/>
+            <StatCard label="TEMP AGENTS"     value={temp} sub={temp ? 'spawned, running' : 'none'} tone="violet" icon="bolt"/>
+            <StatCard label="ACTIVE SESSIONS" value={ss.length} sub="all sessions" tone="cyan" icon="sessions"/>
+            <StatCard label="PENDING TASKS"   value={todo} sub={`${ts.length} total`} tone="amber" icon="tasks"/>
+            <StatCard label="MEMORIES"        value={ms.length.toLocaleString()} sub={`${promoted} in vault`} tone="cyan" icon="memory"/>
+            <StatCard label="MCP STATUS"      value={`${onlineMcp} / ${mcp.length}`} sub={mcp.length ? '' : 'none configured'} tone="cyan" icon="mcp"/>
+            <StatCard label="CLAUDE 429s"     value={an.c429 ?? 0} sub="last hour" tone={(an.c429 ?? 0) > 0 ? 'amber' : 'cyan'} icon="shield"/>
+            <StatCard label="SPEND (1H)"      value={an.estCostUsd != null ? '$' + an.estCostUsd.toFixed(4) : '—'} sub={(an.tokens || '0') + ' tokens'} tone="cyan" icon="vault"/>
+          </div>
+        );
+      })()}
 
       {/* Core orb + activity + health */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1.5fr 1.1fr', gap: 12, marginBottom: 16 }}>

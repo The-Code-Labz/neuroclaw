@@ -10,16 +10,15 @@ const Analytics = () => {
   return (
     <div>
       <PageHeader title="Analytics" subtitle="// telemetry · usage · routing accuracy" right={<>
-        <select className="nc-select" style={{ width: 120 }}><option>Last 24h</option><option>Last 7d</option><option>Last 30d</option></select>
-        <button className="nc-btn"><Icon name="refresh" size={12}/> Refresh</button>
+        <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
       </>}/>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
-        <StatCard label="MESSAGES" value="2,184" sub="+ 18% vs 24h ago" tone="cyan"/>
-        <StatCard label="TOKENS EST." value={ANALYTICS.tokens} sub="opus 41% · sonnet 51%" tone="cyan"/>
-        <StatCard label="ROUTING ACC" value={`${(routingAccuracy*100).toFixed(0)}%`} sub={`${spawned} spawned`} tone="cyan"/>
-        <StatCard label="429 / HOUR" value={c429} sub="↓ 4 vs prev" tone="amber"/>
-        <StatCard label="TASKS OK" value={`${taskStats.ok}/${taskStats.ok + taskStats.fail}`} sub={`${taskStats.fail} fail · ${taskStats.retry} retry`} tone="cyan"/>
+        <StatCard label="MEMORY WRITES (24H)" value={memoryWrites || 0} sub={`${vaultSyncs || 0} this hour`} tone="cyan"/>
+        <StatCard label="TOKENS (1H)" value={ANALYTICS.tokens || '0'} sub={`${ANALYTICS.callCount || 0} LLM calls`} tone="cyan"/>
+        <StatCard label="SPEND (1H)" value={ANALYTICS.estCostUsd != null ? '$' + ANALYTICS.estCostUsd.toFixed(4) : '$0'} sub="estimated USD" tone="cyan"/>
+        <StatCard label="429 / HOUR" value={c429 ?? 0} sub={(c429 ?? 0) > 0 ? 'throttled' : 'clean'} tone={(c429 ?? 0) > 0 ? 'amber' : 'cyan'}/>
+        <StatCard label="TASKS" value={`${taskStats?.ok || 0}/${(taskStats?.ok || 0) + (taskStats?.fail || 0)}`} sub={`${taskStats?.fail || 0} failed`} tone="cyan"/>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 16 }}>

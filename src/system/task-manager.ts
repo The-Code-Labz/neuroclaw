@@ -1,21 +1,35 @@
 import { randomUUID } from 'crypto';
-import { getDb, logAudit, getAllAgents } from '../db';
+import { getDb, logAudit, getAllAgents, getDefaultProject } from '../db';
 import { classifyRoute } from './router';
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
 
-export type TaskStatus = 'todo' | 'doing' | 'review' | 'done';
+export type TaskStatus    = 'todo' | 'doing' | 'review' | 'done';
+export type PriorityLevel = 'low' | 'medium' | 'high' | 'critical';
 
 export interface AppTask {
-  id:          string;
-  title:       string;
-  description: string | null;
-  status:      TaskStatus;
-  priority:    number;
-  session_id:  string | null;
-  agent_id:    string | null;
-  created_at:  string;
-  updated_at:  string;
+  id:             string;
+  title:          string;
+  description:    string | null;
+  status:         TaskStatus;
+  priority:       number;            // legacy 0-100 score (kept one release)
+  priority_level: PriorityLevel;     // Archon-style enum (drives the new UI)
+  session_id:     string | null;
+  agent_id:       string | null;
+  // Archon-port additions (v1.9). Strings for JSON columns to match the
+  // SQLite shape; callers JSON.parse when they actually need structured form.
+  project_id:     string | null;
+  parent_task_id: string | null;
+  assignee:       string;            // free text — accepts agents, humans, "User", "AI IDE Agent"
+  task_order:     number;            // drag-reorder position within (status) column
+  feature:        string | null;
+  sources:        string;             // JSON array
+  code_examples:  string;             // JSON array
+  archived:       number;             // 0/1
+  archived_at:    string | null;
+  archived_by:    string | null;
+  created_at:     string;
+  updated_at:     string;
 }
 
 /**
@@ -40,24 +54,74 @@ async function autoAssign(title: string, description?: string): Promise<string |
   return decision.agent.id;
 }
 
+export interface CreateTaskOptions {
+  description?:     string;
+  sessionId?:       string;
+  agentId?:         string;
+  priority?:        number;            // legacy 0-100; mapped → priority_level if level not given
+  priority_level?:  PriorityLevel;
+  project_id?:      string;            // omit → default NeuroClaw project
+  parent_task_id?:  string;
+  assignee?:        string;            // free text; defaults to "User"
+  task_order?:      number;
+  feature?:         string;
+  sources?:         unknown;           // JSON-serialized into `sources`
+  code_examples?:   unknown;           // JSON-serialized into `code_examples`
+}
+
+function priorityLevelFor(score: number, override?: PriorityLevel): PriorityLevel {
+  if (override) return override;
+  if (score >= 75) return 'critical';
+  if (score >= 50) return 'high';
+  if (score >= 25) return 'medium';
+  return 'low';
+}
+
 export async function createTask(
-  title:       string,
-  description?: string,
-  sessionId?:  string,
-  agentId?:    string,
-  priority = 50,
+  title:    string,
+  optsOrDescription?: CreateTaskOptions | string,
+  legacySessionId?:   string,
+  legacyAgentId?:     string,
+  legacyPriority = 50,
 ): Promise<AppTask> {
-  // Auto-assign if no agent was specified
-  const resolvedAgentId = agentId ?? await autoAssign(title, description);
+  // Backward-compatible signature: createTask(title, "desc", sessionId, agentId, 75)
+  // still works; new callers pass an options object instead.
+  const opts: CreateTaskOptions = typeof optsOrDescription === 'string'
+    ? { description: optsOrDescription, sessionId: legacySessionId, agentId: legacyAgentId, priority: legacyPriority }
+    : (optsOrDescription ?? {});
+
+  const priority      = opts.priority ?? 50;
+  const priorityLevel = priorityLevelFor(priority, opts.priority_level);
+  const resolvedAgentId = opts.agentId ?? await autoAssign(title, opts.description);
+  const projectId       = opts.project_id ?? getDefaultProject().id;
 
   const id = randomUUID();
   const db = getDb();
   db.prepare(`
-    INSERT INTO tasks (id, title, description, session_id, agent_id, priority)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, title, description ?? null, sessionId ?? null, resolvedAgentId ?? null, priority);
-  logAudit('task_created', 'task', id, { title, agentId: resolvedAgentId });
-  if (!agentId && resolvedAgentId) {
+    INSERT INTO tasks (
+      id, title, description, session_id, agent_id, priority,
+      project_id, parent_task_id, assignee, task_order, feature,
+      sources, code_examples, priority_level
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    title,
+    opts.description ?? null,
+    opts.sessionId ?? null,
+    resolvedAgentId ?? null,
+    priority,
+    projectId,
+    opts.parent_task_id ?? null,
+    opts.assignee?.trim() || 'User',
+    opts.task_order ?? 0,
+    opts.feature ?? null,
+    JSON.stringify(opts.sources       ?? []),
+    JSON.stringify(opts.code_examples ?? []),
+    priorityLevel,
+  );
+  logAudit('task_created', 'task', id, { title, agentId: resolvedAgentId, projectId });
+  if (!opts.agentId && resolvedAgentId) {
     logHive('task_created', `Task "${title}" created and auto-assigned`, resolvedAgentId, { taskId: id });
   }
   return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as AppTask;
@@ -66,21 +130,44 @@ export async function createTask(
 export function updateTask(
   id: string,
   fields: {
-    status?:      TaskStatus;
-    agent_id?:    string | null;
-    title?:       string;
-    description?: string;
-    priority?:    number;
+    status?:          TaskStatus;
+    agent_id?:        string | null;
+    title?:           string;
+    description?:     string;
+    priority?:        number;
+    priority_level?:  PriorityLevel;
+    project_id?:      string | null;
+    parent_task_id?:  string | null;
+    assignee?:        string;
+    task_order?:      number;
+    feature?:         string | null;
+    sources?:         unknown;
+    code_examples?:   unknown;
+    archived?:        boolean;
+    archived_by?:     string | null;
   },
 ): void {
   const sets: string[] = ["updated_at = datetime('now')"];
   const params: unknown[] = [];
 
-  if (fields.status      !== undefined) { sets.push('status = ?');      params.push(fields.status); }
-  if (fields.agent_id    !== undefined) { sets.push('agent_id = ?');    params.push(fields.agent_id); }
-  if (fields.title       !== undefined) { sets.push('title = ?');       params.push(fields.title); }
-  if (fields.description !== undefined) { sets.push('description = ?'); params.push(fields.description); }
-  if (fields.priority    !== undefined) { sets.push('priority = ?');    params.push(fields.priority); }
+  if (fields.status         !== undefined) { sets.push('status = ?');         params.push(fields.status); }
+  if (fields.agent_id       !== undefined) { sets.push('agent_id = ?');       params.push(fields.agent_id); }
+  if (fields.title          !== undefined) { sets.push('title = ?');          params.push(fields.title); }
+  if (fields.description    !== undefined) { sets.push('description = ?');    params.push(fields.description); }
+  if (fields.priority       !== undefined) { sets.push('priority = ?');       params.push(fields.priority); }
+  if (fields.priority_level !== undefined) { sets.push('priority_level = ?'); params.push(fields.priority_level); }
+  if (fields.project_id     !== undefined) { sets.push('project_id = ?');     params.push(fields.project_id); }
+  if (fields.parent_task_id !== undefined) { sets.push('parent_task_id = ?'); params.push(fields.parent_task_id); }
+  if (fields.assignee       !== undefined) { sets.push('assignee = ?');       params.push(fields.assignee.trim() || 'User'); }
+  if (fields.task_order     !== undefined) { sets.push('task_order = ?');     params.push(fields.task_order); }
+  if (fields.feature        !== undefined) { sets.push('feature = ?');        params.push(fields.feature); }
+  if (fields.sources        !== undefined) { sets.push('sources = ?');        params.push(JSON.stringify(fields.sources)); }
+  if (fields.code_examples  !== undefined) { sets.push('code_examples = ?');  params.push(JSON.stringify(fields.code_examples)); }
+  if (fields.archived       !== undefined) {
+    sets.push('archived = ?');    params.push(fields.archived ? 1 : 0);
+    sets.push('archived_at = ?'); params.push(fields.archived ? new Date().toISOString() : null);
+  }
+  if (fields.archived_by    !== undefined) { sets.push('archived_by = ?');    params.push(fields.archived_by); }
 
   if (sets.length === 1) return;
   params.push(id);
@@ -91,15 +178,35 @@ export function updateTask(
   }
 }
 
-export function getTasks(status?: TaskStatus): AppTask[] {
-  if (status) {
-    return getDb()
-      .prepare('SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, created_at DESC')
-      .all(status) as AppTask[];
+/**
+ * List tasks. Defaults exclude archived rows (Archon-style soft delete).
+ *   getTasks() — every active task across every project, status-grouped order
+ *   getTasks('todo') — just one status
+ *   getTasks(undefined, { project_id, include_archived }) — filtered listing
+ */
+export function getTasks(
+  status?: TaskStatus,
+  opts: { project_id?: string; include_archived?: boolean; parent_task_id?: string | null } = {},
+): AppTask[] {
+  const where: string[] = [];
+  const args:  unknown[] = [];
+  if (!opts.include_archived)         { where.push('archived = 0'); }
+  if (status)                          { where.push('status = ?');           args.push(status); }
+  if (opts.project_id)                 { where.push('project_id = ?');       args.push(opts.project_id); }
+  if (opts.parent_task_id !== undefined) {
+    if (opts.parent_task_id === null) where.push('parent_task_id IS NULL');
+    else { where.push('parent_task_id = ?'); args.push(opts.parent_task_id); }
   }
-  return getDb()
-    .prepare('SELECT * FROM tasks ORDER BY priority DESC, created_at DESC')
-    .all() as AppTask[];
+  const sql = `SELECT * FROM tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY task_order ASC, priority DESC, created_at DESC`;
+  return getDb().prepare(sql).all(...args) as AppTask[];
+}
+
+/** Soft-delete a task (Archon style). Sets archived=1, stamps archived_at,
+ *  optionally records who archived it. The task still exists in the DB so it
+ *  can be restored or referenced by historical audit log entries. */
+export function archiveTask(id: string, archivedBy?: string | null): void {
+  updateTask(id, { archived: true, archived_by: archivedBy ?? null });
+  logHive('task_updated', `Task archived`, undefined, { taskId: id, archived: true });
 }
 
 // TODO [task queue workers]: When status → 'doing', push to BullMQ/Redis for async execution

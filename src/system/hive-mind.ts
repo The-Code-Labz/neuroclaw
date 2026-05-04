@@ -26,9 +26,28 @@ export type HiveAction =
   | 'memory_extracted'
   | 'memory_skipped'
   | 'memory_capped'
+  | 'memory_graph_attached'
   | 'triage_llm_used'
   | 'triage_depth_penalty'
-  | 'triage_budget_downgrade';
+  | 'triage_budget_downgrade'
+  | 'dream_cycle_start'
+  | 'dream_cycle_complete'
+  | 'dream_cycle_failed'
+  | 'memories_created'
+  | 'memories_promoted'
+  | 'memories_merged'
+  | 'memories_pruned'
+  | 'procedures_created'
+  | 'plan_created'
+  | 'agent_heartbeat'
+  | 'mcp_probe_ok'
+  | 'mcp_probe_failed'
+  | 'skill_created'
+  | 'skill_updated'
+  | 'skill_deleted'
+  | 'skill_script_run'
+  | 'skill_script_written'
+  | 'skill_script_deleted';
 
 export interface HiveEvent {
   id:         string;

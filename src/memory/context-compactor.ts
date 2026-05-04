@@ -85,7 +85,10 @@ export async function maybeCompactHistory(input: MaybeCompactInput): Promise<Com
   try {
     const wrote = await saveSessionSummaryTool({
       summary,
-      title:      `Compacted context — ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+      // Seconds-precision so back-to-back compactions in the same minute
+      // don't collide on path. Combined with agent + session4 in the path
+      // scheme this should never collide in practice.
+      title:      `Compacted context — ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
       tags:       ['auto_compact', 'session_summary'],
       importance: 0.6,
       agent_id:   input.agentId ?? null,

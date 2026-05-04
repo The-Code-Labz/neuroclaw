@@ -13,6 +13,9 @@ import {
   ClaudeCliAuthError,
 } from '../providers/claude-cli';
 import { ingestExchangeAsync } from '../memory/memory-pipeline';
+import { prewarmAgentAsync } from '../system/heartbeat';
+import { buildMemoryContextBlock } from '../memory/memory-tools';
+import { buildSkillsBlock, parseAgentSkills, resolveEffectiveSkillNames } from '../skills/skill-loader';
 import { pickModel } from '../system/model-triage';
 import { logSpend } from '../system/model-spend';
 import {
@@ -24,23 +27,17 @@ import {
   saveMessage, logAnalytics, createSession,
   getAgentByName, getAgentById, getAllAgents,
   getSessionMessages,
-  createAgentMessage, updateAgentMessageResponse,
   type AgentRecord,
 } from '../db';
 import { logger } from '../utils/logger';
 import { classifyRoute } from '../system/router';
-import { spawnAgentAsync, type SpawnRequest } from '../system/spawner';
 import { logHive } from '../system/hive-mind';
 import { getLangfuse, createChatTrace, logToolSpan, estimateTokens } from '../system/langfuse';
-import {
-  createBackgroundTask,
-  completeBackgroundTask,
-  failBackgroundTask,
-  taskEvents,
-  type BackgroundTask,
-} from '../system/background-tasks';
-import { decomposeTask, mergeResults, evaluateSpawn } from '../system/decomposer';
-import { createTask } from '../system/task-manager';
+import { type BackgroundTask } from '../system/background-tasks';
+import { decomposeTask, mergeResults } from '../system/decomposer';
+import { buildOpenAiTools, dispatchOpenAiTool } from '../tools/adapters/openai';
+import { buildComposioOpenAiTools, dispatchComposioTool, isComposioTool } from '../tools/adapters/composio';
+import type { ToolContext } from '../tools/context';
 
 // TODO [ElevenLabs]: Stream audio output alongside text for voice-enabled agents
 // TODO [memory]: Retrieve relevant memories before each message; persist key facts after responses
@@ -225,496 +222,6 @@ function getOrCreateAnthropicHistory(
   return sessionHistoriesAnthropic.get(key)!;
 }
 
-// ── Tool definitions ──────────────────────────────────────────────────────────
-
-function buildTools(agent: AgentRecord | undefined): ChatCompletionTool[] {
-  if (!agent || agent.status !== 'active') return [];
-
-  const tools: ChatCompletionTool[] = [
-    {
-      type: 'function',
-      function: {
-        name:        'message_agent',
-        description: 'Send a direct message to another agent and receive their response synchronously',
-        parameters: {
-          type:       'object',
-          properties: {
-            to:      { type: 'string', description: 'Name of the agent to message' },
-            message: { type: 'string', description: 'The message to send' },
-            context: { type: 'string', description: 'Optional background context for the message' },
-          },
-          required: ['to', 'message'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name:        'assign_task_to_agent',
-        description: 'Create a task and assign it to a specific agent; optionally execute it immediately',
-        parameters: {
-          type:       'object',
-          properties: {
-            to:          { type: 'string',  description: 'Name of the agent to assign the task to' },
-            title:       { type: 'string',  description: 'Short task title' },
-            description: { type: 'string',  description: 'Detailed task description' },
-            priority:    { type: 'number',  description: 'Priority 0-100 (default 50)' },
-            execute_now: { type: 'boolean', description: 'If true, run the task immediately and return the result' },
-          },
-          required: ['to', 'title'],
-        },
-      },
-    },
-  ];
-
-  if (config.spawning.enabled && (agent.spawn_depth ?? 0) < 3) {
-    tools.push({
-      type: 'function',
-      function: {
-        name:        'spawn_agent',
-        description: 'Create a temporary specialized agent to handle a complex or parallel task',
-        parameters: {
-          type:       'object',
-          properties: {
-            name:            { type: 'string', description: 'Unique name for the temporary agent' },
-            role:            { type: 'string', description: 'Agent role, e.g. specialist, analyst' },
-            description:     { type: 'string', description: 'One-line description of what this agent does' },
-            capabilities:    { type: 'array', items: { type: 'string' }, description: 'List of capability tags' },
-            systemPrompt:    { type: 'string', description: 'Full system prompt for the agent' },
-            taskDescription: { type: 'string', description: 'The specific task for the agent to execute immediately' },
-          },
-          required: ['name', 'role', 'description', 'systemPrompt', 'taskDescription'],
-        },
-      },
-    });
-  }
-
-  if (config.mcp.enabled) {
-    tools.push(
-      {
-        type: 'function',
-        function: {
-          name:        'search_memory',
-          description: 'Search across memory_index + NeuroVault (and ResearchLM/InsightsLM if configured). Returns categorized hits ranked by salience, importance, and recency.',
-          parameters: {
-            type: 'object',
-            properties: {
-              query: { type: 'string', description: 'What to look up (2-8 keywords).' },
-              limit: { type: 'number', description: 'Max hits (default 20).' },
-            },
-            required: ['query'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'search_vault',
-          description: 'Search the NeuroVault MCP directly (no SQLite). Useful when you specifically want vault-stored notes.',
-          parameters: {
-            type: 'object',
-            properties: {
-              query: { type: 'string' },
-              limit: { type: 'number' },
-              vault: { type: 'string', description: 'Vault name (defaults to NEUROVAULT_DEFAULT_VAULT).' },
-            },
-            required: ['query'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'write_vault_note',
-          description: 'Persist a structured memory: indexes locally and mirrors to NeuroVault. Use for procedures, insights, decisions, or preferences worth keeping. Do NOT save raw chat — write the distilled lesson.',
-          parameters: {
-            type: 'object',
-            properties: {
-              title:      { type: 'string', description: '4-8 words.' },
-              type:       { type: 'string', description: 'One of: episodic, semantic, procedural, preference, insight, project.' },
-              summary:    { type: 'string', description: '1-2 sentence summary.' },
-              content:    { type: 'string', description: 'Optional richer body (2-5 sentences).' },
-              tags:       { type: 'array', items: { type: 'string' } },
-              importance: { type: 'number', description: '0-1, default 0.7.' },
-            },
-            required: ['title', 'type', 'summary'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'save_session_summary',
-          description: 'Save a summary of the current session to memory + vault. Call before context pressure forces a compaction.',
-          parameters: {
-            type: 'object',
-            properties: {
-              summary:    { type: 'string', description: 'Distilled summary of what happened.' },
-              title:      { type: 'string' },
-              tags:       { type: 'array', items: { type: 'string' } },
-              importance: { type: 'number' },
-            },
-            required: ['summary'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'compact_context',
-          description: 'Compact the conversation: provide a summary you want to keep; the rest of the prior context is replaced with that summary plus any retrieved relevant memories.',
-          parameters: {
-            type: 'object',
-            properties: {
-              conversation: { type: 'string', description: 'Serialized recent turns to compact.' },
-            },
-            required: ['conversation'],
-          },
-        },
-      },
-    );
-  }
-
-  if (agent.exec_enabled) {
-    tools.push(
-      {
-        type: 'function',
-        function: {
-          name:        'bash_run',
-          description: 'Run a shell command on the host. Returns stdout, stderr, exit code, duration. Output is byte-capped; some destructive patterns are hard-blocked.',
-          parameters: {
-            type:       'object',
-            properties: {
-              command:    { type: 'string', description: 'The full shell command to run (executed via bash -lc).' },
-              cwd:        { type: 'string', description: 'Working directory. Defaults to EXEC_DEFAULT_CWD.' },
-              timeout_ms: { type: 'number', description: 'Per-call timeout in ms; capped server-side.' },
-            },
-            required: ['command'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'fs_read',
-          description: 'Read the contents of a file on the host. Output is byte-capped; truncated if too large.',
-          parameters: {
-            type: 'object',
-            properties: { path: { type: 'string', description: 'Absolute or relative file path.' } },
-            required: ['path'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'fs_write',
-          description: 'Write to a file on the host. mode=overwrite (default), append, or create (fails if exists). Creates parent dirs.',
-          parameters: {
-            type: 'object',
-            properties: {
-              path:    { type: 'string' },
-              content: { type: 'string' },
-              mode:    { type: 'string', enum: ['create', 'overwrite', 'append'] },
-            },
-            required: ['path', 'content'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'fs_list',
-          description: 'List the contents of a directory.',
-          parameters: {
-            type: 'object',
-            properties: { path: { type: 'string' } },
-            required: ['path'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name:        'fs_search',
-          description: 'Recursively search for a regex/pattern across files (uses ripgrep when available, else grep -rn).',
-          parameters: {
-            type: 'object',
-            properties: {
-              pattern:     { type: 'string' },
-              path:        { type: 'string', description: 'Directory to search (defaults to EXEC_DEFAULT_CWD).' },
-              max_results: { type: 'number' },
-            },
-            required: ['pattern'],
-          },
-        },
-      },
-    );
-  }
-
-  return tools;
-}
-
-// ── Tool execution ────────────────────────────────────────────────────────────
-
-async function executeTool(
-  name: string,
-  argsStr: string,
-  parentAgentId: string | undefined,
-  onMeta?: (e: MetaEvent) => void | Promise<void>,
-  sessionId?: string,
-): Promise<string> {
-  // ── memory tools (gated on MCP enabled at registration time) ─────────────
-  if (name === 'search_memory' || name === 'search_vault' || name === 'write_vault_note' || name === 'save_session_summary' || name === 'compact_context') {
-    let args: Record<string, unknown>;
-    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: `Invalid ${name} arguments` }); }
-    const tools = await import('../memory/memory-tools');
-    const agent = parentAgentId ? getAgentById(parentAgentId) : undefined;
-    try {
-      let result: unknown;
-      if (name === 'search_memory') {
-        result = await tools.searchMemoryTool({
-          query: String(args.query ?? ''),
-          limit: typeof args.limit === 'number' ? args.limit : undefined,
-          agentId: parentAgentId ?? null,
-        });
-      } else if (name === 'search_vault') {
-        result = await tools.searchVaultTool({
-          query: String(args.query ?? ''),
-          limit: typeof args.limit === 'number' ? args.limit : undefined,
-          vault: typeof args.vault === 'string' ? args.vault : undefined,
-        });
-      } else if (name === 'write_vault_note') {
-        result = await tools.writeVaultNoteTool({
-          title:      String(args.title ?? ''),
-          type:       String(args.type ?? 'episodic'),
-          summary:    String(args.summary ?? ''),
-          content:    typeof args.content === 'string' ? args.content : undefined,
-          tags:       Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
-          importance: typeof args.importance === 'number' ? args.importance : undefined,
-          agent_id:   parentAgentId ?? null,
-          agent_name: agent?.name,
-          session_id: sessionId ?? null,
-        });
-      } else if (name === 'save_session_summary') {
-        result = await tools.saveSessionSummaryTool({
-          summary:    String(args.summary ?? ''),
-          title:      typeof args.title === 'string' ? args.title : undefined,
-          tags:       Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
-          importance: typeof args.importance === 'number' ? args.importance : undefined,
-          agent_id:   parentAgentId ?? null,
-          agent_name: agent?.name,
-          session_id: sessionId ?? null,
-        });
-      } else {
-        result = await tools.compactContextTool({
-          conversation: String(args.conversation ?? ''),
-          agent_id:     parentAgentId ?? null,
-          agent_name:   agent?.name,
-          session_id:   sessionId ?? null,
-        });
-      }
-      return JSON.stringify(result);
-    } catch (err) {
-      return JSON.stringify({ ok: false, error: (err as Error).message });
-    }
-  }
-
-  // ── exec tools (gated on agent.exec_enabled at registration time) ─────────
-  if (name === 'bash_run' || name === 'fs_read' || name === 'fs_write' || name === 'fs_list' || name === 'fs_search') {
-    let args: Record<string, unknown>;
-    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: `Invalid ${name} arguments` }); }
-    const exec = await import('../system/exec-tools');
-    let result: unknown;
-    if (name === 'bash_run') {
-      result = await exec.bashRun({
-        command:    String(args.command ?? ''),
-        cwd:        typeof args.cwd === 'string' ? args.cwd : undefined,
-        timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        agentId:    parentAgentId,
-      });
-    } else if (name === 'fs_read') {
-      result = await exec.fsRead({ path: String(args.path ?? ''), agentId: parentAgentId });
-    } else if (name === 'fs_write') {
-      result = await exec.fsWrite({
-        path:    String(args.path ?? ''),
-        content: String(args.content ?? ''),
-        mode:    args.mode === 'create' || args.mode === 'append' ? args.mode : 'overwrite',
-        agentId: parentAgentId,
-      });
-    } else if (name === 'fs_list') {
-      result = await exec.fsList({ path: String(args.path ?? ''), agentId: parentAgentId });
-    } else {
-      result = await exec.fsSearch({
-        pattern:     String(args.pattern ?? ''),
-        path:        typeof args.path === 'string' ? args.path : undefined,
-        max_results: typeof args.max_results === 'number' ? args.max_results : undefined,
-        agentId:     parentAgentId,
-      });
-    }
-    return JSON.stringify(result);
-  }
-
-  // ── message_agent ──────────────────────────────────────────────────────────
-  if (name === 'message_agent') {
-    let args: { to: string; message: string; context?: string };
-    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: 'Invalid message_agent arguments' }); }
-
-    const sender     = parentAgentId ? getAgentById(parentAgentId) : undefined;
-    const recipient  = getAgentByName(args.to);
-
-    if (!recipient || recipient.status !== 'active') {
-      return JSON.stringify({ error: `Agent "${args.to}" not found or inactive` });
-    }
-    if (!sender) {
-      return JSON.stringify({ error: 'Sender agent not found' });
-    }
-
-    const fullMessage = args.context
-      ? `[Context: ${args.context}]\n\n${args.message}`
-      : args.message;
-
-    const msgRecord = createAgentMessage(sender.id, sender.name, recipient.id, recipient.name, args.message, sessionId);
-
-    await onMeta?.({ type: 'agent_message', fromName: sender.name, toName: recipient.name, preview: args.message.slice(0, 80) });
-    logHive('agent_message_sent', `${sender.name} → ${recipient.name}: "${args.message.slice(0, 60)}"`, sender.id, { toAgentId: recipient.id, preview: args.message.slice(0, 80) });
-
-    // Run the target agent synchronously to get a response
-    const commSessId = createSession(recipient.id, `Comms: ${sender.name} → ${recipient.name}`);
-    let response = '';
-    try {
-      await chatStream(fullMessage, commSessId, (chunk) => { response += chunk; }, recipient.system_prompt ?? '', recipient.id);
-      updateAgentMessageResponse(msgRecord.id, response, 'responded');
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      updateAgentMessageResponse(msgRecord.id, errMsg, 'failed');
-      return JSON.stringify({ error: `Agent "${args.to}" failed to respond: ${errMsg}` });
-    }
-
-    return JSON.stringify({ from: recipient.name, response });
-  }
-
-  // ── assign_task_to_agent ───────────────────────────────────────────────────
-  if (name === 'assign_task_to_agent') {
-    let args: { to: string; title: string; description?: string; priority?: number; execute_now?: boolean };
-    try { args = JSON.parse(argsStr); } catch { return JSON.stringify({ error: 'Invalid assign_task_to_agent arguments' }); }
-
-    const sender    = parentAgentId ? getAgentById(parentAgentId) : undefined;
-    const recipient = getAgentByName(args.to);
-
-    if (!recipient || recipient.status !== 'active') {
-      return JSON.stringify({ error: `Agent "${args.to}" not found or inactive` });
-    }
-
-    const task = await createTask(args.title, args.description, sessionId, recipient.id, args.priority ?? 50);
-
-    await onMeta?.({ type: 'agent_task_assigned', fromName: sender?.name ?? 'system', toName: recipient.name, title: args.title, taskId: task.id, executing: !!args.execute_now });
-    logHive('agent_task_assigned', `${sender?.name ?? 'system'} assigned task "${args.title}" to ${recipient.name}`, recipient.id, { taskId: task.id, executeNow: !!args.execute_now });
-
-    // Notify the tasks watch SSE so the dashboard refreshes immediately
-    taskEvents.emit('task_created', { taskId: task.id, title: task.title, toName: recipient.name, fromName: sender?.name ?? 'system', status: task.status });
-
-    if (args.execute_now) {
-      const taskSessId = createSession(recipient.id, `Task: ${args.title.slice(0, 50)}`);
-      let result = '';
-      try {
-        const taskMsg = args.description ? `${args.title}\n\n${args.description}` : args.title;
-        await chatStream(taskMsg, taskSessId, (chunk) => { result += chunk; }, recipient.system_prompt ?? '', recipient.id);
-        updateAgentMessageResponse(task.id, result);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'failed', error: errMsg });
-      }
-      return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'completed', result });
-    }
-
-    return JSON.stringify({ task_id: task.id, assigned_to: recipient.name, status: 'queued', title: args.title });
-  }
-
-  // ── spawn_agent ────────────────────────────────────────────────────────────
-  if (name !== 'spawn_agent') {
-    return JSON.stringify({ error: `Unknown tool: ${name}` });
-  }
-
-  let args: SpawnRequest & { taskDescription?: string };
-  try {
-    args = JSON.parse(argsStr) as typeof args;
-  } catch {
-    return JSON.stringify({ error: 'Invalid spawn_agent arguments' });
-  }
-
-  if (!parentAgentId) return JSON.stringify({ error: 'No parent agent ID for spawn' });
-
-  // Intelligent spawn evaluation — only spawn if no existing agent can do the job well
-  if (config.spawning.enabled) {
-    const existing   = getAllAgents().filter(a => a.status === 'active' && !a.temporary);
-    const evaluation = await evaluateSpawn(args.taskDescription ?? args.description, existing);
-
-    await onMeta?.({ type: 'spawn_eval', task: args.name, shouldSpawn: evaluation.shouldSpawn, benefit: evaluation.expectedBenefit, reason: evaluation.reason });
-    logHive('spawn_evaluated', `Spawn evaluation for "${args.name}": ${evaluation.shouldSpawn ? 'APPROVED' : 'DENIED'} (benefit ${evaluation.expectedBenefit}) — ${evaluation.reason}`, parentAgentId, evaluation);
-
-    if (!evaluation.shouldSpawn) {
-      return JSON.stringify({
-        spawn_blocked: true,
-        reason: evaluation.reason,
-        suggestion: 'Use an existing agent instead. Available: ' + existing.map(a => a.name).join(', '),
-      });
-    }
-  }
-
-  const result = await spawnAgentAsync({ ...args, parentAgentId });
-  if (!result.ok || !result.agent) {
-    return JSON.stringify({ error: result.reason ?? 'Spawn failed' });
-  }
-
-  await onMeta?.({ type: 'spawn', event: { agentName: result.agent.name, agentId: result.agent.id } });
-
-  // Run the spawned agent's task in the background (non-blocking)
-  if (args.taskDescription) {
-    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const spawnSessionId = createSession(result.agent.id, `Spawn: ${result.agent.name}`);
-    
-    // Create background task tracking
-    createBackgroundTask(taskId, result.agent.id, result.agent.name, spawnSessionId);
-    
-    // Notify that background task started
-    await onMeta?.({ type: 'spawn_started', agentName: result.agent.name, taskId });
-
-    // Fire and forget — run in background
-    (async () => {
-      let subResponse = '';
-      try {
-        await chatStream(
-          args.taskDescription!,
-          spawnSessionId,
-          (chunk) => { subResponse += chunk; },
-          result.agent!.system_prompt ?? '',
-          result.agent!.id,
-        );
-        // Mark complete and auto-deactivate the temp agent
-        completeBackgroundTask(taskId, subResponse, true);
-        logger.info('Background sub-agent completed', { taskId, agentName: result.agent!.name, chars: subResponse.length });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        failBackgroundTask(taskId, errMsg);
-        logger.error('Background sub-agent failed', { taskId, agentName: result.agent!.name, error: errMsg });
-      }
-    })();
-
-    // Return immediately so main agent can continue
-    return JSON.stringify({
-      spawned: result.agent.name,
-      status: 'running_in_background',
-      taskId,
-      note: `Sub-agent "${result.agent.name}" is now working on the task in the background. ` +
-            `DO NOT write the essay/content/output yourself — the sub-agent will produce it. ` +
-            `Just tell the user that ${result.agent.name} is working on it and they can continue chatting. ` +
-            `Keep your response to 1-2 sentences maximum.`,
-    });
-  }
-
-  return JSON.stringify({ spawned: result.agent.name, agentId: result.agent.id });
-}
 
 // ── Core streaming function ───────────────────────────────────────────────────
 
@@ -730,16 +237,33 @@ async function chatStreamOpenAI(
   systemPrompt: string,
   agentId?: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  attachments?: ChatImageAttachment[],
+  extraSystemContext?: string,
 ): Promise<void> {
   const history = getOrCreateHistory(sessionId, systemPrompt, agentId);
   const _agentRecordForCompaction = agentId ? getAgentById(agentId) : undefined;
   await compactOpenAi(history, userMessage, agentId, _agentRecordForCompaction?.name, sessionId);
-  history.push({ role: 'user', content: userMessage });
+  // Native multi-modal: when attachments are present, build a content array
+  // with text + image_url blocks instead of a plain string. Saved-message
+  // log still uses the text body (vision URLs aren't useful in transcripts).
+  if (attachments && attachments.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const content: any[] = [];
+    if (userMessage) content.push({ type: 'text', text: userMessage });
+    for (const a of attachments) content.push({ type: 'image_url', image_url: { url: a.url } });
+    history.push({ role: 'user', content });
+  } else {
+    history.push({ role: 'user', content: userMessage });
+  }
   saveMessage(sessionId, 'user', userMessage);
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
 
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
-  const tools = buildTools(agentRecord);
+  const toolCtx: ToolContext = { agentId, sessionId, onMeta };
+  // Match prior buildTools behavior: no tools at all when there's no active agent.
+  const baseTools     = (agentRecord && agentRecord.status === 'active') ? buildOpenAiTools(toolCtx) : [];
+  const composioTools = (agentRecord && agentRecord.status === 'active') ? await buildComposioOpenAiTools(toolCtx) : [];
+  const tools = [...baseTools, ...composioTools];
 
   // Refresh team awareness so every agent sees the current live roster
   const allAgents = getAllAgents();
@@ -748,6 +272,25 @@ async function chatStreamOpenAI(
   } else if (agentRecord) {
     const base = agentRecord.system_prompt ?? systemPrompt;
     history[0] = { role: 'system', content: base + buildTeamSection(agentRecord.id, allAgents) };
+  }
+
+  // Append agent's declared skills (manual selection, no auto-routing).
+  const skillsBlock = buildSkillsBlock(resolveEffectiveSkillNames(parseAgentSkills(agentRecord?.skills)));
+  if (skillsBlock && history[0] && typeof history[0].content === 'string') {
+    history[0] = { role: 'system', content: history[0].content + skillsBlock };
+  }
+
+  // Pre-inject relevant long-term memories into the system prompt.
+  const memoryBlock = await buildMemoryContextBlock({ query: userMessage, agentId });
+  if (memoryBlock && history[0] && typeof history[0].content === 'string') {
+    history[0] = { role: 'system', content: history[0].content + memoryBlock };
+  }
+
+  // Per-turn extra context (Discord ids, future channel-specific hints, etc.).
+  // Appended LAST so it always wins — agents see this verbatim regardless of
+  // their stored system_prompt or any of the dynamic blocks above.
+  if (extraSystemContext && history[0] && typeof history[0].content === 'string') {
+    history[0] = { role: 'system', content: history[0].content + extraSystemContext };
   }
 
   const MAX_TOOL_ITERATIONS = 5;
@@ -839,7 +382,9 @@ async function chatStreamOpenAI(
       for (const tc of toolCalls) {
         logger.info('Executing tool call', { name: tc.function.name });
         const toolStart = Date.now();
-        const result = await executeTool(tc.function.name, tc.function.arguments, agentId, onMeta, sessionId);
+        const result = (await isComposioTool(tc.function.name, toolCtx))
+          ? await dispatchComposioTool(tc.function.name, tc.function.arguments, toolCtx)
+          : await dispatchOpenAiTool(tc.function.name, tc.function.arguments, toolCtx);
         logToolSpan(trace, tc.function.name, tc.function.arguments, result, Date.now() - toolStart);
         const toolMsg: ChatCompletionToolMessageParam = {
           role:         'tool',
@@ -901,10 +446,11 @@ async function chatStreamAnthropic(
   systemPrompt: string,
   agentId?: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  extraSystemContext?: string,
 ): Promise<void> {
   if (config.claude.backend === 'claude-cli') {
     // Subscription auth path. No silent fallback to anthropic-api on failure.
-    return chatStreamClaudeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
+    return chatStreamClaudeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
   }
 
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
@@ -915,7 +461,10 @@ async function chatStreamAnthropic(
   logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
 
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
-  const openAiTools = buildTools(agentRecord);
+  const toolCtx: ToolContext = { agentId, sessionId, onMeta };
+  const baseOpenAiTools = (agentRecord && agentRecord.status === 'active') ? buildOpenAiTools(toolCtx) : [];
+  const composioTools   = (agentRecord && agentRecord.status === 'active') ? await buildComposioOpenAiTools(toolCtx) : [];
+  const openAiTools = [...baseOpenAiTools, ...composioTools];
   const anthropicTools: Anthropic.Messages.Tool[] = openAiTools.map(t => ({
     name:         t.function.name,
     description:  t.function.description ?? '',
@@ -930,6 +479,14 @@ async function chatStreamAnthropic(
   } else if (agentRecord) {
     activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
   }
+
+  // Append declared skills before pre-injecting memory.
+  const skillsBlock = buildSkillsBlock(resolveEffectiveSkillNames(parseAgentSkills(agentRecord?.skills)));
+  if (skillsBlock) activeSystemPrompt += skillsBlock;
+
+  // Pre-inject relevant long-term memories.
+  const memoryBlock = await buildMemoryContextBlock({ query: userMessage, agentId });
+  if (memoryBlock) activeSystemPrompt += memoryBlock;
 
   const model = resolveAgentModel(agentRecord, userMessage, 'anthropic') || 'claude-sonnet-4-6';
   const lf     = getLangfuse();
@@ -1014,7 +571,9 @@ async function chatStreamAnthropic(
       for (const [, tb] of toolBlocks) {
         logger.info('Executing tool call (Anthropic)', { name: tb.name });
         const toolStart = Date.now();
-        const result = await executeTool(tb.name, tb.inputAcc, agentId, onMeta, sessionId);
+        const result = (await isComposioTool(tb.name, toolCtx))
+          ? await dispatchComposioTool(tb.name, tb.inputAcc, toolCtx)
+          : await dispatchOpenAiTool(tb.name, tb.inputAcc, toolCtx);
         logToolSpan(trace, tb.name, tb.inputAcc, result, Date.now() - toolStart);
         toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
       }
@@ -1088,6 +647,25 @@ function anthropicHistoryToTurns(history: Anthropic.Messages.MessageParam[]): Hi
   });
 }
 
+/**
+ * Extend the splice end forward so we never cut inside a tool-call pair.
+ * OpenAI requires every assistant message with tool_calls to be IMMEDIATELY
+ * followed by the matching tool-role messages (one per tool_call_id). If the
+ * compactor splices part of that pair away, the next chat completion errors.
+ *
+ * Rule: the message AFTER the splice (history[to + 1]) must NOT be a `tool`
+ * role response. If it is, walk `to` forward until it isn't — i.e. consume
+ * the entire tool-call response block into the splice.
+ */
+function extendSpliceEndPastToolPair(history: ChatCompletionMessageParam[], from: number, to: number): number {
+  let safeTo = to;
+  while (safeTo + 1 < history.length && history[safeTo + 1]?.role === 'tool') safeTo++;
+  // Also: if the last message in the splice is an assistant with tool_calls,
+  // bring its tool-results in too (they may already be inside the splice, but
+  // the previous loop covers the case where they straddle the boundary).
+  return safeTo;
+}
+
 async function compactOpenAi(
   history: ChatCompletionMessageParam[],
   newUserText: string,
@@ -1098,8 +676,34 @@ async function compactOpenAi(
   const turns = openAiHistoryToTurns(history);
   const plan  = await maybeCompactHistory({ history: turns, newUserText, agentId, agentName: agentName ?? null, sessionId: sessionId ?? null });
   if (!plan) return;
-  history.splice(plan.from, plan.to - plan.from + 1, { role: 'system', content: plan.replacement.text });
-  logger.info('compactor: OpenAI history compacted', { reclaimed: plan.tokensReclaimed, vault: plan.summaryWritten.vault_path });
+  const safeTo = extendSpliceEndPastToolPair(history, plan.from, plan.to);
+  history.splice(plan.from, safeTo - plan.from + 1, { role: 'system', content: plan.replacement.text });
+  logger.info('compactor: OpenAI history compacted', {
+    reclaimed: plan.tokensReclaimed,
+    extendedBy: safeTo - plan.to,
+    vault: plan.summaryWritten.vault_path,
+  });
+}
+
+/**
+ * Anthropic equivalent: every assistant message with `tool_use` content must
+ * be paired with a user message containing matching `tool_result` blocks.
+ * If the splice cuts between them, the next API call errors with
+ * "tool_use ids must have corresponding tool_result blocks".
+ */
+function extendAnthropicSpliceEnd(history: Anthropic.Messages.MessageParam[], from: number, to: number): number {
+  let safeTo = to;
+  // Walk forward as long as the next message is a `user` role with tool_result blocks.
+  while (safeTo + 1 < history.length) {
+    const next = history[safeTo + 1];
+    if (next?.role !== 'user') break;
+    const blocks = Array.isArray(next.content) ? next.content : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasToolResult = blocks.some((b: any) => b?.type === 'tool_result');
+    if (!hasToolResult) break;
+    safeTo++;
+  }
+  return safeTo;
 }
 
 async function compactAnthropic(
@@ -1112,14 +716,19 @@ async function compactAnthropic(
   const turns = anthropicHistoryToTurns(history);
   const plan  = await maybeCompactHistory({ history: turns, newUserText, agentId, agentName: agentName ?? null, sessionId: sessionId ?? null });
   if (!plan) return;
+  const safeTo = extendAnthropicSpliceEnd(history, plan.from, plan.to);
   // Anthropic messages must alternate user/assistant. Splice in as a user message
   // labeled clearly so the model treats it as prior-turn context.
   const replacement: Anthropic.Messages.MessageParam = {
     role: 'user',
     content: plan.replacement.text,
   };
-  history.splice(plan.from, plan.to - plan.from + 1, replacement);
-  logger.info('compactor: Anthropic history compacted', { reclaimed: plan.tokensReclaimed, vault: plan.summaryWritten.vault_path });
+  history.splice(plan.from, safeTo - plan.from + 1, replacement);
+  logger.info('compactor: Anthropic history compacted', {
+    reclaimed: plan.tokensReclaimed,
+    extendedBy: safeTo - plan.to,
+    vault: plan.summaryWritten.vault_path,
+  });
 }
 
 function flattenAnthropicHistoryAsText(history: Anthropic.Messages.MessageParam[]): string {
@@ -1147,6 +756,7 @@ async function chatStreamClaudeCli(
   systemPrompt: string,
   agentId?: string,
   _onMeta?: (e: MetaEvent) => void | Promise<void>,
+  extraSystemContext?: string,
 ): Promise<void> {
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
@@ -1161,6 +771,18 @@ async function chatStreamClaudeCli(
   } else if (agentRecord) {
     activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
   }
+
+  // Append declared skills.
+  const skillsBlock = buildSkillsBlock(resolveEffectiveSkillNames(parseAgentSkills(agentRecord?.skills)));
+  if (skillsBlock) activeSystemPrompt += skillsBlock;
+
+  // Pre-inject relevant long-term memories — critical for the Claude CLI
+  // backend, which never sees our custom memory tools.
+  const memoryBlock = await buildMemoryContextBlock({ query: userMessage, agentId });
+  if (memoryBlock) activeSystemPrompt += memoryBlock;
+
+  // Per-turn extra context (Discord ids etc.).
+  if (extraSystemContext) activeSystemPrompt += extraSystemContext;
 
   const priorHistoryText = flattenAnthropicHistoryAsText(history);
   const finalSystemPrompt = priorHistoryText
@@ -1191,6 +813,7 @@ async function chatStreamClaudeCli(
         systemPrompt: finalSystemPrompt,
         sessionId,
         model,
+        agentId,
         execEnabled:  !!agentRecord?.exec_enabled,
         onUsage:      (u) => {
           if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
@@ -1249,10 +872,126 @@ async function chatStreamClaudeCli(
   });
 }
 
+// ── Codex CLI streaming (ChatGPT subscription auth via local `codex` binary) ─
+
+async function chatStreamCodexCli(
+  userMessage: string,
+  sessionId: string,
+  onChunk: (chunk: string) => void | Promise<void>,
+  systemPrompt: string,
+  agentId?: string,
+  _onMeta?: (e: MetaEvent) => void | Promise<void>,
+  extraSystemContext?: string,
+): Promise<void> {
+  const { streamCodexCliChat, CodexCliAuthError, CodexCliRateLimitError } = await import('../providers/codex-cli');
+  const history = getOrCreateAnthropicHistory(sessionId, agentId);
+  const agentRecord = agentId ? getAgentById(agentId) : undefined;
+  await compactAnthropic(history, userMessage, agentId, agentRecord?.name, sessionId);
+  saveMessage(sessionId, 'user', userMessage);
+  logAnalytics('message_sent', { role: 'user', length: userMessage.length }, sessionId);
+
+  const allAgents = getAllAgents();
+  let activeSystemPrompt = systemPrompt;
+  if (agentRecord?.name === 'Alfred') {
+    activeSystemPrompt = buildOrchestratorPrompt(allAgents);
+  } else if (agentRecord) {
+    activeSystemPrompt = (agentRecord.system_prompt ?? systemPrompt) + buildTeamSection(agentRecord.id, allAgents);
+  }
+  const skillsBlock = buildSkillsBlock(resolveEffectiveSkillNames(parseAgentSkills(agentRecord?.skills)));
+  if (skillsBlock) activeSystemPrompt += skillsBlock;
+  const memoryBlock = await buildMemoryContextBlock({ query: userMessage, agentId });
+  if (memoryBlock) activeSystemPrompt += memoryBlock;
+  // Per-turn extra context (Discord ids etc.).
+  if (extraSystemContext) activeSystemPrompt += extraSystemContext;
+
+  const priorHistoryText = flattenAnthropicHistoryAsText(history);
+  const finalSystemPrompt = priorHistoryText
+    ? `${activeSystemPrompt}\n\n## Recent conversation\n${priorHistoryText}`
+    : activeSystemPrompt;
+
+  const model = agentRecord?.model || 'gpt-5.5';
+  const trace = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
+  const generation = trace?.generation({
+    name: 'codex-cli-completion',
+    model,
+    input: { systemPrompt: finalSystemPrompt, prompt: userMessage },
+    startTime: new Date(),
+  });
+
+  let textAccum = '';
+  let realInputTokens:  number | null = null;
+  let realOutputTokens: number | null = null;
+
+  try {
+    for await (const chunk of streamCodexCliChat({
+      prompt:       userMessage,
+      systemPrompt: finalSystemPrompt,
+      model,
+      agentId,
+      sessionId,
+      onUsage: (u) => {
+        if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
+        if (typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
+      },
+    })) {
+      await onChunk(chunk);
+      textAccum += chunk;
+    }
+  } catch (err) {
+    generation?.end({ output: '[error]', metadata: { error: (err as Error).message } });
+    if (err instanceof CodexCliAuthError) {
+      logger.error('Codex CLI auth failed — run `codex login` to refresh credentials');
+    } else if (err instanceof CodexCliRateLimitError) {
+      logger.warn('Codex CLI rate-limited');
+    }
+    throw err;
+  }
+
+  history.push({ role: 'user',      content: userMessage });
+  history.push({ role: 'assistant', content: textAccum });
+  saveMessage(sessionId, 'assistant', textAccum, agentId);
+  logAnalytics('message_sent', { role: 'assistant', length: textAccum.length, agentId }, sessionId);
+  generation?.end({ output: textAccum, metadata: { outputTokens: estimateTokens(textAccum) } });
+  trace?.update({ output: textAccum });
+  logSpend({
+    provider:      'codex',
+    model_id:      model,
+    input_tokens:  realInputTokens  ?? estimateTokens(finalSystemPrompt + userMessage),
+    output_tokens: realOutputTokens ?? estimateTokens(textAccum),
+    agent_id:      agentId ?? null,
+    session_id:    sessionId,
+  });
+  ingestExchangeAsync({
+    source:         'chat',
+    agent_id:       agentId,
+    agent_name:     agentRecord?.name,
+    session_id:     sessionId,
+    user_text:      userMessage,
+    assistant_text: textAccum,
+  });
+}
+
 // ── Public chatStream dispatcher ─────────────────────────────────────────────
+
+/** Image attachment forwarded into the chat path when the resolved vision
+ *  mode is 'native'. The route handler runs the 'preprocess' branch upstream
+ *  and never threads anything here in that case (it's already inlined as text). */
+export interface ChatImageAttachment {
+  url:        string;
+  mime_type?: string;
+  name?:      string;
+}
 
 /**
  * Routes to the correct streaming implementation based on agent provider.
+ * `attachments` is only set when the agent is on a vision-capable provider
+ * AND vision_mode resolved to 'native' — for all other paths the route
+ * handler converted the images into text descriptions before calling us.
+ *
+ * `extraSystemContext` is appended to the dynamically-rebuilt system prompt
+ * on every turn (after team awareness + skills + memory blocks). Use it for
+ * per-request context the agent needs but that doesn't belong in its stored
+ * prompt: the Discord turn ids the bot path threads in, etc.
  */
 export async function chatStream(
   userMessage: string,
@@ -1261,12 +1000,30 @@ export async function chatStream(
   systemPrompt: string,
   agentId?: string,
   onMeta?: (e: MetaEvent) => void | Promise<void>,
+  attachments?: ChatImageAttachment[],
+  extraSystemContext?: string,
 ): Promise<void> {
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
+  // Pre-warm fire-and-forget: if this agent's last heartbeat is stale (or
+  // they've never had one), kick a tiny ping in parallel with the chat call so
+  // the MCP / provider connection is hot for the next turn.
+  if (agentRecord) prewarmAgentAsync(agentRecord);
   if (agentRecord?.provider === 'anthropic') {
-    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
+    // Anthropic + Codex paths default to preprocess (descriptions inlined upstream),
+    // so any attachments still here are bonus — Anthropic API can take them but
+    // we'd need to extend the path. For now, drop with a warning if present.
+    if (attachments && attachments.length > 0) {
+      logger.warn('chatStream: native attachments dropped on anthropic path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
+    }
+    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
   }
-  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta);
+  if (agentRecord?.provider === 'codex') {
+    if (attachments && attachments.length > 0) {
+      logger.warn('chatStream: native attachments dropped on codex path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
+    }
+    return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
+  }
+  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext);
 }
 
 // ── Multi-agent orchestration ─────────────────────────────────────────────────

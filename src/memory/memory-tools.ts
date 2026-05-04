@@ -87,10 +87,12 @@ export async function writeVaultNoteTool(input: WriteVaultNoteInput): Promise<{ 
         source:     input.source ?? `agent_write${input.session_id ? ` (session ${input.session_id})` : ''}`,
       };
       const ref = await vaultCreateNote({
-        title:   input.title,
-        type:    input.type,
-        content: formatVaultNoteContent(noteSpec),
-        vault:   input.vault,
+        title:     input.title,
+        type:      input.type,
+        content:   formatVaultNoteContent(noteSpec),
+        vault:     input.vault,
+        agent:     input.agent_name ?? undefined,
+        sessionId: input.session_id ?? undefined,
       });
       attachVaultNote(row.id, ref.note_id, ref.note_id);
       try { logHive('memory_extracted', `agent wrote ${input.type}: ${input.title}`, input.agent_id ?? undefined, { memory_id: row.id, vault_path: ref.note_id, source: 'agent_tool' }); } catch { /* best-effort */ }
@@ -167,4 +169,50 @@ export async function retrieveRelevantMemoryTool(opts: {
 
 export function listRecentMemoriesTool(opts: { limit?: number; type?: string; sessionId?: string } = {}): MemoryIndexRow[] {
   return listMemoryIndex(opts);
+}
+
+// ── Memory pre-injection for system prompts ──────────────────────────────────
+// Used by every chat path to give agents baseline memory awareness without
+// requiring an explicit tool call. Especially important for the Claude CLI
+// backend, which runs its own opaque tool loop and never sees our custom
+// memory tools.
+
+export async function buildMemoryContextBlock(opts: {
+  query:    string;
+  agentId?: string | null;
+  limit?:   number;
+}): Promise<string> {
+  const config = (await import('../config')).config;
+  if (!config.memory.preinjectEnabled) return '';
+  const limit = opts.limit ?? config.memory.preinjectMax;
+  if (limit <= 0 || !opts.query.trim()) return '';
+  let result;
+  try {
+    result = await retrieve({ query: opts.query, agentId: opts.agentId ?? null, limit });
+  } catch {
+    return '';
+  }
+  if (result.total === 0) return '';
+
+  const lines: string[] = ['', '---', '## Relevant long-term memory'];
+  const groupBy: { label: string; key: keyof typeof result }[] = [
+    { label: 'Procedures',  key: 'procedures' },
+    { label: 'Insights',    key: 'insights' },
+    { label: 'Preferences', key: 'preferences' },
+    { label: 'Other',       key: 'memory' },
+  ];
+  for (const g of groupBy) {
+    const arr = (result[g.key] as Array<{ title: string; summary: string; vault_path?: string | null }> | undefined) ?? [];
+    if (arr.length === 0) continue;
+    lines.push('');
+    lines.push(`### ${g.label}`);
+    for (const h of arr) {
+      const where = h.vault_path ? ` _(${h.vault_path})_` : '';
+      lines.push(`- **${h.title}** — ${(h.summary || '').slice(0, 240)}${where}`);
+    }
+  }
+  lines.push('');
+  lines.push('Cite these by title when they apply. Prefer reusing existing procedures over re-deriving them. ' +
+             'Call `search_memory` / `write_vault_note` for things this preview missed.');
+  return lines.join('\n');
 }

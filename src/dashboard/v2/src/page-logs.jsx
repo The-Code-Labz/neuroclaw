@@ -1,15 +1,18 @@
-/* Logs */
+/* Logs (live-wired) */
 const Logs = () => {
   const { LOGS } = window.NC_DATA;
   const [lvl, setLvl] = React.useState('ALL');
-  const list = lvl === 'ALL' ? LOGS : LOGS.filter(l => l.lvl === lvl);
+  const [grep, setGrep] = React.useState('');
+  const all = LOGS || [];
+  const list = all
+    .filter(l => lvl === 'ALL' || l.lvl === lvl)
+    .filter(l => !grep || ((l.msg || '') + ' ' + (l.src || '')).toLowerCase().includes(grep.toLowerCase()));
   const colorOf = lv => lv === 'ERROR' ? 'var(--danger)' : lv === 'WARN' ? 'var(--amber)' : lv === 'AUDIT' ? 'var(--violet)' : 'var(--neon-2)';
   return (
     <div>
       <PageHeader title="Logs" subtitle="// audit · exec · mcp · provider · memory" right={<>
-        <input className="nc-input" placeholder="grep..." style={{ width: 200 }}/>
-        <button className="nc-btn"><Icon name="refresh" size={12}/> Tail</button>
-        <button className="nc-btn primary"><Icon name="terminal" size={12}/> Open Console</button>
+        <input className="nc-input" placeholder="grep..." value={grep} onChange={e => setGrep(e.target.value)} style={{ width: 200 }}/>
+        <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
       </>}/>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
@@ -24,7 +27,7 @@ const Logs = () => {
         <div className="scan-line"/>
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between' }}>
           <div className="mono neonc" style={{ fontSize: 11 }}>$ tail -f /var/log/neuroclaw/*.log</div>
-          <div className="mono muted" style={{ fontSize: 10 }}>{list.length} lines · live</div>
+          <div className="mono muted" style={{ fontSize: 10 }}>{list.length} of {all.length} lines</div>
         </div>
         <div style={{ background: 'rgba(0,4,12,0.7)', padding: '10px 14px', maxHeight: 540, overflow: 'auto' }}>
           {list.map((l, i) => (

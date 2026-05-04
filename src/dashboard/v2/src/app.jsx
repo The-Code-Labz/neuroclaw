@@ -12,7 +12,9 @@ const PAGES = {
   dream: { label: 'Dream Cycle', cmp: () => <Dream/> },
   hivemind: { label: 'Hive Mind', cmp: () => <HiveMind/> },
   comms: { label: 'Comms', cmp: () => <Comms/> },
+  channels: { label: 'Channels', cmp: () => <Channels/> },
   mcp: { label: 'MCP Tools', cmp: () => <MCP/> },
+  skills: { label: 'Skills', cmp: () => <Skills/> },
   providers: { label: 'Providers', cmp: () => <Providers/> },
   analytics: { label: 'Analytics', cmp: () => <Analytics/> },
   logs: { label: 'Logs', cmp: () => <Logs/> },
@@ -68,6 +70,24 @@ const App = () => {
   const [collapsed, setCollapsed] = React.useState(false);
   const [cmd, setCmd] = React.useState(false);
   const [tweaks, setTweak] = window.useTweaks(TWEAK_DEFAULTS);
+  // Re-render whenever live-data refreshes window.NC_DATA.
+  const [, setDataTick] = React.useState(0);
+
+  React.useEffect(() => {
+    const onTick = () => setDataTick(t => t + 1);
+    window.addEventListener('nc-data-tick', onTick);
+    return () => window.removeEventListener('nc-data-tick', onTick);
+  }, []);
+
+  // Cross-page nav (e.g. Sessions "open" button jumps to Chat).
+  React.useEffect(() => {
+    const onGoto = (e) => {
+      if (e?.detail?.page) setActive(e.detail.page);
+      if (e?.detail?.sessionId) window.NC_PENDING_SESSION = e.detail.sessionId;
+    };
+    window.addEventListener('nc-goto', onGoto);
+    return () => window.removeEventListener('nc-goto', onGoto);
+  }, []);
 
   React.useEffect(() => {
     const onKey = e => {

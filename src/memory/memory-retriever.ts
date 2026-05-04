@@ -1,7 +1,8 @@
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { callTool } from '../mcp/mcp-client';
-import { searchMemoryIndex, touchMemoryAccess, type MemoryIndexRow } from './memory-service';
+import { searchMemoryIndex, touchMemoryAccess, listEmbeddedMemoryIndex, type MemoryIndexRow } from './memory-service';
+import { embedText, unpackVector, cosine } from './embeddings';
 import { vaultSearch } from './vault-client';
 import { rankScore, clamp01 } from './memory-scorer';
 
@@ -44,14 +45,13 @@ export interface CategorizedRetrieval {
 
 // ── Source: SQLite memory_index ──────────────────────────────────────────────
 
-function searchSqlite(query: string, limit: number): RetrievalHit[] {
-  const rows: MemoryIndexRow[] = searchMemoryIndex(query, limit);
-  return rows.map(r => ({
+function rowToHit(r: MemoryIndexRow, scoreOverride?: number): RetrievalHit {
+  return {
     source:    'sqlite',
     type:      r.type,
     title:     r.title,
     summary:   r.summary ?? '',
-    score:     rankScore({
+    score:     scoreOverride ?? rankScore({
       salience:      r.salience,
       importance:    r.importance,
       created_at:    r.created_at,
@@ -61,15 +61,81 @@ function searchSqlite(query: string, limit: number): RetrievalHit[] {
     vault_path: r.vault_note_id,
     memory_id:  r.id,
     raw:        r,
-  }));
+  };
+}
+
+/**
+ * Two-pass SQLite search:
+ *   1. Embeddings pass — cosine over rows with stored vectors. High-quality,
+ *      catches paraphrases/synonyms the lexical pass misses.
+ *   2. Lexical pass — title/summary/tags LIKE %query%. Catches exact-phrase
+ *      hits and rows from before embeddings were enabled.
+ * Results are merged (lexical hits not already in the vector set are kept)
+ * and de-duplicated by memory id.
+ */
+async function searchSqlite(query: string, limit: number): Promise<RetrievalHit[]> {
+  const merged = new Map<string, RetrievalHit>();
+
+  // Pass 1: vector search. Embeds the query, scores the candidate set,
+  // promotes rows with cosine ≥ 0.30 (below that the match is usually noise).
+  const queryEmb = await embedText(query);
+  if (queryEmb) {
+    const rows = listEmbeddedMemoryIndex({ limit: 400 });
+    const scored: Array<{ row: MemoryIndexRow; score: number }> = [];
+    for (const r of rows) {
+      const vec = unpackVector(r.embedding ?? null);
+      if (!vec) continue;
+      const sim = cosine(queryEmb.vector, vec);
+      if (sim >= 0.30) scored.push({ row: r, score: sim });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    for (const { row, score } of scored.slice(0, limit)) {
+      // Blend cosine with the existing salience/importance/recency rank so
+      // semantically-close-but-stale memories don't always beat fresher rows.
+      const baseline = rankScore({ salience: row.salience, importance: row.importance, created_at: row.created_at, last_accessed: row.last_accessed });
+      const blended  = 0.6 * score + 0.4 * baseline;
+      merged.set(row.id, rowToHit(row, blended));
+    }
+  }
+
+  // Pass 2: lexical fallback. Adds rows that don't have embeddings (legacy
+  // and below-min-chars rows) plus exact-phrase hits the vector pass missed.
+  const lexical = searchMemoryIndex(query, limit);
+  for (const r of lexical) {
+    if (!merged.has(r.id)) merged.set(r.id, rowToHit(r));
+  }
+
+  return Array.from(merged.values()).sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
 // ── Source: NeuroVault MCP search ────────────────────────────────────────────
 
+/**
+ * Sanitize a memory query before sending it to the NeuroVault MCP. The vault
+ * MCP backs onto Supabase's PostgREST `or=(...ilike.%X%)` filter syntax,
+ * which fails to parse when the query contains commas, brackets, parens,
+ * newlines, or unbalanced quotes — exactly the chars we end up with when
+ * augmenting messages with image descriptions like `[Image 1 "x": ...]`.
+ *
+ * Strip those, collapse whitespace, and cap length so a multi-paragraph
+ * augmented message becomes a tight keyword-y query that still surfaces
+ * semantically related vault notes.
+ */
+function sanitizeVaultQuery(raw: string): string {
+  return raw
+    .replace(/[\[\]\(\)"'`*\\]/g, ' ')   // remove filter-syntax-breaking chars
+    .replace(/[,;]/g, ' ')                // commas/semicolons split filter clauses
+    .replace(/\s+/g, ' ')                 // collapse whitespace + newlines
+    .trim()
+    .slice(0, 240);                       // PostgREST URL has a length cap; keep it tight
+}
+
 async function searchVault(query: string, limit: number): Promise<RetrievalHit[]> {
   if (!config.mcp.enabled || !config.mcp.neurovaultUrl) return [];
+  const sanitized = sanitizeVaultQuery(query);
+  if (!sanitized || sanitized.length < 2) return [];
   try {
-    const results = await vaultSearch({ query, limit });
+    const results = await vaultSearch({ query: sanitized, limit });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return results.map((item: any): RetrievalHit => {
       const title = String(item?.title ?? item?.filename ?? item?.path ?? 'untitled').slice(0, 120);
@@ -108,28 +174,51 @@ function inferTypeFromPath(p: string | undefined): string | undefined {
 }
 
 // ── Source: ResearchLM / InsightsLM (best-effort, optional) ──────────────────
+// Fan-out is OFF unless the user names a tool that actually exists on the
+// configured server. We cache "tool not found" per (url, tool) so the warning
+// only fires once instead of every retrieve.
 
-async function searchExternalMcp(url: string, toolName: string, query: string, limit: number, source: RetrievalSource): Promise<RetrievalHit[]> {
+const toolNotFoundCache = new Set<string>();
+
+async function searchExternalMcp(url: string, toolName: string | '', query: string, limit: number, source: RetrievalSource): Promise<RetrievalHit[]> {
+  if (!url || !toolName) return [];                 // not configured
+  const key = `${url}::${toolName}`;
+  if (toolNotFoundCache.has(key)) return [];        // already known broken — silent skip
+
   try {
-    const result = await callTool(url, toolName, { query, q: query, limit });
+    // We send several common arg shapes so the same setting works for
+    // search-shaped tools (`{ query, limit }`), QA-shaped tools (`{ q }`),
+    // and rag_chat-shaped tools (`{ message, notebook_id? }`).
+    const result = await callTool(url, toolName, { query, q: query, message: query, limit });
     if (!result) return [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items: any[] = Array.isArray(result) ? result :
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (Array.isArray((result as any).results) ? (result as any).results :
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (Array.isArray((result as any).items) ? (result as any).items : []));
+      (Array.isArray((result as any).items) ? (result as any).items :
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Array.isArray((result as any).sources) ? (result as any).sources :
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Array.isArray((result as any).matches) ? (result as any).matches : []))));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return items.slice(0, limit).map((item: any): RetrievalHit => ({
       source,
       type:    String(item?.type ?? 'reference'),
-      title:   String(item?.title ?? item?.name ?? 'untitled').slice(0, 120),
-      summary: String(item?.summary ?? item?.snippet ?? item?.text ?? '').slice(0, 400),
+      title:   String(item?.title ?? item?.name ?? item?.heading ?? 'untitled').slice(0, 120),
+      summary: String(item?.summary ?? item?.snippet ?? item?.text ?? item?.content ?? '').slice(0, 400),
       score:   clamp01(typeof item?.score === 'number' ? item.score : 0.5),
       raw:     item,
     }));
   } catch (err) {
-    logger.warn(`memory-retriever: ${source} search failed`, { error: (err as Error).message });
+    const msg = (err as Error).message;
+    // Permanently disable on "Tool not found" so every retrieve doesn't spam.
+    if (/Tool not found/i.test(msg) || /-32601/.test(msg) || /-32603/.test(msg)) {
+      toolNotFoundCache.add(key);
+      logger.warn(`memory-retriever: ${source} tool '${toolName}' not found on server — fan-out disabled until restart`, { url });
+    } else {
+      logger.warn(`memory-retriever: ${source} search failed`, { error: msg });
+    }
     return [];
   }
 }
@@ -139,15 +228,18 @@ async function searchExternalMcp(url: string, toolName: string, query: string, l
 export async function retrieve(opts: RetrieveOptions): Promise<CategorizedRetrieval> {
   const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
   const includeVault      = opts.includeVault      ?? config.mcp.enabled;
-  const includeResearchLM = opts.includeResearchLM ?? !!config.mcp.researchlmUrl;
-  const includeInsightsLM = opts.includeInsightsLM ?? !!config.mcp.insightslmUrl;
+  // Only fan out to the optional knowledge MCPs when BOTH the URL and the
+  // search-tool name are configured. Without a tool name we have no way to
+  // know what to call, so silent-skip is correct.
+  const includeResearchLM = opts.includeResearchLM ?? !!(config.mcp.researchlmUrl && config.mcp.researchlmSearchTool);
+  const includeInsightsLM = opts.includeInsightsLM ?? !!(config.mcp.insightslmUrl && config.mcp.insightslmSearchTool);
 
   const tasks: Promise<RetrievalHit[]>[] = [
-    Promise.resolve(searchSqlite(opts.query, limit)),
+    searchSqlite(opts.query, limit),
   ];
   if (includeVault)      tasks.push(searchVault(opts.query, limit));
-  if (includeResearchLM) tasks.push(searchExternalMcp(config.mcp.researchlmUrl, 'researchlm_search', opts.query, limit, 'researchlm'));
-  if (includeInsightsLM) tasks.push(searchExternalMcp(config.mcp.insightslmUrl, 'insightslm_search_sources', opts.query, limit, 'insightslm'));
+  if (includeResearchLM) tasks.push(searchExternalMcp(config.mcp.researchlmUrl, config.mcp.researchlmSearchTool, opts.query, limit, 'researchlm'));
+  if (includeInsightsLM) tasks.push(searchExternalMcp(config.mcp.insightslmUrl, config.mcp.insightslmSearchTool, opts.query, limit, 'insightslm'));
 
   const groups = await Promise.all(tasks);
   const merged: RetrievalHit[] = ([] as RetrievalHit[]).concat(...groups);
