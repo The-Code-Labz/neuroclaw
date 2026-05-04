@@ -13,7 +13,9 @@
     "check:claude": "tsx src/diagnostics/claude-check.ts",
     "check:memory": "tsx src/diagnostics/memory-check.ts",
     "bot:discord": "tsx src/integrations/discord-bot.ts",
-    "bot:discord:watch": "tsx watch src/integrations/discord-bot.ts"
+    "bot:discord:watch": "tsx watch src/integrations/discord-bot.ts",
+    "pydantic:install": "cd pydantic-agents && python -m venv .venv && .venv/bin/pip install -r requirements.txt",
+    "pydantic:run": "cd pydantic-agents && ./run-all.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.123",
