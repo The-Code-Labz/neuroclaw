@@ -83,16 +83,19 @@ function extractText(result: unknown): string {
   if (typeof result === 'string') return result;
   if (typeof result !== 'object') return JSON.stringify(result);
 
-  // MCP content array format: { content: Array<{ type: string; text?: string }> }
-  const r = result as { content?: unknown };
+  // MCP content array format: { content: Array<{ type: string; text?: string }>, isError?: boolean }
+  const r = result as { content?: unknown; isError?: boolean };
+  let body: string;
   if (Array.isArray(r.content)) {
     const parts: string[] = [];
     for (const c of r.content as Array<{ type?: string; text?: string }>) {
       if (c.type === 'text' && typeof c.text === 'string') parts.push(c.text);
       else parts.push(JSON.stringify(c));
     }
-    return parts.join('\n').trim();
+    body = parts.join('\n').trim();
+  } else {
+    body = JSON.stringify(result);
   }
 
-  return JSON.stringify(result);
+  return r.isError ? `MCP tool error:\n${body}` : body;
 }
