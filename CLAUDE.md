@@ -239,3 +239,26 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 ## Pydantic AI agents
 
 External Python agents live in `pydantic-agents/`. Each is a standalone Python process exposing a `fastmcp` HTTP MCP server. Register them in the dashboard (MCP Servers tab), then create a NeuroClaw agent with `provider='mcp'` pointing at the server + tool name. The agent appears as `@AgentName` in Discord/CLI and as `agent__<name>(query)` in every local agent's tool list. See `pydantic-agents/README.md` for the full setup.
+
+## Wiki
+
+User-facing docs live in `docs/wiki/<section>/<slug>.md`. The dashboard's **Docs** page (in the OBSERVE nav group) renders them with a sidebar tree on the left and the article body on the right.
+
+To add a page: drop a markdown file with frontmatter into the appropriate section directory. Example:
+
+```markdown
+---
+title: My new article
+order: 50
+---
+
+# My new article
+
+Body here.
+```
+
+The wiki picks up file changes within ~2s without a restart (`getWikiTree()` mtime cache).
+
+To add a new section: `mkdir docs/wiki/<new-section>/` and add a `_section.yml` with `title` and `order`. To link to external docs instead of inline content, add `external_url: https://...` to the article frontmatter — the sidebar entry will open in a new tab.
+
+Loader: `src/dashboard/wiki-loader.ts`. Routes: `GET /api/docs/tree`, `GET /api/docs/article/:section/:slug`. Page: `src/dashboard/v2/src/page-docs.jsx`.
