@@ -20,6 +20,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js') as { CallToolRequestSchema: unknown; ListToolsRequestSchema: unknown };
 import { logger } from '../../utils/logger';
 import { registry, findTool, getAllTools } from '../registry';
+import { getMcpBackedAgentTools, findMcpBackedAgentTool } from './mcp-backed-agent-adapter';
 import type { ToolContext } from '../context';
 
 export interface McpHttpOptions {
@@ -54,7 +55,7 @@ export function createNeuroclawHttpMcpServer(opts: McpHttpOptions = {}): Server 
   // via the dashboard show up in the next `tools/list` call without restart.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const buildToolsList = (): Array<{ name: string; description: string; inputSchema: any }> =>
-    getAllTools().map(t => {
+    [...getAllTools(), ...getMcpBackedAgentTools()].map(t => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const raw: unknown = (t as any).rawInputSchema;
       const inputSchema = raw && typeof raw === 'object'
@@ -69,7 +70,7 @@ export function createNeuroclawHttpMcpServer(opts: McpHttpOptions = {}): Server 
   setHandler(CallToolRequestSchema, async (req: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const request = req as any;
-    const tool = findTool(request.params.name);
+    const tool = findTool(request.params.name) ?? findMcpBackedAgentTool(request.params.name);
     if (!tool) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `unknown tool: ${request.params.name}` }) }],

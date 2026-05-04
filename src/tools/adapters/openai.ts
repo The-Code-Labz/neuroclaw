@@ -6,6 +6,7 @@
 import type { ChatCompletionTool } from 'openai/resources';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { visibleTools, findTool } from '../registry';
+import { getMcpBackedAgentTools, findMcpBackedAgentTool } from './mcp-backed-agent-adapter';
 import type { ToolContext } from '../context';
 
 export function buildOpenAiTools(ctx: ToolContext): ChatCompletionTool[] {
@@ -14,7 +15,7 @@ export function buildOpenAiTools(ctx: ToolContext): ChatCompletionTool[] {
   // 16-tool registry. Cast to `any` at the call site — the runtime contract
   // is unchanged.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return visibleTools(ctx).map(t => {
+  return [...visibleTools(ctx), ...getMcpBackedAgentTools()].map(t => {
     // Synthesized MCP-registry tools carry a `rawInputSchema` (the cached
     // JSON Schema from the remote server). Use it verbatim instead of
     // round-tripping through the passthrough zod object.
@@ -40,7 +41,7 @@ export async function dispatchOpenAiTool(
   argsStr: string,
   ctx: ToolContext,
 ): Promise<string> {
-  const tool = findTool(name);
+  const tool = findTool(name) ?? findMcpBackedAgentTool(name);
   if (!tool) return JSON.stringify({ error: `Unknown tool: ${name}` });
 
   if (tool.gate) {

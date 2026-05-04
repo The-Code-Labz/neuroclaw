@@ -38,6 +38,7 @@ import { decomposeTask, mergeResults } from '../system/decomposer';
 import { buildOpenAiTools, dispatchOpenAiTool } from '../tools/adapters/openai';
 import { buildComposioOpenAiTools, dispatchComposioTool, isComposioTool } from '../tools/adapters/composio';
 import type { ToolContext } from '../tools/context';
+import { chatStreamMcp } from './mcp-backed-agent';
 
 // TODO [ElevenLabs]: Stream audio output alongside text for voice-enabled agents
 // TODO [memory]: Retrieve relevant memories before each message; persist key facts after responses
@@ -68,7 +69,10 @@ export type MetaEvent =
   | { type: 'merge_start' }
   | { type: 'spawn_eval';        task: string; shouldSpawn: boolean; benefit: number; reason: string }
   | { type: 'agent_message';     fromName: string; toName: string; preview: string }
-  | { type: 'agent_task_assigned'; fromName: string; toName: string; title: string; taskId: string; executing: boolean };
+  | { type: 'agent_task_assigned'; fromName: string; toName: string; title: string; taskId: string; executing: boolean }
+  | { type: 'error';           error: string }
+  | { type: 'mcp_call_start'; server: string; tool: string }
+  | { type: 'mcp_call_done';  server: string; tool: string; length: number };
 
 // ── Dynamic system prompt builders ───────────────────────────────────────────
 
@@ -1022,6 +1026,14 @@ export async function chatStream(
       logger.warn('chatStream: native attachments dropped on codex path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
     return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext);
+  }
+  if (agentRecord?.provider === 'mcp') {
+    if (attachments && attachments.length > 0) {
+      logger.warn('chatStream: native attachments dropped on mcp path', { agentId, count: attachments.length });
+    }
+    // extraSystemContext is intentionally ignored — MCP-backed agents have no
+    // local system prompt; their behavior is fully owned by the remote process.
+    return chatStreamMcp(userMessage, sessionId, onChunk, agentRecord, onMeta);
   }
   return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext);
 }

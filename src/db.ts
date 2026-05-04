@@ -436,6 +436,14 @@ function runMigrations(database: Database.Database): void {
       updated_at     TEXT DEFAULT (datetime('now'))
     )`,
     'CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled)',
+
+    // MCP-backed agents: an agent whose provider='mcp' proxies calls to a
+    // remote MCP server tool. mcp_server_id points to the mcp_servers table;
+    // mcp_tool_name is the tool to invoke; mcp_input_field is the JSON key
+    // used to pass the user's message (defaults to 'query').
+    'ALTER TABLE agents ADD COLUMN mcp_server_id TEXT REFERENCES mcp_servers(id)',
+    'ALTER TABLE agents ADD COLUMN mcp_tool_name TEXT',
+    "ALTER TABLE agents ADD COLUMN mcp_input_field TEXT DEFAULT 'query'",
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -658,6 +666,9 @@ export interface AgentRecord {
   composio_user_id:    string | null;     // Composio user id (per-agent identity)
   composio_toolkits:   string | null;     // JSON array; null = all toolkits
   vision_mode:         string;            // 'auto' | 'native' | 'preprocess'
+  mcp_server_id:       string | null;
+  mcp_tool_name:       string | null;
+  mcp_input_field:     string | null;     // JSON field name to put the user's message into; defaults to 'query'
   tts_enabled:         number;            // 0/1
   tts_provider:        string;            // 'voidai' | 'elevenlabs'
   tts_voice:           string | null;     // provider-specific voice id (e.g. 'alloy' or an ElevenLabs voice_id)
@@ -1055,6 +1066,9 @@ export function createAgentRecord(
     exec_enabled?: boolean;
     model_tier?: string;
     skills?: string[];
+    mcp_server_id?: string | null;
+    mcp_tool_name?: string | null;
+    mcp_input_field?: string | null;
   } = {},
 ): AgentRecord {
   const id = randomUUID();
@@ -1062,8 +1076,8 @@ export function createAgentRecord(
   const provider = opts.provider ?? 'openai';
   const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-6' : config.voidai.model;
   db.prepare(`
-    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities, provider, exec_enabled, model_tier, skills)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, name, description, system_prompt, model, role, capabilities, provider, exec_enabled, model_tier, skills, mcp_server_id, mcp_tool_name, mcp_input_field)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     name,
@@ -1076,6 +1090,9 @@ export function createAgentRecord(
     opts.exec_enabled ? 1 : 0,
     opts.model_tier ?? 'pinned',
     JSON.stringify(opts.skills ?? []),
+    opts.mcp_server_id ?? null,
+    opts.mcp_tool_name ?? null,
+    opts.mcp_input_field ?? 'query',
   );
   logAudit('agent_created', 'agent', id, { name, provider, exec_enabled: !!opts.exec_enabled });
   return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord;
@@ -1102,6 +1119,9 @@ export function updateAgentRecord(
     tts_enabled?:  boolean;
     tts_provider?: string;
     tts_voice?:    string | null;
+    mcp_server_id?:   string | null;
+    mcp_tool_name?:   string | null;
+    mcp_input_field?: string | null;
   },
 ): void {
   const sets: string[] = ["updated_at = datetime('now')"];
@@ -1134,6 +1154,9 @@ export function updateAgentRecord(
     sets.push('tts_provider = ?'); params.push(p);
   }
   if (fields.tts_voice    !== undefined) { sets.push('tts_voice = ?');    params.push(fields.tts_voice); }
+  if (fields.mcp_server_id   !== undefined) { sets.push('mcp_server_id = ?');   params.push(fields.mcp_server_id); }
+  if (fields.mcp_tool_name   !== undefined) { sets.push('mcp_tool_name = ?');   params.push(fields.mcp_tool_name); }
+  if (fields.mcp_input_field !== undefined) { sets.push('mcp_input_field = ?'); params.push(fields.mcp_input_field); }
 
   if (sets.length === 1) return;
   params.push(id);

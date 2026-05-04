@@ -5,6 +5,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../../utils/logger';
 import { visibleTools } from '../registry';
+import { getMcpBackedAgentTools } from './mcp-backed-agent-adapter';
 import type { ToolContext } from '../context';
 
 export interface NeuroclawMcpOptions {
@@ -21,7 +22,7 @@ export function createNeuroclawMcpServer(opts: NeuroclawMcpOptions = {}) {
     sessionId: opts.sessionId ?? null,
   };
 
-  const tools = visibleTools(ctx).map(t =>
+  const tools = [...visibleTools(ctx), ...getMcpBackedAgentTools()].map(t =>
     tool(t.name, t.description, t.shape, async (args) => {
       try { return ok(await t.handler(args as never, ctx)); }
       catch (e) { return err((e as Error).message); }
