@@ -67,17 +67,19 @@ export function logHive(
   summary: string,
   agentId?: string,
   metadata?: unknown,
+  runId?: string,
 ): void {
   try {
     getDb().prepare(`
-      INSERT INTO hive_mind (id, agent_id, action, summary, metadata)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO hive_mind (id, agent_id, action, summary, metadata, run_id)
+      VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       agentId ?? null,
       action,
       summary,
       metadata !== undefined ? JSON.stringify(metadata) : null,
+      runId ?? null,
     );
   } catch {
     // Never let hive logging crash the main flow

@@ -108,7 +108,33 @@ function initSchema(database: Database.Database): void {
       action     TEXT NOT NULL,
       summary    TEXT NOT NULL,
       metadata   TEXT,
+      run_id     TEXT REFERENCES runs(id),
       created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- v2.0: Run grouping. One row per outermost user-message turn — ties together
+    -- the routing decision, every spawn / multi-agent step / tool call, and the
+    -- final merged output. Existing hive_mind events stay as the per-event log;
+    -- this table is the index. parent_run_id is reserved for nested runs (cron-
+    -- spawned chats, agent-to-agent invocations) but not used in the v2.0 wiring.
+    CREATE TABLE IF NOT EXISTS runs (
+      id                  TEXT PRIMARY KEY,
+      session_id          TEXT REFERENCES sessions(id),
+      parent_run_id       TEXT REFERENCES runs(id),
+      origin              TEXT NOT NULL,
+      initiating_agent_id TEXT REFERENCES agents(id),
+      user_message        TEXT NOT NULL,
+      final_output        TEXT,
+      status              TEXT NOT NULL DEFAULT 'running'
+                          CHECK(status IN ('running','done','error')),
+      is_multi_agent      INTEGER NOT NULL DEFAULT 0,
+      step_count          INTEGER NOT NULL DEFAULT 0,
+      total_input_tokens  INTEGER NOT NULL DEFAULT 0,
+      total_output_tokens INTEGER NOT NULL DEFAULT 0,
+      duration_ms         INTEGER,
+      error_text          TEXT,
+      started_at          TEXT DEFAULT (datetime('now')),
+      ended_at            TEXT
     );
 
     CREATE TABLE IF NOT EXISTS agent_messages (
@@ -444,6 +470,16 @@ function runMigrations(database: Database.Database): void {
     'ALTER TABLE agents ADD COLUMN mcp_server_id TEXT REFERENCES mcp_servers(id)',
     'ALTER TABLE agents ADD COLUMN mcp_tool_name TEXT',
     "ALTER TABLE agents ADD COLUMN mcp_input_field TEXT DEFAULT 'query'",
+
+    // v2.0 (run grouping): give every event in hive_mind a back-pointer to the
+    // user-turn it belongs to, so we can replay an entire run in one query.
+    // The runs table itself is created in initSchema (idempotent CREATE IF NOT
+    // EXISTS); this ALTER handles existing DBs whose hive_mind predates it.
+    'ALTER TABLE hive_mind ADD COLUMN run_id TEXT REFERENCES runs(id)',
+    'CREATE INDEX IF NOT EXISTS idx_hive_run     ON hive_mind(run_id)',
+    'CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id)',
+    'CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_runs_status  ON runs(status)',
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -1318,6 +1354,145 @@ export function logAnalytics(eventType: string, data?: unknown, sessionId?: stri
     data !== undefined ? JSON.stringify(data) : null,
     sessionId ?? null,
   );
+}
+
+// ── Runs (v2.0 run grouping) ─────────────────────────────────────────────────
+
+export interface RunRecord {
+  id:                  string;
+  session_id:          string | null;
+  parent_run_id:       string | null;
+  origin:              string;
+  initiating_agent_id: string | null;
+  user_message:        string;
+  final_output:        string | null;
+  status:              'running' | 'done' | 'error';
+  is_multi_agent:      number;
+  step_count:          number;
+  total_input_tokens:  number;
+  total_output_tokens: number;
+  duration_ms:         number | null;
+  error_text:          string | null;
+  started_at:          string;
+  ended_at:            string | null;
+}
+
+export interface StartRunInput {
+  origin:              string;
+  sessionId?:          string | null;
+  parentRunId?:        string | null;
+  initiatingAgentId?:  string | null;
+  userMessage:         string;
+}
+
+export function startRun(input: StartRunInput): string {
+  const id = randomUUID();
+  try {
+    getDb().prepare(`
+      INSERT INTO runs (
+        id, session_id, parent_run_id, origin, initiating_agent_id, user_message
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.sessionId ?? null,
+      input.parentRunId ?? null,
+      input.origin,
+      input.initiatingAgentId ?? null,
+      input.userMessage,
+    );
+  } catch (err) {
+    logger.warn('startRun: insert failed', { error: (err as Error).message });
+  }
+  return id;
+}
+
+export interface EndRunPatch {
+  status?:              'done' | 'error';
+  final_output?:        string | null;
+  is_multi_agent?:      boolean;
+  step_count?:          number;
+  total_input_tokens?:  number;
+  total_output_tokens?: number;
+  error_text?:          string | null;
+}
+
+export function endRun(runId: string, patch: EndRunPatch = {}): void {
+  const sets: string[] = [
+    "ended_at = datetime('now')",
+    "duration_ms = CAST((julianday('now') - julianday(started_at)) * 86400000 AS INTEGER)",
+  ];
+  const params: unknown[] = [];
+
+  if (patch.status              !== undefined) { sets.push('status = ?');              params.push(patch.status); }
+  if (patch.final_output        !== undefined) { sets.push('final_output = ?');        params.push(patch.final_output); }
+  if (patch.is_multi_agent      !== undefined) { sets.push('is_multi_agent = ?');      params.push(patch.is_multi_agent ? 1 : 0); }
+  if (patch.step_count          !== undefined) { sets.push('step_count = ?');          params.push(patch.step_count); }
+  if (patch.total_input_tokens  !== undefined) { sets.push('total_input_tokens = ?');  params.push(patch.total_input_tokens); }
+  if (patch.total_output_tokens !== undefined) { sets.push('total_output_tokens = ?'); params.push(patch.total_output_tokens); }
+  if (patch.error_text          !== undefined) { sets.push('error_text = ?');          params.push(patch.error_text); }
+
+  // Default status to 'done' when caller didn't specify (and didn't already error).
+  if (patch.status === undefined) { sets.push("status = 'done'"); }
+
+  params.push(runId);
+  try {
+    getDb().prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  } catch (err) {
+    logger.warn('endRun: update failed', { runId, error: (err as Error).message });
+  }
+}
+
+/**
+ * Increment a run's running token counters. Called per LLM iteration so that
+ * tool-loop turns and multi-agent step turns all roll up into the parent run.
+ */
+export function bumpRunTokens(runId: string, inputTokens: number, outputTokens: number): void {
+  try {
+    getDb().prepare(`
+      UPDATE runs
+         SET total_input_tokens  = total_input_tokens  + ?,
+             total_output_tokens = total_output_tokens + ?
+       WHERE id = ?
+    `).run(inputTokens | 0, outputTokens | 0, runId);
+  } catch {
+    // Token bookkeeping must never crash the chat path.
+  }
+}
+
+export function getRun(id: string): RunRecord | undefined {
+  return getDb().prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRecord | undefined;
+}
+
+export function listRuns(opts: { sessionId?: string; limit?: number } = {}): RunRecord[] {
+  const where: string[] = [];
+  const args:  unknown[] = [];
+  if (opts.sessionId) { where.push('session_id = ?'); args.push(opts.sessionId); }
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const sql = `
+    SELECT * FROM runs
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY started_at DESC
+    LIMIT ?
+  `;
+  return getDb().prepare(sql).all(...args, limit) as RunRecord[];
+}
+
+/** Fetch all hive_mind events tied to a run, oldest-first. */
+export function getRunHiveEvents(runId: string): Array<{
+  id: string; agent_id: string | null; agent_name: string | null;
+  action: string; summary: string; metadata: string | null; created_at: string;
+}> {
+  return getDb().prepare(`
+    SELECT hm.id, hm.agent_id, hm.action, hm.summary, hm.metadata, hm.created_at,
+           a.name AS agent_name
+      FROM hive_mind hm
+ LEFT JOIN agents a ON hm.agent_id = a.id
+     WHERE hm.run_id = ?
+  ORDER BY hm.created_at ASC
+  `).all(runId) as Array<{
+    id: string; agent_id: string | null; agent_name: string | null;
+    action: string; summary: string; metadata: string | null; created_at: string;
+  }>;
 }
 
 // ── Agent messages (inter-agent comms) ───────────────────────────────────────
