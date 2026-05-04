@@ -47,7 +47,9 @@ export type HiveAction =
   | 'skill_deleted'
   | 'skill_script_run'
   | 'skill_script_written'
-  | 'skill_script_deleted';
+  | 'skill_script_deleted'
+  | 'mcp_agent_call_ok'
+  | 'mcp_agent_call_failed';
 
 export interface HiveEvent {
   id:         string;

@@ -68,7 +68,10 @@ export type MetaEvent =
   | { type: 'merge_start' }
   | { type: 'spawn_eval';        task: string; shouldSpawn: boolean; benefit: number; reason: string }
   | { type: 'agent_message';     fromName: string; toName: string; preview: string }
-  | { type: 'agent_task_assigned'; fromName: string; toName: string; title: string; taskId: string; executing: boolean };
+  | { type: 'agent_task_assigned'; fromName: string; toName: string; title: string; taskId: string; executing: boolean }
+  | { type: 'error';           error: string }
+  | { type: 'mcp_call_start'; server: string; tool: string }
+  | { type: 'mcp_call_done';  server: string; tool: string; length: number };
 
 // ── Dynamic system prompt builders ───────────────────────────────────────────
 
