@@ -208,13 +208,17 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.get('/api/agents', (c) => c.json(getAllAgents()));
 
   app.post('/api/agents', async (c) => {
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[] };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[]; mcp_server_id?: string; mcp_tool_name?: string; mcp_input_field?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const name = (body.name ?? '').trim();
     if (!name) return c.json({ error: 'name is required' }, 400);
     if (getDb().prepare('SELECT id FROM agents WHERE name = ? COLLATE NOCASE').get(name)) {
       return c.json({ error: 'An agent with that name already exists' }, 409);
+    }
+
+    if (body.provider === 'mcp' && (!body.mcp_server_id || !body.mcp_tool_name)) {
+      return c.json({ ok: false, error: 'provider=mcp requires mcp_server_id and mcp_tool_name' }, 400);
     }
 
     const provider    = body.provider ?? 'openai';
@@ -229,6 +233,9 @@ export function registerApiRoutes(app: Hono<any>): void {
       exec_enabled: !!body.exec_enabled,
       model_tier:   body.model_tier,
       skills:       Array.isArray(body.skills) ? body.skills : undefined,
+      mcp_server_id:   body.mcp_server_id ?? null,
+      mcp_tool_name:   body.mcp_tool_name ?? null,
+      mcp_input_field: body.mcp_input_field ?? null,
     });
     return c.json(agent, 201);
   });
@@ -238,7 +245,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     const agent = getAgentById(id);
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
 
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null; mcp_server_id?: string | null; mcp_tool_name?: string | null; mcp_input_field?: string | null };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     if (agent.name === 'Alfred' && body.name && body.name.trim() !== 'Alfred') {
@@ -266,6 +273,9 @@ export function registerApiRoutes(app: Hono<any>): void {
       tts_enabled:   body.tts_enabled,
       tts_provider:  body.tts_provider?.trim(),
       tts_voice:     body.tts_voice === undefined ? undefined : (body.tts_voice ? body.tts_voice.trim() : null),
+      mcp_server_id:   body.mcp_server_id !== undefined ? body.mcp_server_id : undefined,
+      mcp_tool_name:   body.mcp_tool_name !== undefined ? body.mcp_tool_name : undefined,
+      mcp_input_field: body.mcp_input_field !== undefined ? body.mcp_input_field : undefined,
     });
     return c.json(getAgentById(id));
   });

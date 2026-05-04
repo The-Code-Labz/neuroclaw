@@ -99,6 +99,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
   const [ttsProvider, setTtsProvider] = React.useState('voidai');
   const [ttsVoice,    setTtsVoice]    = React.useState('');
   const [voiceCatalog, setVoiceCatalog] = React.useState({ voidai: [], elevenlabs: [], elevenlabsAvailable: false });
+  // MCP-backed agent fields
+  const [mcpServers,   setMcpServers]   = React.useState([]);
+  const [mcpServerId,  setMcpServerId]  = React.useState('');
+  const [mcpToolName,  setMcpToolName]  = React.useState('');
+  const [mcpInputField,setMcpInputField]= React.useState('');
   const [busy,    setBusy]    = React.useState(false);
   const [err,     setErr]     = React.useState(null);
 
@@ -147,6 +152,9 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       setTtsEnabled(!!agent._raw?.tts_enabled);
       setTtsProvider(agent._raw?.tts_provider || 'voidai');
       setTtsVoice(agent._raw?.tts_voice || '');
+      setMcpServerId(agent._raw?.mcp_server_id || '');
+      setMcpToolName(agent._raw?.mcp_tool_name || '');
+      setMcpInputField(agent._raw?.mcp_input_field || '');
     } else {
       setName(''); setDesc(''); setRole('specialist'); setProvider('openai');
       setModel(''); setTier('pinned'); setExec(false); setPrompt(''); setCaps('');
@@ -154,6 +162,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       setVisionMode('auto');
       setComposioEnabled(false); setComposioUserId(''); setPickedToolkits(null);
       setTtsEnabled(false); setTtsProvider('voidai'); setTtsVoice('');
+      setMcpServerId(''); setMcpToolName(''); setMcpInputField('');
     }
     setErr(null);
     fetchAllCatalogs();
@@ -165,6 +174,8 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
     }).catch(()=>{});
     // Voice catalog (VoidAI static + ElevenLabs from /v1/voices when keyed).
     window.NC_API.get('/api/audio/voices').then(v => setVoiceCatalog(v || { voidai: [], elevenlabs: [], elevenlabsAvailable: false })).catch(()=>{});
+    // MCP server catalog for MCP-backed agent creation.
+    window.NC_API.get('/api/mcp/servers').then(r => setMcpServers(r?.servers || [])).catch(()=>{});
   }, [open, agent, fetchAllCatalogs]);
 
   const refreshCatalog = async () => {
@@ -207,6 +218,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       tts_enabled:  ttsEnabled,
       tts_provider: ttsProvider,
       tts_voice:    ttsVoice.trim() || null,
+      ...(provider === 'mcp' ? {
+        mcp_server_id:   mcpServerId || null,
+        mcp_tool_name:   mcpToolName || null,
+        mcp_input_field: mcpInputField.trim() || null,
+      } : {}),
     };
     if (!body.name) { setErr('name required'); return; }
     setBusy(true); setErr(null);
@@ -241,7 +257,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
         </div>
         <div className="field" style={{ marginTop: 10 }}><label>Description</label><input className="nc-input" value={desc} onChange={e => setDesc(e.target.value)}/></div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
-          <div className="field"><label>Provider</label><select className="nc-select" value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI / VoidAI</option><option value="anthropic">Anthropic / Claude CLI</option><option value="codex">Codex / ChatGPT CLI</option></select></div>
+          <div className="field"><label>Provider</label><select className="nc-select" value={provider} onChange={e => setProvider(e.target.value)}><option value="openai">OpenAI / VoidAI</option><option value="anthropic">Anthropic / Claude CLI</option><option value="codex">Codex / ChatGPT CLI</option><option value="mcp">MCP-backed (Pydantic AI / external)</option></select></div>
           <div className="field"><label>Model strategy</label><select className="nc-select" value={tier} onChange={e => setTier(e.target.value)}><option value="pinned">Pinned</option><option value="auto">Auto-triage</option><option value="low">Low</option><option value="mid">Mid</option><option value="high">High</option></select></div>
         </div>
         <div className="field" style={{ marginTop: 10 }}>
@@ -266,6 +282,35 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
             <div className="mono" style={{ color: 'var(--amber)', fontSize: 10, marginTop: 4 }}>// no models for {activeProviderLabel} — try Refresh</div>
           )}
         </div>
+        {provider === 'mcp' && (
+          <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--border)', borderRadius: 6 }}>
+            <div className="field">
+              <label>MCP Server</label>
+              <select className="nc-select" value={mcpServerId} onChange={e => { setMcpServerId(e.target.value); setMcpToolName(''); }}>
+                <option value="">-- select server --</option>
+                {mcpServers.filter(s => s.enabled && s.status === 'ready').map(s => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.tools_count} tools)</option>
+                ))}
+                {mcpServers.filter(s => s.enabled && s.status === 'ready').length === 0 && (
+                  <option value="" disabled>no ready servers — probe a server on the MCP page first</option>
+                )}
+              </select>
+            </div>
+            <div className="field" style={{ marginTop: 8 }}>
+              <label>Tool</label>
+              <select className="nc-select" value={mcpToolName} onChange={e => setMcpToolName(e.target.value)} disabled={!mcpServerId}>
+                <option value="">-- select tool --</option>
+                {(mcpServers.find(s => s.id === mcpServerId)?.tools || []).map(t => (
+                  <option key={t.name} value={t.name}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field" style={{ marginTop: 8 }}>
+              <label>Input field name <span className="muted" style={{ fontSize: 10 }}>(JSON key for user message; defaults to "query")</span></label>
+              <input className="nc-input" placeholder="query" value={mcpInputField} onChange={e => setMcpInputField(e.target.value)}/>
+            </div>
+          </div>
+        )}
         <div className="field" style={{ marginTop: 10 }}><label>Capabilities (comma-sep)</label><input className="nc-input" value={caps} onChange={e => setCaps(e.target.value)} placeholder="research, summarize"/></div>
         <div className="field" style={{ marginTop: 10 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
