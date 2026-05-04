@@ -218,7 +218,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     }
 
     if (body.provider === 'mcp' && (!body.mcp_server_id || !body.mcp_tool_name)) {
-      return c.json({ ok: false, error: 'provider=mcp requires mcp_server_id and mcp_tool_name' }, 400);
+      return c.json({ error: 'provider=mcp requires mcp_server_id and mcp_tool_name' }, 400);
     }
 
     const provider    = body.provider ?? 'openai';
@@ -273,9 +273,9 @@ export function registerApiRoutes(app: Hono<any>): void {
       tts_enabled:   body.tts_enabled,
       tts_provider:  body.tts_provider?.trim(),
       tts_voice:     body.tts_voice === undefined ? undefined : (body.tts_voice ? body.tts_voice.trim() : null),
-      mcp_server_id:   body.mcp_server_id !== undefined ? body.mcp_server_id : undefined,
-      mcp_tool_name:   body.mcp_tool_name !== undefined ? body.mcp_tool_name : undefined,
-      mcp_input_field: body.mcp_input_field !== undefined ? body.mcp_input_field : undefined,
+      mcp_server_id:   body.mcp_server_id,
+      mcp_tool_name:   body.mcp_tool_name,
+      mcp_input_field: body.mcp_input_field,
     });
     return c.json(getAgentById(id));
   });

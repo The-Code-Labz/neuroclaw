@@ -41,7 +41,11 @@ window.NC_API = {
       headers: { 'content-type': 'application/json' },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${path}`);
+    if (!r.ok) {
+      let errMsg = `${r.status} ${r.statusText}: ${path}`;
+      try { const d = await r.json(); if (d?.error) errMsg = d.error; } catch { /* not JSON */ }
+      throw new Error(errMsg);
+    }
     return r.json();
   },
 };

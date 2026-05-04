@@ -233,7 +233,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
           method: 'PATCH', credentials: 'same-origin',
           headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
         });
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok) {
+          let errMsg = String(r.status);
+          try { const d = await r.json(); if (d?.error) errMsg = d.error; } catch { /* not JSON */ }
+          throw new Error(errMsg);
+        }
       });
       else await window.NC_API.post('/api/agents', body);
       await window.NC_LIVE.refresh();
