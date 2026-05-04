@@ -44,6 +44,7 @@ const Icon = ({ name, size = 16, className = '', style = {} }) => {
     case 'close': return <svg {...p}><path d="M6 6l12 12M18 6L6 18"/></svg>;
     case 'menu': return <svg {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>;
     case 'terminal': return <svg {...p}><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M6 9l3 3-3 3M12 15h6"/></svg>;
+    case 'docs': return <svg {...p}><path d="M5 4h11l3 3v13H5z"/><path d="M16 4v3h3"/><path d="M8 10h8M8 14h8M8 18h5"/></svg>;
     case 'logo': return (
       <svg {...p} viewBox="0 0 32 32">
         <defs>
