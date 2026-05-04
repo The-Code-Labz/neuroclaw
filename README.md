@@ -1480,3 +1480,415 @@ Right now option B is enough — you can attach `deploy-checklist` to your DevOp
 | v2 | Deeper Mem0 cloning | Domain overlays, custom categories per deployment, importance-gate prompts, `memory_event_list` introspection. Walk their repo, lift the patterns that translate, document the rest. |
 | v2 | Discord bot polish | Slash commands, threads, rich embeds, voice-channel join. (OpenClaw's plugin has all of these — we lifted only the inbound chat bridge.) |
 | v2 | Full NeuroClaw OS | Cutover from v1 dashboard to v2, Skills loader option C (per-turn LLM auto-routing) if warranted. |
+
+---
+
+## Future Work: Browser Agent Loop (Phase C)
+
+### TL;DR
+
+Phase C turns the browser from a one-shot reader into a **stateful surface an agent can drive end-to-end**: open a tab, look at a semantic snapshot of the page, click element `@e3`, type into `@e7`, wait for the next state, repeat. Where Phase B (`browser_fetch` / `browser_screenshot` / `browser_pdf` / `browser_run_js`) treats every call as an isolated request — no cookies, no JS state, no scroll position carried forward — Phase C keeps a real Chromium tab alive between tool calls so multi-step flows (login, form fills, dashboards behind auth, "click through 3 search results and summarize") actually work. We use **Browserless** as the transport (Puppeteer-over-WebSocket plus its REST surface) precisely because we want to **own the snapshot format**: agents see our `@e1...@eN` ref protocol, not raw HTML or someone else's a11y dump. Phase B stays — it remains the right tool for one-shot reads. Phase C is opt-in per agent and intended for long-running researchers, not every specialist.
+
+### Tool surface
+
+Eight new tools, all gated behind `gateBrowserSession` (see [Per-agent gating](#per-agent-gating)). Argument shapes are zod-style; every tool returns the freshest snapshot so the agent can chain without an explicit `browser_snapshot` call.
+
+| Tool | Purpose | Args → Result |
+|---|---|---|
+| `browser_open_tab` | Open a new tab in the agent's browser session and load a URL. | `(url: string, viewport?: {width:number, height:number}, wait_until?: 'load'\|'domcontentloaded'\|'networkidle')` → `{tabId, url, title, snapshot}` |
+| `browser_snapshot` | Re-extract the semantic snapshot of the current tab without navigating. Use after a wait or to refresh stale refs. | `(tabId: string, full?: boolean)` → `{snapshot, snapshotVersion, url, title}` |
+| `browser_click` | Click element by ref. | `(tabId: string, ref: string, button?: 'left'\|'right'\|'middle', clickCount?: number)` → `{snapshot, snapshotVersion, navigated: boolean}` |
+| `browser_type` | Type into an input/textarea ref. Pass `submit:true` to press Enter after. | `(tabId: string, ref: string, text: string, submit?: boolean, clear_first?: boolean)` → `{snapshot, snapshotVersion}` |
+| `browser_select` | Pick an option in a `<select>` or combobox by visible label or value. | `(tabId: string, ref: string, option: string)` → `{snapshot, snapshotVersion}` |
+| `browser_navigate` | Direct navigation on an existing tab — back/forward/reload/goto. | `(tabId: string, action: 'goto'\|'back'\|'forward'\|'reload', url?: string)` → `{snapshot, snapshotVersion, url, title}` |
+| `browser_wait_for` | Block until a condition holds (selector visible, ref disappears, URL match, or fixed ms). Returns the post-wait snapshot. | `(tabId: string, condition: {ref?: string, selector?: string, url_includes?: string, ms?: number}, timeout_ms?: number)` → `{snapshot, snapshotVersion, matched: string}` |
+| `browser_close_tab` | Close a tab and free its slot. The session itself stays open until idle TTL. | `(tabId: string)` → `{closed: true, remaining_tabs: number}` |
+
+### Semantic locator protocol (`@e1...@eN`)
+
+Agents never see raw CSS selectors or XPath. Every interactive node in a snapshot gets a stable ref of the form `@e<N>` (one-based, deterministic per-tab counter). Refs are valid only against the snapshot version that produced them.
+
+**Snapshot extraction.** Two viable strategies; we pick **option B**:
+
+- **A. Puppeteer's `page.accessibility.snapshot({interestingOnly: true})`.** Free, native, returns a full a11y tree. Downsides: doesn't include CSS selectors (we'd have to round-trip through `page.evaluate` per node anyway), doesn't expose `boundingBox` cheaply, and "interestingOnly" prunes some links Chrome thinks are decorative but agents need.
+- **B. Custom `page.evaluate` walker over the live DOM that consults the computed accessibility properties** (`element.ariaRole`, `getComputedStyle`, `Element.checkVisibility()`, `getBoundingClientRect`). One round-trip, full control over which nodes survive, and we can emit the CSS selector alongside the role/name in the same pass. We pay the cost of writing the walker once; we get exactly the shape we want forever.
+
+**Heuristics — nodes that survive:**
+
+| Role | Notes |
+|---|---|
+| `button`, `link` | Always kept. |
+| `textbox`, `searchbox`, `combobox`, `spinbutton` | Always kept. Captures `value`. |
+| `checkbox`, `radio`, `switch` | Always kept. Captures `checked`. |
+| `menuitem`, `menuitemcheckbox`, `tab`, `option` | Kept. |
+| `heading` (h1–h3) | Kept for structural anchoring; h4+ collapsed unless inside main landmark. |
+| `dialog`, `alert`, `status` | Kept; usually the agent's next target. |
+| `img` with non-empty `alt` | Kept (often functional — clickable cards, logos). |
+
+**Nodes pruned:**
+
+- `presentation` / `none` role nodes.
+- Hidden (`display:none`, `visibility:hidden`, `aria-hidden=true`, `hidden` attr).
+- `Element.checkVisibility()` returns false (covers `content-visibility:hidden`, zero opacity, off-screen scroll containers).
+- `width*height === 0` rect.
+- Decorative svgs (no `role`, no `aria-label`, inside a labeled parent).
+- Text nodes inside an already-named interactive ancestor (avoid double-counting "Sign in" as both link name and child text node).
+
+**Ref assignment.** A per-tab integer counter starts at 1, increments in document order during the walk. Every survived node gets `ref = '@e' + counter`. The walker simultaneously emits a `refMap` row keyed by ref:
+
+```ts
+type RefEntry = {
+  selector:        string;   // CSS path resolved to a unique node at snapshot time
+  role:            string;
+  name:            string;
+  snapshotVersion: number;   // monotonically increases per-tab
+};
+type RefMap = Record<string, RefEntry>;
+```
+
+The `selector` field is what the action handler actually uses — agents pass `@e3`, the handler resolves to the stored selector, then runs `page.click(selector)`. Selectors are computed by walking up to the nearest stable id/data-testid; falling back to nth-of-type within the closest landmark; never raw `> div > div > div`.
+
+**Stale-ref handling.** Every action returns the *fresh* snapshot — so the happy path is "ref from the previous response always resolves." If an agent passes a ref from an outdated snapshotVersion (most common cause: it cached a snapshot, the page mutated between calls, the agent then re-uses the old ref), the handler errors out with a structured response and forces re-snapshot:
+
+```json
+{ "ok": false, "error": "stale_ref",
+  "ref": "@e7", "passed_version": 3, "current_version": 5,
+  "next": "Call browser_snapshot first, then re-resolve targets." }
+```
+
+Hard rule: **no action ever silently uses an old ref against a new DOM**. The cost of one extra snapshot call is dwarfed by the cost of a wrong-target click.
+
+### Snapshot format
+
+The shape the agent sees on every action response:
+
+```json
+{
+  "tabId": "tab_abc123",
+  "url": "https://example.com/dashboard",
+  "title": "Dashboard — Example",
+  "snapshotVersion": 5,
+  "viewport": { "width": 1280, "height": 800 },
+  "tree": [
+    { "ref": "@e1", "role": "heading", "level": 1, "name": "Dashboard" },
+    { "ref": "@e2", "role": "navigation", "name": "Primary",
+      "children": [
+        { "ref": "@e3", "role": "link", "name": "Home", "current": true },
+        { "ref": "@e4", "role": "link", "name": "Reports" }
+      ]
+    },
+    { "ref": "@e5", "role": "main",
+      "children": [
+        { "ref": "@e6", "role": "searchbox", "name": "Filter", "value": "" },
+        { "ref": "@e7", "role": "button", "name": "Apply" },
+        { "ref": "@e8", "role": "table", "name": "Recent runs",
+          "children": [ /* … row links @e9..@e24 … */ ]
+        }
+      ]
+    }
+  ],
+  "truncated": false,
+  "dropped_landmarks": []
+}
+```
+
+Children preserve document order. Inputs carry `value`; checkboxes/radios carry `checked`; links carry `current` when they're the active page indicator. Container roles (navigation, main, region, dialog, table) get refs too so the agent can ask "snapshot just this region" via `browser_snapshot(tabId, full:false)` for deep tables.
+
+**Token-budget targets.** ~2–4k tokens for an average page. JSON is compact (one-line records, short keys). When the rendered snapshot exceeds the budget, we apply **progressive truncation** in this order:
+
+1. Collapse `navigation` and `contentinfo` (footer) landmarks to a one-line summary: `{ ref, role, name, child_count: N, collapsed: true }`. The agent can re-expand with `browser_snapshot(tabId, full:true)` or by clicking into them.
+2. Drop nodes deeper than 6 levels inside the `main` landmark; emit `{ truncated_subtree: true, depth_limit: 6 }`.
+3. For repeated row-like patterns (tables, lists), keep the first 25 children and replace the tail with `{ truncated_rows: N_remaining }`.
+4. If still over budget, strip non-interactive `heading` nodes below h2.
+
+`truncated: true` on the root tells the agent the snapshot has been pruned.
+
+**Snapshot-builder JS (runs inside the page via Browserless WS-Puppeteer `page.evaluate`).** ~40-line sketch:
+
+```js
+// runs in the page context, returns { tree, refMap }
+(() => {
+  const KEEP = new Set([
+    'button','link','textbox','searchbox','combobox','spinbutton',
+    'checkbox','radio','switch','menuitem','menuitemcheckbox',
+    'tab','option','heading','dialog','alert','status',
+    'navigation','main','region','table','row','cell','listitem',
+  ]);
+  let counter = 0;
+  const refMap = {};
+
+  const visible = (el) => {
+    if (typeof el.checkVisibility === 'function')
+      return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const role = (el) =>
+    el.getAttribute('role') || el.ariaRole ||
+    el.tagName.toLowerCase().replace(/^(input|select|a|button|h[1-6])$/, m =>
+      ({input:'textbox', select:'combobox', a:'link', button:'button'}[m] ?? 'heading'));
+  const name = (el) =>
+    (el.getAttribute('aria-label') ||
+     el.getAttribute('alt') ||
+     el.innerText || '').trim().slice(0, 120);
+  const cssPath = (el) => { /* stable selector: id > data-testid > nth-of-type */ };
+
+  const walk = (el) => {
+    if (!visible(el)) return null;
+    const r = role(el);
+    const node = { role: r, name: name(el) };
+    if (KEEP.has(r)) {
+      counter += 1;
+      node.ref = '@e' + counter;
+      refMap[node.ref] = { selector: cssPath(el), role: r, name: node.name, snapshotVersion: 0 };
+      if (r === 'textbox' || r === 'searchbox') node.value = el.value || '';
+      if (r === 'checkbox' || r === 'radio')   node.checked = !!el.checked;
+    }
+    const kids = [...el.children].map(walk).filter(Boolean);
+    if (kids.length) node.children = kids;
+    return node.ref || kids.length ? node : null;
+  };
+  return { tree: [walk(document.body)].filter(Boolean), refMap };
+})();
+```
+
+The handler sets `snapshotVersion` on every refMap entry server-side after the evaluate returns (page-side counter starts at 0; server stamps it).
+
+### State model
+
+A new SQLite table keyed by `tabId`:
+
+```sql
+CREATE TABLE IF NOT EXISTS browser_sessions (
+  id                    TEXT PRIMARY KEY,           -- tabId; opaque to the agent
+  agent_id              TEXT NOT NULL REFERENCES agents(id),
+  browserless_session_id TEXT NOT NULL,             -- ws endpoint or reconnect token
+  ref_map               TEXT NOT NULL DEFAULT '{}', -- JSON: Record<ref, RefEntry>
+  snapshot_version      INTEGER NOT NULL DEFAULT 0,
+  url                   TEXT,                       -- last-known URL (for dashboard introspection)
+  title                 TEXT,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at            TEXT NOT NULL,              -- created_at + BROWSER_SESSION_TTL_MIN
+  last_used_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_agent     ON browser_sessions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_expires   ON browser_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_last_used ON browser_sessions(last_used_at);
+```
+
+**Why SQLite instead of an in-memory `Map<tabId, Session>`:**
+
+- **Survives process restarts.** `tsx --watch` (dev) and a redeploy (prod) both kill the Node process. With SQLite, a hot-reload doesn't orphan the agent's open tab — the next call reads the row, reconnects to the Browserless wsEndpoint, and resumes.
+- **Dashboard introspection.** The dashboard already reads `agents` and `tasks` straight from SQLite. Adding "open browser sessions" panel is a 20-line `SELECT` query — no new IPC.
+- **Multi-process deploys.** When we eventually run dashboard + Discord bot + cron worker in three Node processes, every one of them needs visibility into "is this agent currently driving a browser tab?" — `Map` in one process can't answer.
+- **Audit trail.** Every action lands a row in `audit_logs` keyed against `id`. Easy join.
+
+**Cost:** one JSON write per action (the new `refMap` after each snapshot). With WAL mode (already on) and `ref_map` capped at ~200 entries/snapshot, this is sub-millisecond. We cache the deserialized `RefMap` in a per-process `Map` for the duration of a turn so we're not reparsing JSON on every ref lookup.
+
+**Migration** lands as additive entries inside `runMigrations()` per the existing pattern (`CREATE TABLE IF NOT EXISTS` outside try/catch is fine; `ALTER TABLE` columns added later go in try/catch):
+
+```ts
+// inside runMigrations() in src/db.ts
+`CREATE TABLE IF NOT EXISTS browser_sessions ( ... )`,
+'CREATE INDEX IF NOT EXISTS idx_browser_sessions_agent     ON browser_sessions(agent_id)',
+'CREATE INDEX IF NOT EXISTS idx_browser_sessions_expires   ON browser_sessions(expires_at)',
+'CREATE INDEX IF NOT EXISTS idx_browser_sessions_last_used ON browser_sessions(last_used_at)',
+```
+
+**TTL.** Default 30 minutes idle (configurable via `BROWSER_SESSION_TTL_MIN`). Every action `UPDATE browser_sessions SET last_used_at = datetime('now'), expires_at = datetime('now', '+30 minutes') WHERE id = ?`.
+
+**Cleanup.** `src/system/cleanup.ts` already runs every 5 minutes for temp agents; we add a sibling sweep:
+
+```ts
+// extends startCleanupScheduler() — same interval, same try/catch ergonomics
+export function expireBrowserSessions(): number {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const expired = db.prepare(`
+    SELECT id, agent_id, browserless_session_id FROM browser_sessions
+    WHERE closed_at IS NULL AND expires_at <= ?
+  `).all(now) as Array<{ id: string; agent_id: string; browserless_session_id: string }>;
+  if (expired.length === 0) return 0;
+  const close = db.prepare("UPDATE browser_sessions SET closed_at = datetime('now') WHERE id = ?");
+  for (const row of expired) {
+    close.run(row.id);
+    closeBrowserlessConnection(row.browserless_session_id); // best-effort tear-down
+    logHive('browser_session_expired', `Browser session ${row.id.slice(0, 8)} expired`, row.agent_id, { tabId: row.id });
+  }
+  return expired.length;
+}
+```
+
+Dropped into `startCleanupScheduler()` next to `expireTemporaryAgents()`.
+
+### Browserless transport
+
+Connection lives in `src/system/browser-sessions.ts`:
+
+- **Per-session reusable wsEndpoint.** Browserless persists browser state across reconnects when you target the same wsEndpoint with a reconnect-aware connection (`puppeteer.connect({ browserWSEndpoint: cachedWs })`). We store the wsEndpoint string in `browser_sessions.browserless_session_id` and re-attach on every action call.
+- **Why this beats per-call `/function`** (the easy thing): `/function` spins up a fresh browser per request, so cookies, JS state, scroll position, and even open dialogs are gone between calls. Phase C is *exactly* the case where that loss is fatal — login flows, multi-step forms, OAuth handshakes, infinite-scroll feeds. Per-call /function works for Phase B because Phase B doesn't need continuity.
+- **Connection pool sketch:**
+
+  ```ts
+  // src/system/browser-sessions.ts
+  type Conn = { browser: Browser; lastUsed: number };
+  const pool = new Map<string /* wsEndpoint */, Conn>();
+
+  export async function getConnection(ws: string): Promise<Browser> {
+    const hit = pool.get(ws);
+    if (hit && hit.browser.connected) {
+      hit.lastUsed = Date.now();
+      return hit.browser;
+    }
+    pool.delete(ws); // stale
+    const browser = await puppeteer.connect({ browserWSEndpoint: ws });
+    browser.on('disconnected', () => pool.delete(ws));
+    pool.set(ws, { browser, lastUsed: Date.now() });
+    return browser;
+  }
+
+  export function closeBrowserlessConnection(ws: string): void {
+    const hit = pool.get(ws);
+    if (hit) { try { hit.browser.disconnect(); } catch { /* fine */ } pool.delete(ws); }
+  }
+
+  setInterval(() => {                                 // pool eviction — 10 min idle
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [ws, c] of pool) if (c.lastUsed < cutoff) closeBrowserlessConnection(ws);
+  }, 60_000);
+  ```
+
+- **New dep:** `puppeteer-core` (NOT `puppeteer`). Puppeteer-core ships without the bundled Chromium download — we don't need it because Browserless brings its own Chrome on the remote side. Saves ~170MB on `npm install` and avoids platform-specific headaches in CI.
+
+### Per-agent gating
+
+Browser-session tools are off by default. Enable them per agent.
+
+**Schema:**
+
+```ts
+// inside runMigrations() — additive ALTER, try/catch already wraps the array
+'ALTER TABLE agents ADD COLUMN browser_session_enabled INTEGER DEFAULT 0',
+```
+
+**Gate** (mirrors `gateExec` in `src/tools/registry.ts`):
+
+```ts
+function gateBrowserSession(ctx: ToolContext): GateResult {
+  if (!ctx.agentId) return { allowed: false, reason: 'browser_session requires an agent context' };
+  const agent = getAgentById(ctx.agentId);
+  if (!agent?.browser_session_enabled) return { allowed: false, reason: 'browser_session is not enabled for this agent' };
+  return ALLOW;
+}
+```
+
+All eight tools list `gate: gateBrowserSession`. Agents without the flag don't even see them in their tool catalog (registry filters out gated-off tools at `visibleTools()` time).
+
+**Dashboard.** Edit-agent form gets a **Browser session enabled** checkbox next to **Exec enabled**. Default off. Card shows a teal `BROWSE` badge when on (mirrors the orange `EXEC` badge).
+
+### Security
+
+- **Domain allowlist.** `BROWSER_ALLOWED_DOMAINS` (comma-separated). Empty (default) → all allowed; suitable for dev. Production deployments should set it: `BROWSER_ALLOWED_DOMAINS=github.com,docs.python.org,internal.example.com`. Subdomains are wildcard-matched: `example.com` allows `*.example.com`. Enforced inside `browser_open_tab` and on every `browser_navigate` (including `back`/`forward`/`reload` — the post-navigation URL is re-checked).
+- **Realistic browser surface.** `BROWSER_USER_AGENT` defaults to a recent Chrome on Linux x64; we set a real `Accept-Language: en-US,en;q=0.9`, a 1280×800 viewport, and the ordinary Chromium headers. We do **not** bundle any anti-detection/fingerprint-spoofing layer beyond defaults, and we do **not** attempt CAPTCHA bypass — explicitly out of scope. If a site challenges, the agent reports back and stops.
+- **Per-session rate limit.** `BROWSER_MAX_ACTIONS_PER_MIN` (default 60). Token bucket per `tabId`. Exceeded → tool returns `{ ok: false, error: 'rate_limited', retry_in_s: N }` instead of running the action.
+- **Audit.** Every action calls `logHive('browser_session_action', summary, agentId, { tabId, url, action, ref?, selector? })`. Snapshot bodies are NOT logged — `tree` would explode the hive_mind table. The summary string is one line: `"GET github.com/issues/123 → click @e7 (button: 'New issue')"`.
+- **Secret hygiene.** When `browser_type` is invoked against a ref whose `name` matches `/password|passcode|secret|token|api[\s_-]?key|otp|2fa|cvv|ssn/i` — or whose `selector` resolves to an `input[type=password]` — the `value` field in the log line and hive_mind metadata is replaced with `***scrubbed***`. The actual keystrokes are still sent to the page; only logging is redacted.
+- **No file downloads to disk by default.** Browserless's download-to-S3 feature stays disabled. If a flow requires a file, the agent uses Phase B's `browser_pdf` for PDF rendering or an explicit `browser_run_js` to read `document.body.innerText`.
+
+### Worked example: log-in then click first dashboard row
+
+What the agent does, end-to-end. Each tool call is one assistant turn; the agent reads the snapshot, picks a ref, fires the next tool.
+
+```
+1. browser_open_tab({ url: "https://example.com/login" })
+   → { tabId: "tab_abc", snapshot: { tree: [
+        { ref: "@e1", role: "heading", name: "Sign in" },
+        { ref: "@e2", role: "textbox", name: "Email",    value: "" },
+        { ref: "@e3", role: "textbox", name: "Password", value: "" },
+        { ref: "@e4", role: "button",  name: "Sign in" },
+      ], snapshotVersion: 1 } }
+
+2. browser_type({ tabId: "tab_abc", ref: "@e2", text: "user@example.com" })
+3. browser_type({ tabId: "tab_abc", ref: "@e3", text: "•••",
+                  submit: false /* explicit click below */ })
+   → snapshotVersion now 3 (each type bumps it)
+
+4. browser_click({ tabId: "tab_abc", ref: "@e4" })
+   → { navigated: true, snapshot: { url: ".../dashboard", tree: [
+        { ref: "@e1", role: "heading", name: "Dashboard" }, ...
+        { ref: "@e8", role: "table", name: "Recent runs", children: [
+          { ref: "@e9", role: "link", name: "Run #4821 — failed" }, ...
+        ]},
+      ], snapshotVersion: 4 } }
+
+5. browser_click({ tabId: "tab_abc", ref: "@e9" })
+   → snapshot of the run-detail page; agent extracts what it needs and stops.
+
+6. browser_close_tab({ tabId: "tab_abc" })   // optional; TTL handles it
+```
+
+The agent never sees a CSS selector. The handler resolves `@e9` against the refMap saved in step 4's response, which is the *current* `snapshotVersion`. If the user's session times out between steps 4 and 5, step 5 returns `{ ok: false, error: "stale_ref", ... }` and the agent calls `browser_snapshot` to recover.
+
+### Environment variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `BROWSERLESS_TOKEN` | Yes (Phase C) | — | Browserless API token. Same one Phase B uses; no separate Phase C key. |
+| `BROWSERLESS_BASE_URL` | No | `https://production-sfo.browserless.io` | Browserless endpoint. Override for self-hosted Browserless. |
+| `BROWSER_SESSION_TTL_MIN` | No | `30` | Idle minutes before a `browser_sessions` row expires and the wsEndpoint is torn down. |
+| `BROWSER_MAX_TABS_PER_AGENT` | No | `5` | Hard cap on simultaneous open tabs for a single agent. `browser_open_tab` returns `{ ok: false, error: "tab_limit" }` over cap. |
+| `BROWSER_MAX_ACTIONS_PER_MIN` | No | `60` | Per-tab action rate limit. Token bucket. |
+| `BROWSER_ALLOWED_DOMAINS` | No | *(empty = all)* | Comma-separated allowlist. Subdomain wildcards: `example.com` allows `*.example.com`. Enforced on every navigation. |
+| `BROWSER_USER_AGENT` | No | recent Chrome on Linux | Override the UA string sent on every request. |
+| `BROWSER_DEFAULT_VIEWPORT` | No | `1280x800` | Default viewport when `browser_open_tab` doesn't pass one. |
+| `BROWSER_SNAPSHOT_TOKEN_BUDGET` | No | `3500` | Soft budget the snapshot truncator targets before it starts collapsing landmarks. |
+| `BROWSER_PROFILE_PERSIST` | No | `false` | When true, sessions reuse a per-agent Browserless profile so cookies survive past TTL. See open question #3. |
+
+### Hive Mind actions added by Phase C
+
+Three new actions added to the existing `hive_mind` action vocabulary:
+
+| Action | When |
+|---|---|
+| `browser_session_started` | New row inserted into `browser_sessions` (first `browser_open_tab` for an agent in a fresh session). |
+| `browser_session_action` | Every `browser_*` tool call. Metadata: `{ tabId, action, url, ref?, name? }`. Snapshot bodies excluded. |
+| `browser_session_expired` | Cleanup sweep closed the row. |
+
+`browser_session_denied` is *not* a separate action — gate failures already log via the registry's existing tool-denied path.
+
+### API surface
+
+All `/api/*` routes stay token-protected. Two read-only additions:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/browser/sessions` | List active rows (`closed_at IS NULL`). For the dashboard "Open browsers" panel. |
+| GET | `/api/browser/sessions/:id` | One row + its current `ref_map` parsed. Useful when debugging stale-ref errors. |
+
+No write endpoint — the dashboard never drives a browser tab directly. Agents do.
+
+### Migration path from Phase B
+
+Phase B (`browser_fetch`, `browser_screenshot`, `browser_pdf`, `browser_run_js`) and Phase C are **complementary, not competing**:
+
+| Use case | Use Phase B | Use Phase C |
+|---|---|---|
+| One-shot read of a public article | yes | no — overhead not worth it |
+| Screenshot a URL for the user | yes | no |
+| Render a PDF | yes | no |
+| Log into a dashboard, navigate, click | no | yes |
+| Multi-step search-and-summarize | no | yes |
+| Anything behind a session cookie | no | yes |
+
+No Phase B deprecation planned. Phase B tools stay un-gated (just the global `MCP_ENABLED` check via `gateMcp` when applicable). Phase C tools are gated per-agent. New `Researcher`-class agents (long-running, multi-step) get the `browser_session_enabled` flag at seed time; default specialists (Coder, Planner) keep only Phase B.
+
+### Open questions
+
+1. **Diff snapshots.** Should `browser_snapshot` on a tab whose `snapshotVersion > 1` return only a JSON-patch diff against the previous snapshot (with the agent reconstructing the full tree), to save tokens on multi-step flows? Token win is large on long forms; complexity cost is the agent has to keep state. Lean: ship full snapshots first, add diff mode as an opt-in `browser_snapshot(tabId, format:'diff')` if real flows hit budget pain.
+2. **Multi-tab pop-ups (OAuth, "Open in new window" links).** Auto-attach popups to the same session and surface them as new `tabId`s in the next snapshot's `meta.new_tabs`, or require the agent to explicitly call `browser_open_tab` for the popup URL? Auto-attach is more honest about what the page did; explicit-only is safer against runaway popups.
+3. **Cookie/profile persistence across sessions.** When a session expires, do we keep the cookies in a per-agent Browserless **profile** (`?launch={"args":["--user-data-dir=/profiles/agent-xyz"]}`) so the next session starts already logged in? Big UX win for "researcher checks Jira every morning"; security exposure is real (any compromise of that agent leaks every saved login). Default-off, opt-in per agent feels right.
+4. **File uploads.** Browserless supports `page.elementHandle.uploadFile()` — do we expose `browser_upload(tabId, ref, file_path)` in Phase C, or push that to Phase D? It needs a story for *where* the file comes from (host fs via exec tools? a vault attachment?).
+5. **Concurrent tabs per agent.** Cap at how many simultaneous open tabs per `agent_id`? A confused agent can spawn 30 tabs on infinite-scroll. Suggest `BROWSER_MAX_TABS_PER_AGENT=5` with the same `closed_at IS NULL` accounting we use for temp agents.
+6. **Snapshot for non-interactive content (long article body).** Right now the snapshot only emits structural roles. For "summarize this article," the agent has to follow up with `browser_run_js({ tabId, code: 'document.querySelector("main").innerText' })`. Worth adding a `text_content: true` flag to `browser_snapshot` that includes inner text for `main`/`article` landmarks (capped at ~10k chars), or keep the separation clean?
+
