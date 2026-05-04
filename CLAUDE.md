@@ -129,6 +129,8 @@ Two entry points share the same SQLite database and agent registry:
 
 **Background task runner** (`src/system/background-tasks.ts`): Manages async sub-agent execution. Emits `task_complete` and `task_failed` events for SSE delivery. Auto-deactivates temp agents on completion.
 
+**Pydantic AI bridge** (`src/agent/mcp-backed-agent.ts`, `src/tools/adapters/mcp-backed-agent-adapter.ts`): Agents with `provider='mcp'` are not local LLM agents — they proxy directly to a registered MCP server's tool. `chatStreamMcp()` calls the tool with the user's message in the configured input field (default `query`) and returns the tool's text output as the assistant message. The same agent is auto-synthesized as an `agent__<sanitized_name>` tool in every local agent's tool list, so any local agent can delegate to it mid-turn. Example Python agents live in `pydantic-agents/` and are run with `npm run pydantic:run`.
+
 **Hive Mind** (`src/system/hive-mind.ts`): `logHive()` records every routing decision, spawn, task change, and lifecycle event to the `hive_mind` table. It is wrapped in try/catch so it never crashes the main flow.
 
 **Cleanup scheduler** (`src/system/cleanup.ts`): `startCleanupScheduler()` runs `expireTemporaryAgents()` on startup and every 5 minutes. Expired agents are set to `inactive` and logged to both `audit_logs` and `hive_mind`.
@@ -224,7 +226,7 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 
 ## Hive Mind Actions
 
-`auto_route`, `route_fallback`, `manual_delegation`, `spawn_request`, `spawn_success`, `spawn_denied`, `agent_spawned`, `agent_expired`, `task_created`, `task_updated`, `agent_activated`, `agent_deactivated`
+`auto_route`, `route_fallback`, `manual_delegation`, `spawn_request`, `spawn_success`, `spawn_denied`, `agent_spawned`, `agent_expired`, `task_created`, `task_updated`, `agent_activated`, `agent_deactivated`, `mcp_agent_call_ok`, `mcp_agent_call_failed`
 
 ## Dashboard HTML
 
@@ -233,3 +235,7 @@ All `/api/*` require `?token=` or `x-dashboard-token` header.
 **Agent tab filters**: `filterAgents(filter)` applies client-side filtering (all/active/temp/inactive) to the rendered agent cards.
 
 **Chat spawn streaming**: When a sub-agent is spawned during chat, `spawn_chunk` and `spawn_done` SSE events stream the sub-agent's response into its own separate message bubble in the UI.
+
+## Pydantic AI agents
+
+External Python agents live in `pydantic-agents/`. Each is a standalone Python process exposing a `fastmcp` HTTP MCP server. Register them in the dashboard (MCP Servers tab), then create a NeuroClaw agent with `provider='mcp'` pointing at the server + tool name. The agent appears as `@AgentName` in Discord/CLI and as `agent__<name>(query)` in every local agent's tool list. See `pydantic-agents/README.md` for the full setup.
