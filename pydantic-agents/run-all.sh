@@ -14,4 +14,13 @@ python -m web_research.agent &
 WR_PID=$!
 
 trap "kill $DR_PID $WR_PID 2>/dev/null || true" EXIT INT TERM
+
+# wait -n returns the exit code of the first child to exit. If either agent
+# crashes (e.g. boot failure), tear down the survivor and propagate non-zero.
+if ! wait -n; then
+    rc=$?
+    kill $DR_PID $WR_PID 2>/dev/null || true
+    exit "$rc"
+fi
+# First child exited cleanly (rare for long-running servers, but handle it).
 wait

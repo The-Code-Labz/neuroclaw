@@ -26,8 +26,13 @@ export async function chatStreamMcp(
   }
 
   const server = getMcpServer(agentRecord.mcp_server_id);
-  if (!server || !server.enabled) {
-    const err = `MCP server for agent "${agentRecord.name}" is missing or disabled`;
+  if (!server) {
+    const err = `MCP server for agent "${agentRecord.name}" no longer exists (id: ${agentRecord.mcp_server_id})`;
+    await onMeta?.({ type: 'error', error: err });
+    throw new Error(err);
+  }
+  if (!server.enabled) {
+    const err = `MCP server "${server.name}" for agent "${agentRecord.name}" is disabled`;
     await onMeta?.({ type: 'error', error: err });
     throw new Error(err);
   }

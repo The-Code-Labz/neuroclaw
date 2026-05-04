@@ -383,11 +383,7 @@ The dashboard Overview shows the active backend, the current request-queue lengt
 
 ## Pydantic AI agents
 
-NeuroClaw can talk to external Python (Pydantic AI) agents. Two example agents
-ship in `pydantic-agents/` (deep-research, web-research). See
-[`pydantic-agents/README.md`](./pydantic-agents/README.md) for setup.
-
-External Python agents live in `pydantic-agents/`. Each is a standalone Python process exposing a `fastmcp` HTTP MCP server. Register the server in the dashboard (MCP Servers tab), then create a NeuroClaw agent with `provider='mcp'` pointing at that server and tool name. The agent appears as `@AgentName` in Discord/CLI and as `agent__<name>(query)` in every local agent's tool list, so any local agent can delegate to it mid-turn without a manual `@mention`. Run the example agents with `npm run pydantic:run`.
+External Python agents live in `pydantic-agents/` (two examples ship: deep-research, web-research). Each is a standalone Python process exposing a `fastmcp` HTTP MCP server. Register the server in the dashboard (MCP Servers tab), then create a NeuroClaw agent with `provider='mcp'` pointing at that server and tool name. The agent appears as `@AgentName` in Discord/CLI and as `agent__<name>(query)` in every local agent's tool list, so any local agent can delegate to it mid-turn without a manual `@mention`. Run the example agents with `npm run pydantic:run`. See [`pydantic-agents/README.md`](./pydantic-agents/README.md) for setup.
 
 ---
 
