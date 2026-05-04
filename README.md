@@ -175,6 +175,7 @@ Runs at `http://localhost:3141` (localhost only). All routes require `?token=<DA
 | MCP Tools | Registered MCP servers, status, cached tool list per server |
 | Skills | List, create, edit, delete skills · attach/remove scripts · "Script → Skill" form to wrap a raw script as a callable skill |
 | Logs | Recent audit log entries |
+| Docs | In-app wiki — sidebar nav of NeuroClaw + Pydantic AI docs; markdown rendered via `marked`. Authored under `docs/wiki/<section>/<slug>.md`. |
 
 ### Chat Features
 
@@ -204,6 +205,25 @@ Runs at `http://localhost:3141` (localhost only). All routes require `?token=<DA
 - **Top Agents** — leaderboard with 🥇🥈🥉 medals
 - **Event Types** — breakdown of tracked analytics events
 - **Hive Activity** — last 24 hours of agent coordination events
+
+### Docs (in-app wiki)
+
+The **Docs** tab renders a sidebar-driven wiki of how to use NeuroClaw — features, integrations, the Pydantic AI bridge, plus curated outbound links into the external Pydantic AI framework docs. v1 ships with seeded articles + stubs for the rest.
+
+**Authoring:** drop a markdown file with frontmatter into `docs/wiki/<section>/<slug>.md`:
+
+```markdown
+---
+title: My new article
+order: 50
+---
+
+# My new article
+
+Body here.
+```
+
+The wiki picks up file changes within ~2s without a restart. New section: `mkdir docs/wiki/<new-section>/` and add a `_section.yml` with `title` and `order`. To link out instead of inline content, add `external_url: https://...` — the sidebar entry opens in a new tab. Loader: `src/dashboard/wiki-loader.ts`. Routes: `GET /api/docs/tree`, `GET /api/docs/article/:section/:slug`.
 
 ---
 
