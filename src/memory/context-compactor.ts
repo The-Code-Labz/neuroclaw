@@ -189,3 +189,47 @@ async function buildRelevantMemoryBlock(query: string, agentId: string | null): 
     return '';
   }
 }
+
+async function extractWorkingState(history: HistoryTurn[], keep: number): Promise<string> {
+  if (!config.compaction.extractWorkingState) return '';
+
+  // Warm tail + 4 turns before the splice point — where current state lives.
+  const to          = history.length - 1 - keep;
+  const windowStart = Math.max(1, to - 3);
+  const window      = history.slice(windowStart);
+  if (window.length === 0) return '';
+
+  const transcript = window
+    .map(t => `[${t.role}] ${t.text}`)
+    .join('\n\n')
+    .slice(0, 6000);
+
+  const model = config.compaction.model ?? config.voidai.model;
+  try {
+    const resp = await getClient().chat.completions.create({
+      model,
+      max_tokens:  150,
+      temperature: 0,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are extracting the active working state from a conversation so an agent can ' +
+            'resume without losing its place. Output ONLY this block (no prose, no explanation):\n\n' +
+            'Task: <what the agent is currently working on — one sentence>\n' +
+            'Last completed: <most recent step finished — one sentence, or "none">\n' +
+            'Next action: <the immediate next step — one sentence>\n' +
+            'Blockers: <anything blocking progress, or "none">\n\n' +
+            'If there is no active task in progress, output exactly: NO_ACTIVE_TASK',
+        },
+        { role: 'user', content: transcript },
+      ],
+    });
+    const raw = resp.choices[0]?.message?.content?.trim() ?? '';
+    if (!raw || raw === 'NO_ACTIVE_TASK') return '';
+    return `\n[Active Task — resumption state]\n${raw}\n`;
+  } catch (err) {
+    logger.warn('compactor: extractWorkingState failed', { error: (err as Error).message });
+    return '';
+  }
+}
