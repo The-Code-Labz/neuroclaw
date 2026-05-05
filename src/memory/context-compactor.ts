@@ -78,8 +78,10 @@ export async function maybeCompactHistory(input: MaybeCompactInput): Promise<Com
     return null;
   }
 
-  const workingState  = await extractWorkingState(history, keep);
-  const relevantBlock = await buildRelevantMemoryBlock(input.newUserText ?? '', input.agentId ?? null);
+  const [workingState, relevantBlock] = await Promise.all([
+    extractWorkingState(history, keep),
+    buildRelevantMemoryBlock(input.newUserText ?? '', input.agentId ?? null),
+  ]);
 
   // Persist the summary as a session_summary memory (also goes to vault).
   let summaryRef: { memory_id?: string; vault_path?: string } = {};
@@ -230,7 +232,7 @@ async function extractWorkingState(history: HistoryTurn[], keep: number): Promis
     });
     const raw = resp.choices[0]?.message?.content?.trim() ?? '';
     if (!raw || raw === 'NO_ACTIVE_TASK') return '';
-    return `\n[Active Task — resumption state]\n${raw}\n`;
+    return `[Active Task — resumption state]\n${raw}`;
   } catch (err) {
     logger.warn('compactor: extractWorkingState failed', { error: (err as Error).message });
     return '';
