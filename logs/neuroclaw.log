@@ -2058,3 +2058,10 @@
 [2026-05-05T18:18:29.126Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
 [2026-05-05T18:19:29.127Z] [INFO] task-monitor: found stale tasks {"count":1,"staleMinutes":3}
 [2026-05-05T18:19:29.127Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
+[2026-05-05T18:20:29.128Z] [INFO] task-monitor: found stale tasks {"count":1,"staleMinutes":3}
+[2026-05-05T18:20:29.128Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
+[2026-05-05T18:21:29.128Z] [INFO] task-monitor: found stale tasks {"count":1,"staleMinutes":3}
+[2026-05-05T18:21:29.129Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
+[2026-05-05T18:21:29.190Z] [INFO] MCP probe: ok {"server":"web_research","url":"http://127.0.0.1:7101/mcp","tools":1}
+[2026-05-05T18:21:29.199Z] [INFO] MCP probe: ok {"server":"nightwing","url":"http://127.0.0.1:7102/mcp","tools":3}
+[2026-05-05T18:21:29.205Z] [INFO] MCP probe: ok {"server":"deep_research","url":"http://127.0.0.1:7100/mcp","tools":1}

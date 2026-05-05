@@ -7,3 +7,4 @@ dist/
 .agents
 .claude
 logs
+.venv
