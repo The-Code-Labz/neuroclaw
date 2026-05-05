@@ -232,7 +232,7 @@ async function extractWorkingState(history: HistoryTurn[], keep: number): Promis
     });
     const raw = resp.choices[0]?.message?.content?.trim() ?? '';
     if (!raw || raw === 'NO_ACTIVE_TASK') return '';
-    return `[Active Task — resumption state]\n${raw}`;
+    return `[Active Task — resumption state]\n${raw}\nContext: A summary of all prior work in this session is in [Prior context] immediately below — review it before continuing.`;
   } catch (err) {
     logger.warn('compactor: extractWorkingState failed', { error: (err as Error).message });
     return '';
