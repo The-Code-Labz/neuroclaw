@@ -78,6 +78,7 @@ export async function maybeCompactHistory(input: MaybeCompactInput): Promise<Com
     return null;
   }
 
+  const workingState  = await extractWorkingState(history, keep);
   const relevantBlock = await buildRelevantMemoryBlock(input.newUserText ?? '', input.agentId ?? null);
 
   // Persist the summary as a session_summary memory (also goes to vault).
@@ -101,6 +102,7 @@ export async function maybeCompactHistory(input: MaybeCompactInput): Promise<Com
   }
 
   const replacementText =
+    (workingState ? workingState + '\n' : '') +
     `[Prior context (auto-compacted ${cold.length} turns, ~${estimateRangeTokens(cold)} tokens)]\n` +
     summary +
     relevantBlock;
@@ -110,12 +112,13 @@ export async function maybeCompactHistory(input: MaybeCompactInput): Promise<Com
       `auto-compacted ${cold.length} turns into a summary`,
       input.agentId ?? undefined,
       {
-        source:        'auto_compact',
-        turns:         cold.length,
-        tokens_before: totalTokens,
-        memory_id:     summaryRef.memory_id,
-        vault_path:    summaryRef.vault_path,
-        session_id:    input.sessionId ?? null,
+        source:                  'auto_compact',
+        turns:                   cold.length,
+        tokens_before:           totalTokens,
+        memory_id:               summaryRef.memory_id,
+        vault_path:              summaryRef.vault_path,
+        session_id:              input.sessionId ?? null,
+        working_state_extracted: workingState.length > 0,
       });
   } catch { /* hive logging is best-effort */ }
 
