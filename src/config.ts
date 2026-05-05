@@ -100,12 +100,13 @@ export const config = {
   },
   get compaction() {
     return {
-      enabled:           (process.env.COMPACT_ENABLED ?? 'true').toLowerCase() !== 'false',
-      tokenThreshold:    parseInt(process.env.COMPACT_TOKEN_THRESHOLD ?? '100000', 10),
-      turnThreshold:     parseInt(process.env.COMPACT_TURN_THRESHOLD  ?? '30',   10),
-      keepRecent:        parseInt(process.env.COMPACT_KEEP_RECENT     ?? '6',    10),
-      reinjectMemories:  parseInt(process.env.COMPACT_REINJECT_MEMORIES ?? '3',  10),
-      model:             process.env.COMPACT_MODEL?.trim() || undefined,
+      enabled:              (process.env.COMPACT_ENABLED ?? 'true').toLowerCase() !== 'false',
+      tokenThreshold:       parseInt(process.env.COMPACT_TOKEN_THRESHOLD ?? '100000', 10),
+      turnThreshold:        parseInt(process.env.COMPACT_TURN_THRESHOLD  ?? '30',   10),
+      keepRecent:           parseInt(process.env.COMPACT_KEEP_RECENT     ?? '6',    10),
+      reinjectMemories:     parseInt(process.env.COMPACT_REINJECT_MEMORIES ?? '3',  10),
+      model:                process.env.COMPACT_MODEL?.trim() || undefined,
+      extractWorkingState:  (process.env.COMPACT_EXTRACT_WORKING_STATE ?? 'true').toLowerCase() !== 'false',
     };
   },
   get heartbeat() {
