@@ -24,6 +24,7 @@ const NAV = [
   { group: 'OBSERVE', items: [
     { id: 'analytics',label: 'Analytics',  icon: 'analytics' },
     { id: 'logs',     label: 'Logs',       icon: 'logs' },
+    { id: 'approvals',label: 'Approvals',  icon: 'shield' },
     { id: 'settings', label: 'Settings',   icon: 'settings' },
     { id: 'docs',     label: 'Docs',       icon: 'docs' },
   ]},

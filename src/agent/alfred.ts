@@ -330,13 +330,23 @@ async function chatStreamOpenAI(
     });
 
     const resolvedModel = resolveAgentModel(agentRecord, userMessage, 'voidai');
-    const stream = await getClient().chat.completions.create({
-      model:           resolvedModel,
-      messages:        history,
-      stream:          true,
-      stream_options:  { include_usage: true },
-      ...(tools.length > 0 ? { tools } : {}),
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let stream: any;
+    try {
+      stream = await getClient().chat.completions.create({
+        model:           resolvedModel,
+        messages:        history,
+        stream:          true,
+        stream_options:  { include_usage: true },
+        ...(tools.length > 0 ? { tools } : {}),
+      });
+    } catch (llmErr) {
+      const llmErrMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
+      logHive('llm_error', `LLM API error (${resolvedModel}): ${llmErrMsg.slice(0, 200)}`, agentId, { model: resolvedModel, error: llmErrMsg }, activeRunId);
+      generation?.end({ output: '[error]', metadata: { error: llmErrMsg } });
+      if (ownsRun) endRun(activeRunId, { status: 'error', error_text: llmErrMsg });
+      throw llmErr;
+    }
     let realInputTokens:  number | null = null;
     let realOutputTokens: number | null = null;
 
@@ -395,10 +405,18 @@ async function chatStreamOpenAI(
       // Execute each tool and add results
       for (const tc of toolCalls) {
         logger.info('Executing tool call', { name: tc.function.name });
+        logHive('tool_call', `Tool call: ${tc.function.name}`, agentId, { tool: tc.function.name, args: tc.function.arguments.slice(0, 200) }, activeRunId);
         const toolStart = Date.now();
-        const result = (await isComposioTool(tc.function.name, toolCtx))
-          ? await dispatchComposioTool(tc.function.name, tc.function.arguments, toolCtx)
-          : await dispatchOpenAiTool(tc.function.name, tc.function.arguments, toolCtx);
+        let result: string;
+        try {
+          result = (await isComposioTool(tc.function.name, toolCtx))
+            ? await dispatchComposioTool(tc.function.name, tc.function.arguments, toolCtx)
+            : await dispatchOpenAiTool(tc.function.name, tc.function.arguments, toolCtx);
+        } catch (toolErr) {
+          const toolErrMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          logHive('tool_error', `Tool error: ${tc.function.name}: ${toolErrMsg.slice(0, 200)}`, agentId, { tool: tc.function.name, error: toolErrMsg }, activeRunId);
+          result = JSON.stringify({ ok: false, error: toolErrMsg });
+        }
         logToolSpan(trace, tc.function.name, tc.function.arguments, result, Date.now() - toolStart);
         const toolMsg: ChatCompletionToolMessageParam = {
           role:         'tool',
@@ -553,29 +571,37 @@ async function chatStreamAnthropic(
     let realInputTokens:  number | null = null;
     let realOutputTokens: number | null = null;
 
-    for await (const event of stream) {
-      if (event.type === 'message_start') {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const u = (event as any).message?.usage;
-        if (u && typeof u.input_tokens === 'number') realInputTokens = u.input_tokens;
-      } else if (event.type === 'content_block_start') {
-        if (event.content_block.type === 'tool_use') {
-          toolBlocks.set(event.index, { id: event.content_block.id, name: event.content_block.name, inputAcc: '' });
+    try {
+      for await (const event of stream) {
+        if (event.type === 'message_start') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const u = (event as any).message?.usage;
+          if (u && typeof u.input_tokens === 'number') realInputTokens = u.input_tokens;
+        } else if (event.type === 'content_block_start') {
+          if (event.content_block.type === 'tool_use') {
+            toolBlocks.set(event.index, { id: event.content_block.id, name: event.content_block.name, inputAcc: '' });
+          }
+        } else if (event.type === 'content_block_delta') {
+          if (event.delta.type === 'text_delta') {
+            await onChunk(event.delta.text);
+            textAccum += event.delta.text;
+          } else if (event.delta.type === 'input_json_delta') {
+            const tb = toolBlocks.get(event.index);
+            if (tb) tb.inputAcc += event.delta.partial_json;
+          }
+        } else if (event.type === 'message_delta') {
+          stopReason = event.delta.stop_reason ?? null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const u = (event as any).usage;
+          if (u && typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
         }
-      } else if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          await onChunk(event.delta.text);
-          textAccum += event.delta.text;
-        } else if (event.delta.type === 'input_json_delta') {
-          const tb = toolBlocks.get(event.index);
-          if (tb) tb.inputAcc += event.delta.partial_json;
-        }
-      } else if (event.type === 'message_delta') {
-        stopReason = event.delta.stop_reason ?? null;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const u = (event as any).usage;
-        if (u && typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
       }
+    } catch (llmErr) {
+      const llmErrMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
+      logHive('llm_error', `LLM API error (anthropic/${model}): ${llmErrMsg.slice(0, 200)}`, agentId, { model, error: llmErrMsg }, activeRunId);
+      generation?.end({ output: '[error]', metadata: { error: llmErrMsg } });
+      if (ownsRun) endRun(activeRunId, { status: 'error', error_text: llmErrMsg });
+      throw llmErr;
     }
 
     if (stopReason === 'tool_use' && toolBlocks.size > 0) {
@@ -599,10 +625,18 @@ async function chatStreamAnthropic(
       const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
       for (const [, tb] of toolBlocks) {
         logger.info('Executing tool call (Anthropic)', { name: tb.name });
+        logHive('tool_call', `Tool call: ${tb.name}`, agentId, { tool: tb.name, args: tb.inputAcc.slice(0, 200) }, activeRunId);
         const toolStart = Date.now();
-        const result = (await isComposioTool(tb.name, toolCtx))
-          ? await dispatchComposioTool(tb.name, tb.inputAcc, toolCtx)
-          : await dispatchOpenAiTool(tb.name, tb.inputAcc, toolCtx);
+        let result: string;
+        try {
+          result = (await isComposioTool(tb.name, toolCtx))
+            ? await dispatchComposioTool(tb.name, tb.inputAcc, toolCtx)
+            : await dispatchOpenAiTool(tb.name, tb.inputAcc, toolCtx);
+        } catch (toolErr) {
+          const toolErrMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          logHive('tool_error', `Tool error: ${tb.name}: ${toolErrMsg.slice(0, 200)}`, agentId, { tool: tb.name, error: toolErrMsg }, activeRunId);
+          result = JSON.stringify({ ok: false, error: toolErrMsg });
+        }
         logToolSpan(trace, tb.name, tb.inputAcc, result, Date.now() - toolStart);
         toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result });
       }

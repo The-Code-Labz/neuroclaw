@@ -3,13 +3,16 @@ import { streamSSE } from 'hono/streaming';
 import {
   getDb, createSession, getAllAgents, getAgentById,
   createAgentRecord, updateAgentRecord, deactivateAgent, activateAgent, deleteAgentHard,
-  getSessions, getSessionById, getSessionMessages, updateSessionTitle, deleteSession,
+  getSessions, getSessionById, getSessionMessages, updateSessionTitle, deleteSession, mergeSessions,
   getAgentMessages,
   listAreas, createArea, updateArea, deleteArea, setAgentArea,
   listProjects, getProject, createProject, updateProject, archiveProject, deleteProjectHard,
   startRun, endRun, getRun, listRuns, getRunHiveEvents,
+  createApproval, getApproval, resolveApproval, listApprovals,
+  getSpawnConfig, setSpawnConfig,
   type SessionRecord, type MessageRecord,
 } from '../db';
+import { EventEmitter } from 'events';
 import { config } from '../config';
 import { getAnalyticsSummary } from '../system/analytics';
 import { getRecentLogs } from '../system/audit';
@@ -41,9 +44,14 @@ import fs from 'fs';
 import path from 'path';
 import { runDreamCycle } from '../memory/dream-cycle';
 import { runHeartbeats, pingAgent } from '../system/heartbeat';
+import { getTaskMonitorStatus } from '../system/task-monitor';
 import { synthesize, resolveAgentVoice } from '../audio/tts';
 import { transcribe } from '../audio/transcribe';
 import { listVoidAIVoices, listElevenLabsVoices, listAllVoices } from '../audio/voices';
+
+// ── Approval events (module-level, shared across connections) ────────────────
+export const approvalEvents = new EventEmitter();
+approvalEvents.setMaxListeners(100);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function collectTreeItems(node: any): { path: string; parent: string; name: string }[] {
@@ -198,6 +206,48 @@ export function registerApiRoutes(app: Hono<any>): void {
     return c.json({ ok: true });
   });
 
+  // ── Session merge ────────────────────────────────────────────────────────
+  // Merges one or more split/orphaned sessions into a single surviving session.
+  // Useful when a gateway reset caused the Discord bot to scatter a conversation
+  // across multiple session rows before the external_id fix landed (v2.1).
+  //
+  // Body: { keepSessionId: string, mergeSessionIds: string[], externalId?: string }
+  // Response: { merged: number, messagesRehoused: number }
+  app.post('/api/sessions/merge', async (c) => {
+    let body: { keepSessionId?: string; mergeSessionIds?: unknown; externalId?: string };
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+    const keepId = (body.keepSessionId ?? '').trim();
+    if (!keepId) return c.json({ error: 'keepSessionId is required' }, 400);
+
+    if (!Array.isArray(body.mergeSessionIds) || body.mergeSessionIds.length === 0) {
+      return c.json({ error: 'mergeSessionIds must be a non-empty array' }, 400);
+    }
+
+    const mergeIds: string[] = body.mergeSessionIds
+      .map((id: unknown) => String(id).trim())
+      .filter(Boolean);
+
+    if (mergeIds.length === 0) {
+      return c.json({ error: 'mergeSessionIds contained no valid IDs' }, 400);
+    }
+
+    // Validate that the survivor exists.
+    const keepSession = getSessionById(keepId);
+    if (!keepSession) return c.json({ error: `Session not found: ${keepId}` }, 404);
+
+    // Validate that every source session exists (and is not the survivor itself).
+    for (const id of mergeIds) {
+      if (id === keepId) return c.json({ error: `mergeSessionIds must not include keepSessionId (${keepId})` }, 400);
+      if (!getSessionById(id)) return c.json({ error: `Session not found: ${id}` }, 404);
+    }
+
+    const externalId = typeof body.externalId === 'string' ? body.externalId.trim() || null : null;
+
+    const result = mergeSessions(keepId, mergeIds, externalId);
+    return c.json(result);
+  });
+
   app.get('/api/messages', (c) => {
     const sessionId = c.req.query('session_id');
     if (sessionId) {
@@ -247,7 +297,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     const agent = getAgentById(id);
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
 
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null; mcp_server_id?: string | null; mcp_tool_name?: string | null; mcp_input_field?: string | null };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null; mcp_server_id?: string | null; mcp_tool_name?: string | null; mcp_input_field?: string | null; spawn_exempt?: boolean };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     if (agent.name === 'Alfred' && body.name && body.name.trim() !== 'Alfred') {
@@ -278,6 +328,7 @@ export function registerApiRoutes(app: Hono<any>): void {
       mcp_server_id:   body.mcp_server_id,
       mcp_tool_name:   body.mcp_tool_name,
       mcp_input_field: body.mcp_input_field,
+      spawn_exempt:    body.spawn_exempt,
     });
     return c.json(getAgentById(id));
   });
@@ -306,6 +357,19 @@ export function registerApiRoutes(app: Hono<any>): void {
     if (!getAgentById(id)) return c.json({ error: 'Agent not found' }, 404);
     activateAgent(id);
     return c.json({ ok: true });
+  });
+
+  // ── Spawn config (runtime-mutable gating settings) ───────────────────────
+  app.get('/api/spawn/config', (c) => c.json(getSpawnConfig()));
+
+  app.patch('/api/spawn/config', async (c) => {
+    let body: Partial<{ enabled: boolean; maxDepth: number; ttlHours: number; softLimit: number; hardLimit: number; autoApprove: boolean; evalThreshold: number }>;
+    try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (body.maxDepth      !== undefined && (body.maxDepth < 1 || body.maxDepth > 10))            return c.json({ error: 'maxDepth must be 1-10' }, 400);
+    if (body.hardLimit     !== undefined && body.softLimit !== undefined && body.hardLimit < body.softLimit) return c.json({ error: 'hardLimit must be >= softLimit' }, 400);
+    if (body.evalThreshold !== undefined && (body.evalThreshold < 0 || body.evalThreshold > 1))   return c.json({ error: 'evalThreshold must be 0-1' }, 400);
+    setSpawnConfig(body);
+    return c.json(getSpawnConfig());
   });
 
   // ── Spawn (manual) ────────────────────────────────────────────────────────
@@ -649,6 +713,11 @@ export function registerApiRoutes(app: Hono<any>): void {
       model:     config.dream.model ?? '(extractor / voidai default)',
       events:    last,
     });
+  });
+
+  // ── Task Monitor status ──────────────────────────────────────────────────
+  app.get('/api/task-monitor/status', (c) => {
+    return c.json(getTaskMonitorStatus());
   });
 
   // ── Skills catalog (manual selection, no auto-routing) ─────────────────
@@ -1696,6 +1765,86 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
         });
       });
     });
+  });
+
+  // ── Approvals (v2.2 remote approval queue) ──────────────────────────────────
+
+  app.get('/api/approvals', (c) => {
+    const status = c.req.query('status');
+    const limit  = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 200);
+    return c.json(listApprovals(status || undefined, limit));
+  });
+
+  app.post('/api/approvals', async (c) => {
+    let body: {
+      agent_id?:   string;
+      agent_name?: string;
+      session_id?: string;
+      tool_name:   string;
+      tool_input:  object;
+    };
+    try { body = await c.req.json() as typeof body; }
+    catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (!body.tool_name)  return c.json({ error: 'tool_name is required' }, 400);
+    if (!body.tool_input || typeof body.tool_input !== 'object') return c.json({ error: 'tool_input must be an object' }, 400);
+    const record = createApproval({
+      agent_id:   body.agent_id   ?? null,
+      agent_name: body.agent_name ?? null,
+      session_id: body.session_id ?? null,
+      tool_name:  body.tool_name,
+      tool_input: body.tool_input,
+    });
+    approvalEvents.emit('pending', record);
+    return c.json(record, 201);
+  });
+
+  // NOTE: /api/approvals/stream must be registered BEFORE /api/approvals/:id
+  // so Hono does not treat "stream" as a UUID parameter.
+  app.get('/api/approvals/stream', (c) => {
+    return streamSSE(c, async (stream) => {
+      await stream.writeSSE({ data: JSON.stringify({ type: 'connected' }) });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const onPending = async (approval: any) => {
+        try {
+          await stream.writeSSE({ data: JSON.stringify({ type: 'pending', approval }) });
+        } catch { /* stream closed */ }
+      };
+
+      approvalEvents.on('pending', onPending);
+
+      const pingId = setInterval(async () => {
+        try { await stream.writeSSE({ data: JSON.stringify({ type: 'ping' }) }); }
+        catch { clearInterval(pingId); }
+      }, 20000);
+
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          approvalEvents.off('pending', onPending);
+          clearInterval(pingId);
+          resolve();
+        });
+      });
+    });
+  });
+
+  app.get('/api/approvals/:id', (c) => {
+    const record = getApproval(c.req.param('id'));
+    if (!record) return c.json({ error: 'Not found' }, 404);
+    return c.json(record);
+  });
+
+  app.post('/api/approvals/:id/resolve', async (c) => {
+    const record = getApproval(c.req.param('id'));
+    if (!record) return c.json({ error: 'Not found' }, 404);
+    let body: { status: 'approved' | 'denied'; reason?: string };
+    try { body = await c.req.json() as typeof body; }
+    catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (body.status !== 'approved' && body.status !== 'denied') {
+      return c.json({ error: 'status must be "approved" or "denied"' }, 400);
+    }
+    resolveApproval(c.req.param('id'), body.status, body.reason);
+    return c.json({ ok: true });
   });
 
   // ── Config watcher (SSE) ──────────────────────────────────────────────────

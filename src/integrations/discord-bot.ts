@@ -34,6 +34,7 @@ import {
   createDiscordBot, updateDiscordBot,
   parseAutoReplyGuilds,
   getDiscordVoicePref, setDiscordVoicePref,
+  getOrCreateSessionByExternalId,
   type DiscordBotRow,
 } from '../db';
 import { transcribe } from '../audio/transcribe';
@@ -209,13 +210,13 @@ interface RunningBot {
 
 const running = new Map<string, RunningBot>();
 
-// ── Per-(bot, channel, user) sticky session memory ─────────────────────────
-// Reuse the same NeuroClaw session id for an entire (bot, channel, user)
-// thread of conversation so the agent has context across @mentions. Cleared
-// on bot restart; memory_index + vault still persist via the normal pipeline.
-const sessionKeys = new Map<string, string>();
-function sessionKeyFor(botId: string, msg: Message): string {
-  return `${botId}::${msg.channelId}::${msg.author.id}`;
+// ── Per-(bot, channel, user) sticky session key ─────────────────────────────
+// Build a stable external_id string for a (bot, channel, user) conversation.
+// This key is stored in the `sessions` table so the same session is reused
+// even after a process restart — the old in-memory Map approach lost the
+// mapping on every restart, causing every new process to open a fresh session.
+function sessionExternalId(botId: string, msg: Message): string {
+  return `discord::${botId}::${msg.channelId}::${msg.author.id}`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -454,8 +455,17 @@ async function handleMessage(bot: RunningBot, msg: Message): Promise<void> {
     msg.channel.sendTyping().catch(() => { /* best-effort */ });
   }
 
-  const key = sessionKeyFor(bot.row.id, msg);
-  const existingSession = sessionKeys.get(key);
+  // Resolve (or create) a persistent session for this (bot, channel, user) combo.
+  // getOrCreateSessionByExternalId stores the mapping in SQLite so it survives
+  // process restarts — the old in-memory Map was wiped on every restart, which
+  // caused "a whole new session" to be opened for every restart regardless of
+  // whether a conversation was already in progress.
+  const extId = sessionExternalId(bot.row.id, msg);
+  const sessionId = getOrCreateSessionByExternalId(
+    extId,
+    agentId,
+    `Discord #${msg.channelId} (${msg.author.username ?? msg.author.id})`,
+  );
 
   // Pull image attachments off the Discord message. We only forward what
   // looks like an image — Discord lets users attach arbitrary files (PDFs,
@@ -511,21 +521,14 @@ async function handleMessage(bot: RunningBot, msg: Message): Promise<void> {
 
   let result: ChatStreamResult;
   try {
-    result = await streamChatResponse(text, agentId, existingSession, imageAttachments, discordCtx);
+    result = await streamChatResponse(text, agentId, sessionId, imageAttachments, discordCtx);
   } catch (err) {
-    // Drop the cached session for this (bot, channel, user) — the next turn
-    // will mint a fresh one. Prevents a one-off FK violation or session-purge
-    // on the dashboard from breaking the conversation forever.
-    sessionKeys.delete(key);
     logger.error('discord-bot: chat call failed', { botId: bot.row.id, err: (err as Error).message });
     if (msg.channel.isSendable()) {
       await msg.reply(`*(chat error: ${(err as Error).message.slice(0, 200)})*`);
     }
     return;
   }
-  // Stick the REAL session id (from the SSE `session` event) for next turn.
-  // Stale/synthetic ids hit FK violations on the second message; this avoids that.
-  if (result.sessionId) sessionKeys.set(key, result.sessionId);
 
   if (!result.reply) {
     if (msg.channel.isSendable()) await msg.reply('*(no response)*');

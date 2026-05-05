@@ -140,9 +140,11 @@ select:focus{border-color:var(--blue)}
     <a data-s="memory">🧠 Memory</a>
     <a data-s="config">⚙️ Config</a>
     <a data-s="analytics">📈 Analytics</a>
+    <a data-s="activity">⚡ Activity</a>
     <a data-s="hive">🌐 Hive Mind</a>
     <a data-s="comms">💌 Comms</a>
     <a data-s="logs">📜 Logs</a>
+    <a data-s="approvals">🔑 Approvals<span id="approvals-badge" style="display:none;margin-left:6px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;vertical-align:middle">0</span></a>
   </nav>
 </aside>
 
@@ -319,6 +321,23 @@ select:focus{border-color:var(--blue)}
     </div>
   </div>
 
+  <!-- Activity -->
+  <div id="s-activity" class="section">
+    <div class="page-header">
+      <h2>Activity</h2>
+      <div class="actions">
+        <span id="activity-live-badge" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--green)"><span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>Live</span>
+        <button class="btn btn-sm" onclick="loadActivity()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Summary</th></tr></thead>
+        <tbody id="tb-activity"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Hive Mind -->
   <div id="s-hive" class="section">
     <div class="page-header">
@@ -350,6 +369,31 @@ select:focus{border-color:var(--blue)}
     <div class="page-header"><h2>Audit Logs</h2><button class="btn btn-primary" onclick="load('logs')">↻ Refresh</button></div>
     <div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Entity</th><th>ID</th><th>Details</th><th>Time</th></tr></thead>
     <tbody id="tb-logs"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+  </div>
+
+  <!-- Approvals -->
+  <div id="s-approvals" class="section">
+    <div class="page-header">
+      <h2>Pending Approvals <span id="approvals-count-badge" class="badge bb" style="font-size:12px">0</span></h2>
+      <div class="actions">
+        <button class="btn" onclick="loadApprovals()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Agent</th><th>Tool</th><th>Input</th><th>Actions</th></tr></thead>
+        <tbody id="tb-approvals-pending"><tr><td colspan="5" class="muted">No pending approvals.</td></tr></tbody>
+      </table>
+    </div>
+    <details style="margin-top:20px">
+      <summary style="cursor:pointer;font-size:13px;color:var(--muted);padding:6px 0">Recent (last 20 resolved)</summary>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <table>
+          <thead><tr><th>Time</th><th>Agent</th><th>Tool</th><th>Input</th><th>Status</th><th>Reason</th></tr></thead>
+          <tbody id="tb-approvals-resolved"><tr><td colspan="6" class="muted">No resolved approvals.</td></tr></tbody>
+        </table>
+      </div>
+    </details>
   </div>
 
 </main>
@@ -1131,6 +1175,98 @@ function loadAnalytics() {
   }).catch(function(e) { document.getElementById('an-stats').innerHTML = '<div class="card">'+errHtml(e.message)+'</div>'; });
 }
 
+var ACTION_LABELS = {
+  tool_call: 'Tool Call',
+  tool_error: 'Tool Error',
+  llm_error: 'LLM Error',
+  mcp_agent_call_ok: 'MCP OK',
+  mcp_agent_call_failed: 'MCP Error',
+  auto_route: 'Auto Route',
+  route_fallback: 'Route Fallback',
+  manual_delegation: 'Delegation',
+  spawn_request: 'Spawn Request',
+  spawn_success: 'Spawned',
+  spawn_denied: 'Spawn Denied',
+  agent_spawned: 'Agent Spawned',
+  agent_expired: 'Agent Expired',
+  agent_activated: 'Activated',
+  agent_deactivated: 'Deactivated',
+  task_created: 'Task Created',
+  task_updated: 'Task Updated',
+  task_decomposed: 'Decomposed',
+  multi_agent_step: 'Multi-Agent Step',
+  result_merged: 'Merged',
+  spawn_evaluated: 'Spawn Eval',
+  background_task_complete: 'BG Complete',
+  background_task_failed: 'BG Failed',
+  agent_message_sent: 'Message Sent',
+  agent_task_assigned: 'Task Assigned',
+  memory_extracted: 'Memory',
+  memory_skipped: 'Mem Skip',
+  memory_capped: 'Mem Cap',
+  memory_graph_attached: 'Mem Graph',
+  dream_cycle_start: 'Dream Start',
+  dream_cycle_complete: 'Dream Done',
+  dream_cycle_failed: 'Dream Failed',
+  memories_created: 'Mems Created',
+  memories_promoted: 'Mems Promoted',
+  memories_merged: 'Mems Merged',
+  memories_pruned: 'Mems Pruned',
+  procedures_created: 'Procedures',
+  plan_created: 'Plan Created',
+  agent_heartbeat: 'Heartbeat',
+  mcp_probe_ok: 'MCP Probe OK',
+  mcp_probe_failed: 'MCP Probe Fail',
+  skill_created: 'Skill Created',
+  skill_updated: 'Skill Updated',
+  skill_deleted: 'Skill Deleted',
+  skill_script_run: 'Skill Run',
+  skill_script_written: 'Skill Written',
+  skill_script_deleted: 'Skill Del',
+  review_passed: 'Review Passed',
+  review_failed: 'Review Failed',
+  browser_action: 'Browser',
+  claude_cli_throttled: 'CLI Throttled',
+  triage_llm_used: 'Triage LLM',
+  triage_depth_penalty: 'Depth Penalty',
+  triage_budget_downgrade: 'Budget Down',
+};
+function actionLabel(action) {
+  return ACTION_LABELS[action] || action.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+function loadActivity() {
+  api('/api/hive?limit=50').then(function(rows) {
+    var tb = document.getElementById('tb-activity');
+    if (!tb) return;
+    if (!rows || !rows.length) { tb.innerHTML = '<tr><td colspan="4" class="muted">No activity yet</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(r) {
+      var isError = r.action === 'tool_error' || r.action === 'llm_error' || r.action === 'mcp_agent_call_failed'
+        || r.action === 'dream_cycle_failed' || r.action === 'background_task_failed' || r.action === 'mcp_probe_failed';
+      var isInfo = r.action === 'tool_call' || r.action === 'mcp_agent_call_ok' || r.action === 'auto_route';
+      var actionStyle = isError ? 'color:var(--red)' : isInfo ? 'color:var(--blue)' : '';
+      var summary = r.summary || '';
+      var shortSummary = summary.length > 120 ? summary.slice(0, 120) + '…' : summary;
+      return '<tr>'
+        + '<td class="muted" style="white-space:nowrap">' + ago(r.created_at) + '</td>'
+        + '<td style="font-weight:600">' + esc(r.agent_name || (r.agent_id ? r.agent_id.slice(0,8)+'…' : '—')) + '</td>'
+        + '<td><span class="mono" style="' + actionStyle + '">' + esc(actionLabel(r.action)) + '</span></td>'
+        + '<td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(summary) + '">' + esc(shortSummary) + '</td>'
+        + '</tr>';
+    }).join('');
+  }).catch(function(e) {
+    var tb = document.getElementById('tb-activity');
+    if (tb) tb.innerHTML = '<tr><td colspan="4">' + errHtml(e.message) + '</td></tr>';
+  });
+}
+
+var activityPollTimer = null;
+function startActivityPoll() {
+  if (activityPollTimer) return;
+  activityPollTimer = setInterval(function() {
+    if (current === 'activity') loadActivity();
+  }, 2000);
+}
+
 function loadHive() {
   var limit = document.getElementById('hive-limit') ? document.getElementById('hive-limit').value : '100';
   api('/api/hive?limit=' + limit).then(function(rows) {
@@ -1496,6 +1632,112 @@ document.getElementById('chat-input').addEventListener('input', function() {
   this.style.height = Math.min(this.scrollHeight, 160) + 'px';
 });
 
+/* ── Approvals ──────────────────────────────────────────────────────────────── */
+var approvalsBadgeCount = 0;
+
+function setApprovalsBadge(n) {
+  approvalsBadgeCount = n;
+  var badge = document.getElementById('approvals-badge');
+  var countBadge = document.getElementById('approvals-count-badge');
+  if (badge) { badge.textContent = String(n); badge.style.display = n > 0 ? 'inline' : 'none'; }
+  if (countBadge) { countBadge.textContent = String(n); }
+}
+
+function loadApprovals() {
+  api('/api/approvals?status=pending&limit=100').then(function(pending) {
+    var tbody = document.getElementById('tb-approvals-pending');
+    if (!tbody) return;
+    setApprovalsBadge(pending.length);
+    if (pending.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">No pending approvals.</td></tr>';
+    } else {
+      tbody.innerHTML = pending.map(function(a) {
+        var inputStr = a.tool_input || '{}';
+        var truncated = inputStr.length > 80 ? inputStr.slice(0, 80) + '…' : inputStr;
+        return '<tr>' +
+          '<td class="muted mono">' + esc(new Date(a.created_at).toLocaleTimeString()) + '</td>' +
+          '<td>' + esc(a.agent_name || a.agent_id || '—') + '</td>' +
+          '<td class="mono">' + esc(a.tool_name) + '</td>' +
+          '<td title="' + esc(inputStr) + '" class="mono" style="cursor:help">' + esc(truncated) + '</td>' +
+          '<td style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm" style="background:rgba(63,185,80,.2);color:var(--green);border-color:rgba(63,185,80,.4)" ' +
+              'data-approval-id="' + esc(a.id) + '" data-approval-action="approve">Approve</button>' +
+            '<button class="btn btn-sm btn-danger" ' +
+              'data-approval-id="' + esc(a.id) + '" data-approval-action="deny">Deny</button>' +
+          '</td>' +
+          '</tr>';
+      }).join('');
+    }
+  }).catch(function() {});
+
+  api('/api/approvals?limit=20').then(function(all) {
+    var resolved = all.filter(function(a) { return a.status !== 'pending'; });
+    var tbody = document.getElementById('tb-approvals-resolved');
+    if (!tbody) return;
+    if (resolved.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="muted">No resolved approvals.</td></tr>';
+    } else {
+      tbody.innerHTML = resolved.map(function(a) {
+        var inputStr = a.tool_input || '{}';
+        var truncated = inputStr.length > 80 ? inputStr.slice(0, 80) + '…' : inputStr;
+        var cls = a.status === 'approved' ? 'bg' : 'br';
+        return '<tr>' +
+          '<td class="muted mono">' + esc(new Date(a.created_at).toLocaleTimeString()) + '</td>' +
+          '<td>' + esc(a.agent_name || a.agent_id || '—') + '</td>' +
+          '<td class="mono">' + esc(a.tool_name) + '</td>' +
+          '<td title="' + esc(inputStr) + '" class="mono" style="cursor:help">' + esc(truncated) + '</td>' +
+          '<td><span class="badge ' + cls + '">' + esc(a.status) + '</span></td>' +
+          '<td class="muted">' + esc(a.reason || '') + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+  }).catch(function() {});
+}
+
+function resolveApproval(id, status) {
+  var reason = status === 'denied' ? (prompt('Denial reason (optional):') || '') : undefined;
+  apiPost('/api/approvals/' + id + '/resolve', { status: status, reason: reason })
+    .then(function() { loadApprovals(); showToast(status === 'approved' ? '✅ Approved' : '🚫 Denied', 3000); })
+    .catch(function(e) { showToast('⚠ ' + e.message, 4000); });
+}
+
+// Event delegation for approve/deny buttons
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('[data-approval-id]') : null;
+  if (!btn) return;
+  var id     = btn.dataset.approvalId;
+  var action = btn.dataset.approvalAction;
+  if (!id || !action) return;
+  if (action === 'approve') resolveApproval(id, 'approved');
+  else if (action === 'deny') resolveApproval(id, 'denied');
+});
+
+function connectApprovalsStream() {
+  var url = '/api/approvals/stream?token=' + encodeURIComponent(token);
+  var es  = new EventSource(url);
+
+  es.onmessage = function(e) {
+    try {
+      var data = JSON.parse(e.data);
+      if (data.type === 'pending') {
+        if (current === 'approvals') {
+          loadApprovals();
+        } else {
+          approvalsBadgeCount++;
+          var badge = document.getElementById('approvals-badge');
+          if (badge) { badge.textContent = String(approvalsBadgeCount); badge.style.display = 'inline'; }
+        }
+        showToast('🔑 Approval needed: ' + (data.approval && data.approval.tool_name ? data.approval.tool_name : 'tool call'), 5000);
+      }
+    } catch(_) {}
+  };
+
+  es.onerror = function() {
+    es.close();
+    setTimeout(connectApprovalsStream, 5000);
+  };
+}
+
 /* ── Config change SSE ──────────────────────────────────────────────────────── */
 function connectConfigWatch() {
   var url = '/api/config/watch?token=' + encodeURIComponent(token);
@@ -1591,17 +1833,19 @@ function connectTaskWatch() {
 
 /* ── Navigation ─────────────────────────────────────────────────────────────── */
 var loaders = {
-  overview: loadOverview,
-  chat:     loadChatAgents,
-  agents:   loadAgents,
-  tasks:    loadTasks,
-  sessions: loadSessions,
-  memory:   loadMemory,
-  config:   loadConfig,
-  analytics:loadAnalytics,
-  hive:     loadHive,
-  comms:    loadComms,
-  logs:     loadLogs
+  overview:  loadOverview,
+  chat:      loadChatAgents,
+  agents:    loadAgents,
+  tasks:     loadTasks,
+  sessions:  loadSessions,
+  memory:    loadMemory,
+  config:    loadConfig,
+  analytics: loadAnalytics,
+  activity:  loadActivity,
+  hive:      loadHive,
+  comms:     loadComms,
+  logs:      loadLogs,
+  approvals: loadApprovals,
 };
 var current = 'overview';
 
@@ -1653,6 +1897,8 @@ setInterval(function() {
 loadOverview();
 connectConfigWatch();
 connectTaskWatch();
+connectApprovalsStream();
+startActivityPoll();
 </script>
 </body>
 </html>`;

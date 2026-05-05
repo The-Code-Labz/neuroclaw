@@ -18,6 +18,7 @@ import { startCatalogRefresh } from '../system/model-catalog';
 import { seedDefaultAreas } from '../db';
 import { startDreamScheduler } from '../memory/dream-cycle';
 import { startHeartbeatScheduler } from '../system/heartbeat';
+import { startTaskMonitor } from '../system/task-monitor';
 import { probeAll as probeMcpServers } from '../mcp/mcp-registry';
 
 // TODO [Discord bot]: Replace or augment this server with a Discord.js client
@@ -103,6 +104,7 @@ serve({ fetch: app.fetch, port: config.dashboard.port, hostname: '127.0.0.1' }, 
   seedDefaultAreas();
   startDreamScheduler();
   startHeartbeatScheduler();
+  startTaskMonitor();
   // Idempotently register our MCP server in ~/.codex/config.toml so Codex
   // sessions can discover NeuroClaw tools.
   ensureCodexMcpRegistered({ url: `http://127.0.0.1:${info.port}/mcp` })

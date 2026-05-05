@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getDb, getAgentById, logAudit, type AgentRecord } from '../db';
+import { getDb, getAgentById, logAudit, getSpawnConfig, type AgentRecord } from '../db';
 import { config } from '../config';
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
@@ -57,8 +57,10 @@ function runSpawn(req: SpawnRequest, asyncPick: boolean): SpawnResult | Promise<
 }
 
 function runSpawnImpl(req: SpawnRequest, asyncPick: boolean): SpawnResult | Promise<SpawnResult> {
-  if (!config.spawning.enabled) {
-    return { ok: false, reason: 'Agent spawning is disabled (SPAWN_AGENTS_ENABLED=false)' };
+  const rtCfg = getSpawnConfig();
+
+  if (!rtCfg.enabled) {
+    return { ok: false, reason: 'Agent spawning is disabled' };
   }
 
   const parent = getAgentById(req.parentAgentId);
@@ -66,26 +68,26 @@ function runSpawnImpl(req: SpawnRequest, asyncPick: boolean): SpawnResult | Prom
   if (parent.status !== 'active')   return { ok: false, reason: 'Parent agent is not active' };
 
   const spawnDepth = (parent.spawn_depth ?? 0) + 1;
-  if (spawnDepth > MAX_SPAWN_DEPTH) {
-    const reason = `Spawn depth limit reached (depth ${spawnDepth} > ${MAX_SPAWN_DEPTH})`;
+  if (spawnDepth > rtCfg.maxDepth) {
+    const reason = `Spawn depth limit reached (depth ${spawnDepth} > ${rtCfg.maxDepth})`;
     logHive('spawn_denied', reason, req.parentAgentId, { name: req.name, spawnDepth });
     return { ok: false, reason };
   }
 
   const activeCount = countActiveTempAgents();
-  if (activeCount >= config.spawning.hardLimit) {
-    const reason = `Hard limit: ${activeCount}/${config.spawning.hardLimit} temporary agents already active`;
+  if (activeCount >= rtCfg.hardLimit) {
+    const reason = `Hard limit: ${activeCount}/${rtCfg.hardLimit} temporary agents already active`;
     logHive('spawn_denied', reason, req.parentAgentId, { name: req.name, activeCount });
     logger.warn('Spawner: hard limit reached', { activeCount });
     return { ok: false, reason };
   }
 
-  if (activeCount >= config.spawning.softLimit) {
-    logger.warn('Spawner: soft limit reached', { activeCount, softLimit: config.spawning.softLimit });
-    logHive('spawn_request', `Soft limit warning: ${activeCount}/${config.spawning.softLimit} temp agents active`, req.parentAgentId);
+  if (activeCount >= rtCfg.softLimit) {
+    logger.warn('Spawner: soft limit reached', { activeCount, softLimit: rtCfg.softLimit });
+    logHive('spawn_request', `Soft limit warning: ${activeCount}/${rtCfg.softLimit} temp agents active`, req.parentAgentId);
   }
 
-  const expiresAt = new Date(Date.now() + config.spawning.ttlHours * 3_600_000).toISOString();
+  const expiresAt = new Date(Date.now() + rtCfg.ttlHours * 3_600_000).toISOString();
 
   const augmentedPrompt =
     req.systemPrompt +

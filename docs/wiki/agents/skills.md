@@ -1,0 +1,324 @@
+---
+title: Skills
+order: 25
+---
+
+# Skills
+
+A skill is a markdown document that injects structured instructions into an agent's system prompt. Skills let you package reusable workflows, domain knowledge, or runnable scripts so any agent can apply them without being custom-built from scratch. An agent declares which skills it uses; the skill bodies are appended to its prompt at the start of every chat turn.
+
+Skills are not auto-routed. There is no keyword matching or intent classifier that selects a skill mid-turn. Instead, each agent carries a fixed list of skill names in its `skills` database column. Those skills are loaded and injected every time that agent handles a message.
+
+## Discovery order
+
+The skill loader searches four sources in priority order. The first definition of a name wins — later sources cannot override an earlier one.
+
+1. **Project-local** — `.claude/skills/` in the repo root. Skills here are version-controlled and shared by every developer working in the project.
+2. **User-global** — `~/.claude/skills/` on the host machine. Personal skills that follow the user across projects.
+3. **Installed plugins** — Skills packaged inside plugins that were installed via `claude plugin install`. The manifest at `~/.claude/plugins/installed_plugins.json` determines which plugins are active.
+4. **Marketplace** — Skills bundled under `~/.claude/plugins/marketplaces/`. These are loaded for non-Claude runtimes (VoidAI, OpenAI, Codex) that cannot use Claude's native plugin mechanism.
+
+A project-local skill with the same `name` as a user-global or plugin skill silently wins. You can shadow any upstream skill by dropping a `SKILL.md` with the same `name` field into `.claude/skills/`.
+
+The cache refreshes every 30 seconds. To force an immediate reload, call `GET /api/skills?refresh=1`.
+
+## SKILL.md frontmatter schema
+
+Each skill lives in its own subdirectory and must contain a `SKILL.md` file. The first block between `---` delimiters is parsed as YAML frontmatter.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Unique identifier. Lowercase letters, digits, and dashes only. Maximum 64 characters. Must match the `[a-z0-9][a-z0-9-]{0,63}` pattern. If omitted, the directory name is used. |
+| `description` | string | no | One-line description shown in the dashboard and included in skill blocks. Write it as "Use when someone asks to [action]..." — this helps agents understand when the skill applies. |
+| `triggers` | string[] | no | Declared trigger phrases. Informational only — no auto-routing is performed on them. |
+| `tools` | string[] | no | Declared tool names the skill uses. Informational only — not enforced at runtime. |
+| `scripts` | string[] | no | Explicit allowlist of script filenames in the `scripts/` subdirectory. When omitted, the loader scans the `scripts/` directory automatically. |
+| `always_on` | boolean | no | When `true`, the skill is injected into every agent's prompt regardless of that agent's `skills` list. See below. |
+
+Everything after the closing `---` is the skill body — plain markdown that becomes the content block appended to the agent prompt.
+
+### Example frontmatter
+
+```markdown
+---
+name: web-search
+description: "Search the web using SearXNG metasearch. Use when you need current information, news, research, images, or videos."
+scripts: [search.py]
+---
+
+# Web Search (SearXNG)
+
+Search the web via SearXNG metasearch engine...
+```
+
+## always_on skills
+
+Setting `always_on: true` in a skill's frontmatter makes it a global baseline. The loader unions the agent's declared skill list with all `always_on` skills before building the prompt block. An agent does not need to list the skill explicitly — it is injected automatically.
+
+`always_on` is useful for skills that should apply everywhere: coding conventions, security guardrails, house style, or platform-wide response templates. Use it sparingly. Every `always_on` skill adds tokens to every agent's prompt on every turn.
+
+You can toggle `always_on` on an existing skill via the dashboard or the API without editing the file directly.
+
+## Per-agent skills
+
+Each agent row in the `agents` table has a `skills` column that stores a JSON array of skill names:
+
+```json
+["web-search", "code-review", "security-checklist"]
+```
+
+When an agent handles a message, `buildSkillsBlock()` resolves each name against the live cache and appends a `## Active skills` section to the system prompt. Missing names (declared but not found on disk) appear as a note in the block so the agent knows the skill is unavailable.
+
+You assign skills to an agent when creating or updating it:
+
+```json
+POST /api/agents
+{
+  "name": "ResearchBot",
+  "system_prompt": "You are a research specialist...",
+  "skills": ["web-search", "citation-formatter"]
+}
+```
+
+Or update an existing agent:
+
+```json
+PATCH /api/agents/:id
+{
+  "skills": ["web-search", "citation-formatter"]
+}
+```
+
+## Skill scripts
+
+A skill can include executable scripts in a `scripts/` subdirectory. Scripts are exposed to agents via the `run_skill_script` tool. The loader lists available script filenames in the prompt block so the agent knows what to call.
+
+When an agent calls `run_skill_script`, the skill runner:
+
+1. Validates the skill name and script filename (path-traversal protected).
+2. Chooses an interpreter based on file extension: `.py` → `python3`, `.js`/`.mjs`/`.cjs` → `node`, `.ts` → `npx tsx`, `.sh`/`.bash` → `bash`. Scripts with a shebang that are marked executable run directly.
+3. Spawns the child process **without a shell** — arguments are passed directly, preventing shell injection.
+4. Scrubs API keys and secrets from the child's environment (`VOIDAI_API_KEY`, `ANTHROPIC_API_KEY`, `DASHBOARD_TOKEN`, and others).
+5. Caps stdout + stderr to `config.exec.outputMaxBytes` total. Sends `SIGTERM` on overflow, `SIGKILL` on timeout.
+6. Logs every run to `audit_logs` with exit code, duration, and truncation status.
+
+Scripts are automatically marked executable (`chmod 755`) when written via the API.
+
+### Creating a script
+
+Drop a script file into `.claude/skills/<name>/scripts/` and list it in the frontmatter:
+
+```markdown
+---
+name: my-skill
+scripts: [fetch_data.py]
+---
+
+## How to use
+
+Call `run_skill_script(skill_name="my-skill", script="fetch_data.py", args=["--input", "value"])`.
+```
+
+If you omit the `scripts` field entirely, the loader scans the `scripts/` directory automatically. The explicit allowlist form is preferred for security — it prevents newly added files from becoming callable before they are intentionally exposed.
+
+## Plugin and marketplace sources
+
+Skills installed through the Claude Code plugin system are automatically discovered. The workflow:
+
+- `claude plugin install <name>` installs a plugin and records its path in `~/.claude/plugins/installed_plugins.json`.
+- The skill loader reads that manifest on each cache refresh and walks each plugin's `skills/` directory.
+- Marketplace bundles under `~/.claude/plugins/marketplaces/` are also walked. These allow VoidAI and other non-Claude runtimes to use skills originally published for Claude Code.
+
+Plugin skills are identified by source `plugin` and carry a `plugin` field formatted as `<plugin-id>@<marketplace>` for marketplace-sourced skills. Project and user skills always override plugin skills of the same name.
+
+## Managing skills via API
+
+All `/api/skills/*` routes require a valid dashboard token.
+
+### List all skills
+
+```
+GET /api/skills
+GET /api/skills?full=1          # includes full body, not just a 200-char preview
+GET /api/skills?refresh=1       # clears the 30s cache first
+```
+
+### Get a single skill
+
+```
+GET /api/skills/:name
+```
+
+Returns `name`, `description`, `triggers`, `tools`, `scripts`, `source`, `plugin`, `path`, `always_on`, and `body`.
+
+### Create a skill
+
+```
+POST /api/skills
+Content-Type: application/json
+
+{
+  "name": "daily-standup",
+  "description": "Format a daily standup update.",
+  "body": "## Steps\n1. Ask what the user completed yesterday...",
+  "triggers": ["standup", "daily update"],
+  "tools": [],
+  "always_on": false,
+  "scripts": [
+    { "filename": "post_slack.py", "content": "#!/usr/bin/env python3\n..." }
+  ]
+}
+```
+
+Returns `201` with the skill summary. The skill is written to `.claude/skills/<name>/`.
+
+### Update a skill
+
+Only project-local skills (source `project`) can be edited via the API. User-global and plugin skills are read-only.
+
+```
+PATCH /api/skills/:name
+Content-Type: application/json
+
+{
+  "description": "Updated description.",
+  "body": "New body content.",
+  "always_on": true
+}
+```
+
+### Toggle always-on
+
+```
+POST /api/skills/:name/always-on
+Content-Type: application/json
+
+{ "enabled": true }
+```
+
+### Delete a skill
+
+```
+DELETE /api/skills/:name
+```
+
+Removes the skill directory (`rm -rf`). Only project-local skills can be deleted.
+
+### Upload a SKILL.md file
+
+Use this to install a pre-written skill document without going through the JSON creation form:
+
+```
+POST /api/skills/upload
+Content-Type: application/json
+
+{
+  "content": "---\nname: code-review\ndescription: ...\n---\n\n## Steps...",
+  "name": "code-review",     // optional override; frontmatter name: is used if omitted
+  "scripts": [
+    { "filename": "lint.sh", "content": "#!/bin/bash\n..." }
+  ]
+}
+```
+
+Returns `409` if the skill name already exists.
+
+### Install from a plugin or marketplace
+
+```
+POST /api/skills/install
+Content-Type: application/json
+
+// Install a Claude Code plugin
+{ "kind": "plugin", "spec": "my-plugin-name" }
+
+// Add a marketplace
+{ "kind": "marketplace", "spec": "owner/repo" }
+
+// Run an npx package that installs skills
+{ "kind": "npx", "spec": "@my-org/skill-pack --flag" }
+```
+
+The server spawns the appropriate binary (`claude plugin install`, `claude plugin marketplace add`, or `npx`) without a shell, capped at 90 seconds and 64 KB output per stream. Set `CLAUDE_CLI_PATH` in `.env` if the `claude` binary lives outside the standard search paths.
+
+### Script management
+
+Read a script:
+```
+GET /api/skills/:name/scripts/:filename
+```
+
+Add or replace a script:
+```
+POST /api/skills/:name/scripts
+Content-Type: application/json
+
+{ "filename": "analyze.py", "content": "#!/usr/bin/env python3\n..." }
+```
+
+Delete a script:
+```
+DELETE /api/skills/:name/scripts/:filename
+```
+
+### Generate a skill from a script
+
+If you have a standalone script and want to wrap it in a skill automatically:
+
+```
+POST /api/skills/from-script
+Content-Type: application/json
+
+{
+  "name": "analyze-logs",
+  "description": "Analyze application log files for errors.",
+  "filename": "analyze.py",
+  "content": "#!/usr/bin/env python3\n..."
+}
+```
+
+The server creates a skill whose body instructs the agent to call `run_skill_script` with appropriate arguments. The skill is created with `tools: [run_skill_script]` and the script is placed in `scripts/analyze.py`.
+
+## Example SKILL.md
+
+```markdown
+---
+name: code-review
+description: "Use when the user asks for a code review, PR review, or feedback on a diff."
+triggers: [code review, pr review, review my code]
+tools: [read_file, list_directory]
+scripts: [check_style.sh]
+always_on: false
+---
+
+# Code Review
+
+Perform a structured review of the provided code or diff.
+
+## Steps
+
+1. Read the files or diff provided by the user.
+2. Check for correctness, security issues, and style violations.
+3. Run `run_skill_script(skill_name="code-review", script="check_style.sh", args=["<filename>"])` if the user provides a file path.
+4. Return findings grouped by severity: **Critical**, **Warning**, **Suggestion**.
+
+## Output format
+
+```
+## Code Review
+
+**Critical**
+- [issue + file:line]
+
+**Warning**
+- [issue + file:line]
+
+**Suggestion**
+- [issue + file:line]
+```
+
+## Notes
+
+- Do not hallucinate lint errors. Only report issues you can observe in the provided code.
+- Keep suggestions actionable — include the corrected snippet, not just a description of the problem.
+```

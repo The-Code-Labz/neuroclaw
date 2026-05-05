@@ -55,13 +55,26 @@ const Overview = () => {
             <div style={{ position: 'absolute', textAlign: 'center', fontFamily: 'var(--mono)' }}>
               <div className="label-tiny" style={{ color: 'var(--neon-2)' }}>CORE STATE</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: '#fff', textShadow: '0 0 10px var(--neon)' }}>AWAKE</div>
-              <div style={{ fontSize: 10, color: 'var(--text-soft)', marginTop: 2 }}>// 0.842 sync</div>
+              {(() => {
+                const _agents  = window.NC_DATA.AGENTS    || [];
+                const _mems    = window.NC_DATA.MEMORIES  || [];
+                const _mcps    = window.NC_DATA.MCP_SERVERS || [];
+                const _onMcp   = _mcps.filter(s => s.status === 'online' || s.status === 'ready').length;
+                const syncVal  = ((_onMcp > 0 ? 1 : 0) + (_agents.length > 0 ? 1 : 0) + (_mems.length > 0 ? 1 : 0)) / 3;
+                return <div style={{ fontSize: 10, color: 'var(--text-soft)', marginTop: 2 }}>// {syncVal.toFixed(3)} sync</div>;
+              })()}
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, width: '100%', marginTop: 6 }}>
-            {[
-              ['routing','OK'], ['memory','SYNC'], ['vault','LIVE'],
-            ].map(([k, v], i) => (
+            {(() => {
+              const _providers = window.NC_DATA.PROVIDERS   || [];
+              const _mems      = window.NC_DATA.MEMORIES    || [];
+              const _mcps      = window.NC_DATA.MCP_SERVERS || [];
+              const routingStatus = _providers.find(p => p.id === 'voidai')?.status === 'online' ? 'OK' : 'OFF';
+              const memoryStatus  = (_mems.length || 0) > 0 ? 'SYNC' : 'EMPTY';
+              const vaultStatus   = _mcps.some(s => s.status === 'ready' || s.status === 'online') ? 'LIVE' : 'OFF';
+              return [['routing', routingStatus], ['memory', memoryStatus], ['vault', vaultStatus]];
+            })().map(([k, v], i) => (
               <div key={i} className="mono" style={{ textAlign: 'center', fontSize: 10, padding: '6px 4px', border: '1px solid var(--line-soft)', borderRadius: 2 }}>
                 <div className="muted" style={{ letterSpacing: '0.14em' }}>{k.toUpperCase()}</div>
                 <div className="neonc">{v}</div>
@@ -74,7 +87,7 @@ const Overview = () => {
         <div className="nc-panel glow" style={{ padding: 16, display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div className="label-tiny neonc">AGENT ACTIVITY · 24H</div>
-            <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>peak 182 msg · last 24h</div>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>peak {max} msg · last 24h</div>
           </div>
           <div className="grid-bg" style={{ flex: 1, marginTop: 12, position: 'relative', minHeight: 180, padding: '10px 4px 4px', display: 'flex', alignItems: 'flex-end', gap: 3, borderRadius: 2, border: '1px solid var(--line-soft)' }}>
             {sparkline.map((v, i) => (
@@ -90,26 +103,43 @@ const Overview = () => {
         {/* System health */}
         <div className="nc-panel glow" style={{ padding: 16 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 12 }}>SYSTEM HEALTH</div>
-          {[
-            ['CPU', 0.32, 'var(--neon)'],
-            ['MEM', 0.58, 'var(--neon-2)'],
-            ['ROUTER LATENCY', 0.18, 'var(--neon)'],
-            ['MCP LATENCY', 0.71, 'var(--amber)'],
-            ['QUEUE PRESSURE', 0.24, 'var(--neon-2)'],
-          ].map(([k, v, c], i) => (
-            <div key={i} style={{ marginBottom: 12 }}>
-              <div className="mono" style={{ fontSize: 10, display: 'flex', justifyContent: 'space-between', color: 'var(--text-soft)', marginBottom: 4 }}>
-                <span>{k}</span><span>{Math.round(v*100)}%</span>
+          {(() => {
+            const _an      = window.NC_DATA.ANALYTICS   || {};
+            const _mems    = window.NC_DATA.MEMORIES    || [];
+            const _agents  = window.NC_DATA.AGENTS      || [];
+            const _mcps    = window.NC_DATA.MCP_SERVERS || [];
+            const _prov    = window.NC_DATA.PROVIDERS   || [];
+            const _totalMcp  = _mcps.length;
+            const _onMcp     = _mcps.filter(m => m.status === 'online' || m.status === 'ready').length;
+            const routerLatency   = Math.min((_an.c429 || 0) / 10, 1);
+            const queuePressure   = Math.min((_prov.find(p => p.id === 'cli')?.queue || 0) / 20, 1);
+            const memoryIndex     = Math.min((_mems.length || 0) / 500, 1);
+            const agentLoad       = Math.min((_agents.length || 0) / 20, 1);
+            const mcpLatency      = _totalMcp > 0 ? (_onMcp / _totalMcp) : 0;
+            const bars = [
+              ['MEMORY INDEX',   memoryIndex,   'var(--neon)',   `${_mems.length} entries`],
+              ['AGENT LOAD',     agentLoad,     'var(--neon-2)', `${_agents.length} active`],
+              ['ROUTER LATENCY', routerLatency, routerLatency > 0 ? 'var(--amber)' : 'var(--neon)', `${_an.c429 || 0} 429s`],
+              ['MCP LATENCY',    mcpLatency,    mcpLatency < 0.5 ? 'var(--amber)' : 'var(--neon)', `${_onMcp}/${_totalMcp} up`],
+              ['QUEUE PRESSURE', queuePressure, queuePressure > 0.5 ? 'var(--amber)' : 'var(--neon-2)', `q${_prov.find(p => p.id === 'cli')?.queue || 0}`],
+            ];
+            return bars.map(([k, v, c, sub], i) => (
+              <div key={i} style={{ marginBottom: 12 }}>
+                <div className="mono" style={{ fontSize: 10, display: 'flex', justifyContent: 'space-between', color: 'var(--text-soft)', marginBottom: 4 }}>
+                  <span>{k}</span><span style={{ color: 'var(--muted)', fontSize: 9 }}>{sub}</span>
+                </div>
+                <div className="bar-track">
+                  <div className="bar-fill" style={{ width: `${v*100}%`, background: `linear-gradient(90deg, ${c}, var(--neon-2))` }} />
+                </div>
               </div>
-              <div className="bar-track">
-                <div className="bar-fill" style={{ width: `${v*100}%`, background: `linear-gradient(90deg, ${c}, var(--neon-2))` }} />
-              </div>
-            </div>
-          ))}
+            ));
+          })()}
           <div style={{ borderTop: '1px solid var(--line-soft)', marginTop: 8, paddingTop: 10 }}>
             <div className="label-tiny" style={{ marginBottom: 6 }}>DREAM CYCLE</div>
             <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>next run · {DREAM.next}</div>
-            <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>last: 38 → 12 → 4</div>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
+              {DREAM.lastRun ? `last: ${DREAM.lastRun}` : DREAM.lastExtracted ? `last: ${DREAM.lastExtracted}` : 'last: —'}
+            </div>
           </div>
         </div>
       </div>
@@ -119,19 +149,14 @@ const Overview = () => {
         {/* Backend status */}
         <div className="nc-panel glow" style={{ padding: 16 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>PROVIDER BACKENDS</div>
-          {[
-            ['Claude CLI', 'claude-cli', 'online', 'opus-4.1', 5],
-            ['VoidAI', 'router', 'online', 'sonnet-4', 2],
-            ['Anthropic API', 'cloud', 'warn', 'sonnet-4', 0],
-            ['MCP Bus', 'mux', 'online', '—', 1],
-          ].map(([n, b, s, m, q], i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: i < 3 ? '1px dashed rgba(0,183,255,0.08)' : 'none' }}>
-              <span className={`dot ${s === 'online' ? 'green' : s === 'warn' ? 'amber' : 'red'} pulse`} />
+          {(window.NC_DATA.PROVIDERS || []).map((p, i, arr) => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: i < arr.length - 1 ? '1px dashed rgba(0,183,255,0.08)' : 'none' }}>
+              <span className={`dot ${p.status === 'online' ? 'green' : p.status === 'warn' ? 'amber' : 'red'} pulse`} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)' }}>{n}</div>
-                <div className="mono muted" style={{ fontSize: 10 }}>{b} · {m}</div>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)' }}>{p.name}</div>
+                <div className="mono muted" style={{ fontSize: 10 }}>{p.backend} · {p.model}</div>
               </div>
-              <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>q{q}</div>
+              <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>q{p.queue}</div>
             </div>
           ))}
         </div>

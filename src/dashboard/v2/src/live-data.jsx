@@ -48,6 +48,19 @@ window.NC_API = {
     }
     return r.json();
   },
+  async patch(path, body) {
+    const r = await fetchWithTimeout(path, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) {
+      let errMsg = `${r.status} ${r.statusText}: ${path}`;
+      try { const d = await r.json(); if (d?.error) errMsg = d.error; } catch { /* not JSON */ }
+      throw new Error(errMsg);
+    }
+    return r.json();
+  },
 };
 
 // ── Shape mappers ──────────────────────────────────────────────────────────
@@ -75,8 +88,9 @@ function mapAgent(a) {
     exec:       !!a.exec_enabled,
     temp:       !!a.temporary,
     scope:      a.temporary ? 'session' : 'shared',
-    spawnDepth: a.spawn_depth ?? 0,
-    tasks:      0,    // filled in by mergeTasksIntoAgents
+    spawnDepth:  a.spawn_depth ?? 0,
+    spawn_exempt: !!(a.spawn_exempt),
+    tasks:       0,    // filled in by mergeTasksIntoAgents
     color:      a.temporary ? 'violet' : 'neon',
     desc:       a.description || '',
     caps,
@@ -226,7 +240,7 @@ function mapHiveEvent(e) {
              : 'blue';
   return {
     t:       (e.created_at || '').slice(11, 19) || '—',
-    agent:   e.agent_id ? e.agent_id.slice(0, 8) : '—',
+    agent:   e.agent_name || (e.agent_id ? e.agent_id.slice(0, 8) : '—'),
     action,
     summary: e.summary || '',
     tone,

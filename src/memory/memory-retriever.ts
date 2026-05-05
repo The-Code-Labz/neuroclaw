@@ -46,6 +46,10 @@ export interface CategorizedRetrieval {
 // ── Source: SQLite memory_index ──────────────────────────────────────────────
 
 function rowToHit(r: MemoryIndexRow, scoreOverride?: number): RetrievalHit {
+  // Strip the raw embedding vector — cosine similarity was already computed
+  // before this function is called, so the float32 buffer has no value here
+  // and would bloat every tool result returned to the LLM.
+  const { embedding: _emb, ...safeRow } = r as MemoryIndexRow & { embedding?: unknown };
   return {
     source:    'sqlite',
     type:      r.type,
@@ -60,7 +64,7 @@ function rowToHit(r: MemoryIndexRow, scoreOverride?: number): RetrievalHit {
     agent_id:   r.agent_id,
     vault_path: r.vault_note_id,
     memory_id:  r.id,
-    raw:        r,
+    raw:        safeRow,
   };
 }
 

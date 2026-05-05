@@ -168,6 +168,7 @@ export async function mergeResults(
 export async function evaluateSpawn(
   task: string,
   existingAgents: AgentRecord[],
+  threshold = 0.7,
 ): Promise<SpawnEvaluation> {
   const agentList = existingAgents
     .filter(a => a.status === 'active' && !a.temporary)
@@ -181,7 +182,7 @@ export async function evaluateSpawn(
     'Spawn is ONLY justified when ALL of the following are true:\n' +
     '1. No existing agent has the required specialization\n' +
     '2. The task requires a very specific, narrow skill set\n' +
-    '3. Expected quality improvement > 0.7\n\n' +
+    `3. Expected quality improvement > ${threshold}\n\n` +
     'Output ONLY strict JSON:\n' +
     '{"shouldSpawn":bool,"reason":"one line","expectedBenefit":0.0}';
 
@@ -205,11 +206,13 @@ export async function evaluateSpawn(
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     const parsed  = JSON.parse(cleaned) as SpawnEvaluation;
 
-    logger.info('Spawn evaluated', { shouldSpawn: parsed.shouldSpawn, benefit: parsed.expectedBenefit, reason: parsed.reason });
+    const benefit     = parsed.expectedBenefit ?? 0;
+    const shouldSpawn = !!parsed.shouldSpawn && benefit >= threshold;
+    logger.info('Spawn evaluated', { shouldSpawn, benefit, threshold, reason: parsed.reason });
     return {
-      shouldSpawn:     !!parsed.shouldSpawn,
+      shouldSpawn,
       reason:          parsed.reason ?? '',
-      expectedBenefit: parsed.expectedBenefit ?? 0,
+      expectedBenefit: benefit,
     };
   } catch (err) {
     logger.warn('Spawn evaluation failed, defaulting to no spawn', err instanceof Error ? err.message : err);

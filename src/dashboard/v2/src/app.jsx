@@ -20,6 +20,7 @@ const PAGES = {
   logs: { label: 'Logs', cmp: () => <Logs/> },
   settings: { label: 'Settings', cmp: () => <Settings/> },
   docs: { label: 'Docs', cmp: () => <Docs/> },
+  approvals: { label: 'Approvals', cmp: () => <Approvals/> },
 };
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{

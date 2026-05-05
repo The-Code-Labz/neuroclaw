@@ -44,6 +44,7 @@ import { runSkillScript } from '../system/skill-runner';
 import { createTask, updateTask, getTasks, archiveTask, type AppTask, type PriorityLevel, type TaskStatus } from '../system/task-manager';
 import { spawnAgentAsync, countActiveTempAgents } from '../system/spawner';
 import { evaluateSpawn } from '../system/decomposer';
+import { getSpawnConfig } from '../db';
 import { logHive } from '../system/hive-mind';
 import {
   createBackgroundTask, completeBackgroundTask, failBackgroundTask, taskEvents,
@@ -272,11 +273,22 @@ export const registry: ToolDef[] = [
     shape:       S.spawnAgentShape,
     gate:        gateSpawn,
     handler: async (args, ctx) => {
-      // Spawn evaluation — only spawn if no existing agent fits
+      // Spawn evaluation — only spawn if no existing agent fits (skipped for exempt agents)
       const existing   = getAllAgents().filter(a => a.status === 'active' && !a.temporary);
-      const evaluation = await evaluateSpawn(args.taskDescription ?? args.description, existing);
-      await ctx.onMeta?.({ type: 'spawn_eval', task: args.name, shouldSpawn: evaluation.shouldSpawn, benefit: evaluation.expectedBenefit, reason: evaluation.reason });
-      logHive('spawn_evaluated', `Spawn evaluation for "${args.name}": ${evaluation.shouldSpawn ? 'APPROVED' : 'DENIED'} (benefit ${evaluation.expectedBenefit}) — ${evaluation.reason}`, ctx.agentId ?? undefined, evaluation);
+      const callingAgent = ctx.agentId ? getAllAgents().find(a => a.id === ctx.agentId) : null;
+      const isExempt   = !!(callingAgent?.spawn_exempt);
+      const rtCfg      = getSpawnConfig();
+
+      let evaluation: Awaited<ReturnType<typeof evaluateSpawn>>;
+      if (isExempt) {
+        evaluation = { shouldSpawn: true, reason: 'agent is spawn-exempt', expectedBenefit: 1 };
+        logHive('spawn_evaluated', `Spawn evaluation skipped for "${args.name}" (agent "${callingAgent?.name}" is exempt)`, ctx.agentId ?? undefined, evaluation);
+      } else {
+        evaluation = await evaluateSpawn(args.taskDescription ?? args.description, existing, rtCfg.evalThreshold);
+        await ctx.onMeta?.({ type: 'spawn_eval', task: args.name, shouldSpawn: evaluation.shouldSpawn, benefit: evaluation.expectedBenefit, reason: evaluation.reason });
+        logHive('spawn_evaluated', `Spawn evaluation for "${args.name}": ${evaluation.shouldSpawn ? 'APPROVED' : 'DENIED'} (benefit ${evaluation.expectedBenefit}) — ${evaluation.reason}`, ctx.agentId ?? undefined, evaluation);
+      }
+
       if (!evaluation.shouldSpawn) {
         return {
           spawn_blocked: true,

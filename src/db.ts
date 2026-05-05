@@ -259,6 +259,28 @@ function initSchema(database: Database.Database): void {
       created_at  TEXT DEFAULT (datetime('now')),
       updated_at  TEXT DEFAULT (datetime('now'))
     );
+
+    -- v2.2: remote approval queue. Pending tool-call approvals are created
+    -- here so the user can approve/deny them from the dashboard instead of
+    -- needing an interactive terminal. agent_id/agent_name/session_id are
+    -- nullable so the table is usable even before a full agent context is
+    -- available. tool_input is a JSON string of the call arguments.
+    -- status flow: pending → approved | denied
+    CREATE TABLE IF NOT EXISTS approvals (
+      id          TEXT PRIMARY KEY,
+      agent_id    TEXT,
+      agent_name  TEXT,
+      session_id  TEXT,
+      tool_name   TEXT NOT NULL,
+      tool_input  TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'pending',
+      reason      TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_approvals_status     ON approvals(status);
+    CREATE INDEX IF NOT EXISTS idx_approvals_created_at ON approvals(created_at DESC);
   `);
   logger.info('Database schema initialized');
 }
@@ -379,6 +401,8 @@ function runMigrations(database: Database.Database): void {
     // v1.8: per-bot voice toggle. Lets a bot ignore its agents' tts_enabled
     // (e.g. a text-only support channel) without flipping every agent.
     'ALTER TABLE discord_bots ADD COLUMN voice_enabled INTEGER DEFAULT 0',
+    // v2.3: spawn gating — exempt agents bypass evaluateSpawn() LLM check
+    'ALTER TABLE agents ADD COLUMN spawn_exempt INTEGER DEFAULT 0',
 
     // v1.8.1: per-(bot, user) voice override. Lets a Discord user say "stop
     // sending audio" and have it stick — without flipping the global bot or
@@ -480,6 +504,13 @@ function runMigrations(database: Database.Database): void {
     'CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id)',
     'CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_runs_status  ON runs(status)',
+
+    // v2.1: stable external key on sessions so integrations (Discord bot, etc.)
+    // can look up their session by a deterministic string (e.g.
+    // "discord::botId::channelId::userId") and survive process restarts without
+    // losing conversation history. UNIQUE so a mis-fire never creates duplicates.
+    'ALTER TABLE sessions ADD COLUMN external_id TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(external_id)',
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
@@ -708,6 +739,7 @@ export interface AgentRecord {
   tts_enabled:         number;            // 0/1
   tts_provider:        string;            // 'voidai' | 'elevenlabs'
   tts_voice:           string | null;     // provider-specific voice id (e.g. 'alloy' or an ElevenLabs voice_id)
+  spawn_exempt:        number;            // 0/1 — skips evaluateSpawn() LLM gate when spawning
   created_at:          string;
   updated_at:          string;
 }
@@ -1158,6 +1190,7 @@ export function updateAgentRecord(
     mcp_server_id?:   string | null;
     mcp_tool_name?:   string | null;
     mcp_input_field?: string | null;
+    spawn_exempt?:    boolean;
   },
 ): void {
   const sets: string[] = ["updated_at = datetime('now')"];
@@ -1193,6 +1226,7 @@ export function updateAgentRecord(
   if (fields.mcp_server_id   !== undefined) { sets.push('mcp_server_id = ?');   params.push(fields.mcp_server_id); }
   if (fields.mcp_tool_name   !== undefined) { sets.push('mcp_tool_name = ?');   params.push(fields.mcp_tool_name); }
   if (fields.mcp_input_field !== undefined) { sets.push('mcp_input_field = ?'); params.push(fields.mcp_input_field); }
+  if (fields.spawn_exempt    !== undefined) { sets.push('spawn_exempt = ?');    params.push(fields.spawn_exempt ? 1 : 0); }
 
   if (sets.length === 1) return;
   params.push(id);
@@ -1252,6 +1286,7 @@ export interface SessionRecord {
   status:        string;
   agent_id:      string | null;
   message_count: number;
+  external_id:   string | null;
   created_at:    string;
   updated_at:    string;
 }
@@ -1271,6 +1306,26 @@ export function createSession(agentId: string, title?: string): string {
   getDb().prepare(`
     INSERT INTO sessions (id, title, agent_id) VALUES (?, ?, ?)
   `).run(id, title ?? `Chat ${new Date().toLocaleString()}`, agentId);
+  return id;
+}
+
+/**
+ * Look up a session by its stable external key (e.g. "discord::botId::channelId::userId").
+ * If no such session exists, creates one and stores the external_id so future
+ * lookups hit the same row even after a process restart.
+ *
+ * This is the correct way for integrations (Discord bot, Slack, etc.) to get a
+ * persistent session — avoids the "new session on every restart" bug that occurs
+ * when session IDs are cached only in memory.
+ */
+export function getOrCreateSessionByExternalId(externalId: string, agentId: string, title?: string): string {
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM sessions WHERE external_id = ?').get(externalId) as { id: string } | undefined;
+  if (existing) return existing.id;
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO sessions (id, title, agent_id, external_id) VALUES (?, ?, ?, ?)
+  `).run(id, title ?? `Discord ${new Date().toLocaleString()}`, agentId, externalId);
   return id;
 }
 
@@ -1307,6 +1362,69 @@ export function deleteSession(sessionId: string): void {
   db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   logAudit('session_deleted', 'session', sessionId);
+}
+
+/**
+ * Merge one or more sessions into a single target session.
+ *
+ * All messages from `mergeSessionIds` are re-homed onto `keepSessionId` via a
+ * single UPDATE. The now-empty source sessions are then deleted (messages first,
+ * then the session row). The `message_count` on the surviving session is
+ * recalculated from the DB so it reflects the new total.
+ *
+ * Optionally stamps `externalId` on the survivor if it does not already have one.
+ *
+ * All three writes happen inside a transaction so a mid-flight crash cannot
+ * leave messages orphaned on a deleted session.
+ *
+ * Returns the number of source sessions deleted and messages re-homed.
+ */
+export function mergeSessions(
+  keepSessionId: string,
+  mergeSessionIds: string[],
+  externalId?: string | null,
+): { merged: number; messagesRehoused: number } {
+  if (mergeSessionIds.length === 0) return { merged: 0, messagesRehoused: 0 };
+
+  const db = getDb();
+
+  const doMerge = db.transaction(() => {
+    // Build an IN(...) placeholder list — safe because these are our own UUIDs.
+    const placeholders = mergeSessionIds.map(() => '?').join(', ');
+
+    // Re-home all messages from the source sessions to the survivor.
+    const moveResult = db.prepare(
+      `UPDATE messages SET session_id = ? WHERE session_id IN (${placeholders})`
+    ).run(keepSessionId, ...mergeSessionIds);
+
+    // Delete the now-empty source sessions (messages row already re-homed above).
+    db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...mergeSessionIds);
+
+    // Recalculate message_count on the survivor from ground truth.
+    const countRow = db.prepare(
+      'SELECT COUNT(*) AS n FROM messages WHERE session_id = ?'
+    ).get(keepSessionId) as { n: number };
+    db.prepare(
+      `UPDATE sessions SET message_count = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(countRow.n, keepSessionId);
+
+    // Stamp external_id on the survivor only if it does not already have one.
+    if (externalId) {
+      db.prepare(
+        `UPDATE sessions SET external_id = ? WHERE id = ? AND external_id IS NULL`
+      ).run(externalId, keepSessionId);
+    }
+
+    return { merged: mergeSessionIds.length, messagesRehoused: moveResult.changes };
+  });
+
+  const result = doMerge();
+  logAudit('sessions_merged', 'session', keepSessionId, {
+    merged: mergeSessionIds,
+    messagesRehoused: result.messagesRehoused,
+    externalId: externalId ?? null,
+  });
+  return result;
 }
 
 export function saveMessage(
@@ -1697,4 +1815,128 @@ export function updateMcpServer(id: string, fields: Partial<{
 export function deleteMcpServer(id: string): void {
   getDb().prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
   logAudit('mcp_server_deleted', 'mcp_server', id);
+}
+
+// ── Approvals (v2.2 remote approval queue) ──────────────────────────────────
+// One row per tool-call approval request. The agent runtime creates a row
+// (status='pending') and waits (polling getApproval) until the dashboard
+// resolves it to 'approved' or 'denied'.
+
+export interface ApprovalRecord {
+  id:          string;
+  agent_id:    string | null;
+  agent_name:  string | null;
+  session_id:  string | null;
+  tool_name:   string;
+  tool_input:  string;           // JSON string
+  status:      'pending' | 'approved' | 'denied';
+  reason:      string | null;
+  created_at:  string;
+  resolved_at: string | null;
+}
+
+export function createApproval(fields: {
+  agent_id?:   string | null;
+  agent_name?: string | null;
+  session_id?: string | null;
+  tool_name:   string;
+  tool_input:  object;
+}): ApprovalRecord {
+  const id = randomUUID();
+  getDb().prepare(`
+    INSERT INTO approvals (id, agent_id, agent_name, session_id, tool_name, tool_input)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    fields.agent_id   ?? null,
+    fields.agent_name ?? null,
+    fields.session_id ?? null,
+    fields.tool_name,
+    JSON.stringify(fields.tool_input),
+  );
+  return getApproval(id)!;
+}
+
+export function getApproval(id: string): ApprovalRecord | undefined {
+  return getDb()
+    .prepare('SELECT * FROM approvals WHERE id = ?')
+    .get(id) as ApprovalRecord | undefined;
+}
+
+export function resolveApproval(
+  id: string,
+  status: 'approved' | 'denied',
+  reason?: string,
+): void {
+  getDb().prepare(`
+    UPDATE approvals
+       SET status = ?, reason = ?, resolved_at = datetime('now')
+     WHERE id = ?
+  `).run(status, reason ?? null, id);
+}
+
+export function listApprovals(status?: string, limit = 50): ApprovalRecord[] {
+  const cap = Math.min(Math.max(limit, 1), 200);
+  if (status) {
+    return getDb()
+      .prepare('SELECT * FROM approvals WHERE status = ? ORDER BY created_at DESC LIMIT ?')
+      .all(status, cap) as ApprovalRecord[];
+  }
+  return getDb()
+    .prepare('SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?')
+    .all(cap) as ApprovalRecord[];
+}
+
+// ── Spawn config (runtime overrides stored in config_items) ──────────────────
+
+const SPAWN_CONFIG_KEYS = ['spawn_enabled','spawn_max_depth','spawn_ttl_hours','spawn_soft_limit','spawn_hard_limit','spawn_auto_approve','spawn_eval_threshold'] as const;
+type SpawnConfigKey = typeof SPAWN_CONFIG_KEYS[number];
+
+export interface SpawnConfig {
+  enabled:       boolean;
+  maxDepth:      number;
+  ttlHours:      number;
+  softLimit:     number;
+  hardLimit:     number;
+  autoApprove:   boolean;
+  evalThreshold: number;
+}
+
+export function getSpawnConfig(): SpawnConfig {
+  const db = getDb();
+  const row = (key: SpawnConfigKey) =>
+    (db.prepare('SELECT value FROM config_items WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+
+  const env = config.spawning;
+
+  return {
+    enabled:       row('spawn_enabled')       !== undefined ? row('spawn_enabled') === '1' : env.enabled,
+    maxDepth:      row('spawn_max_depth')      !== undefined ? parseInt(row('spawn_max_depth')!, 10) : 3,
+    ttlHours:      row('spawn_ttl_hours')      !== undefined ? parseFloat(row('spawn_ttl_hours')!) : env.ttlHours,
+    softLimit:     row('spawn_soft_limit')     !== undefined ? parseInt(row('spawn_soft_limit')!, 10) : env.softLimit,
+    hardLimit:     row('spawn_hard_limit')     !== undefined ? parseInt(row('spawn_hard_limit')!, 10) : env.hardLimit,
+    autoApprove:   row('spawn_auto_approve')   !== undefined ? row('spawn_auto_approve') === '1' : env.autoApprove,
+    evalThreshold: row('spawn_eval_threshold') !== undefined ? parseFloat(row('spawn_eval_threshold')!) : 0.7,
+  };
+}
+
+export function setSpawnConfig(patch: Partial<SpawnConfig>): void {
+  const db = getDb();
+  const upsert = db.prepare(
+    `INSERT INTO config_items (key, value, description) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+  );
+  const pairs: [SpawnConfigKey, string][] = [];
+  if (patch.enabled       !== undefined) pairs.push(['spawn_enabled',        patch.enabled ? '1' : '0']);
+  if (patch.maxDepth      !== undefined) pairs.push(['spawn_max_depth',      String(patch.maxDepth)]);
+  if (patch.ttlHours      !== undefined) pairs.push(['spawn_ttl_hours',      String(patch.ttlHours)]);
+  if (patch.softLimit     !== undefined) pairs.push(['spawn_soft_limit',     String(patch.softLimit)]);
+  if (patch.hardLimit     !== undefined) pairs.push(['spawn_hard_limit',     String(patch.hardLimit)]);
+  if (patch.autoApprove   !== undefined) pairs.push(['spawn_auto_approve',   patch.autoApprove ? '1' : '0']);
+  if (patch.evalThreshold !== undefined) pairs.push(['spawn_eval_threshold', String(patch.evalThreshold)]);
+
+  const tx = db.transaction(() => {
+    for (const [k, v] of pairs) upsert.run(k, v, `spawn config: ${k}`);
+  });
+  tx();
 }

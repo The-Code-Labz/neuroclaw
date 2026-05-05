@@ -26,6 +26,140 @@ const Redacted = ({ label }) => (
   </div>
 );
 
+/* ── Spawn Settings (live-wired) ───────────────────────────────────────── */
+const SpawnTab = () => {
+  const DEFAULT_CFG = { enabled: false, maxDepth: 3, ttlHours: 6, softLimit: 10, hardLimit: 25, autoApprove: true, evalThreshold: 0.7 };
+  const [cfg,       setCfg]       = React.useState(DEFAULT_CFG);
+  const [draft,     setDraft]     = React.useState(DEFAULT_CFG);
+  const [agents,    setAgents]    = React.useState([]);
+  const [saving,    setSaving]    = React.useState(false);
+  const [saved,     setSaved]     = React.useState(false);
+  const [err,       setErr]       = React.useState(null);
+  const [addAgent,  setAddAgent]  = React.useState('');
+
+  const isDirty = JSON.stringify(cfg) !== JSON.stringify(draft);
+
+  React.useEffect(() => {
+    Promise.all([
+      window.NC_API.get('/api/spawn/config'),
+      window.NC_API.get('/api/agents'),
+    ]).then(([sc, ag]) => {
+      setCfg(sc); setDraft(sc);
+      setAgents(Array.isArray(ag) ? ag.filter(a => a.status === 'active' && !a.temporary) : []);
+    }).catch(e => setErr(e.message));
+  }, []);
+
+  const save = async () => {
+    setSaving(true); setErr(null);
+    try {
+      const updated = await window.NC_API.patch('/api/spawn/config', draft);
+      if (updated && !updated.error) { setCfg(updated); setDraft(updated); setSaved(true); setTimeout(() => setSaved(false), 2000); }
+      else setErr(updated?.error || 'Save failed');
+    } catch (e) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const patch = (key, val) => setDraft(d => ({ ...d, [key]: val }));
+
+  const exemptAgents = agents.filter(a => a.spawn_exempt);
+  const nonExempt    = agents.filter(a => !a.spawn_exempt);
+
+  const toggleExempt = async (agent, makeExempt) => {
+    try {
+      await window.NC_API.patch(`/api/agents/${agent.id}`, { spawn_exempt: makeExempt });
+      setAgents(prev => prev.map(a => a.id === agent.id ? { ...a, spawn_exempt: makeExempt } : a));
+    } catch (e) { setErr(e.message); }
+  };
+
+  const InteractiveToggle = ({ value, onChange }) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onChange(!value)}>
+      <span style={{ width: 32, height: 16, borderRadius: 999, background: value ? 'rgba(0,183,255,0.4)' : 'rgba(100,116,139,0.3)', border: '1px solid var(--line)', position: 'relative', boxShadow: value ? '0 0 8px rgba(0,183,255,0.5)' : 'none' }}>
+        <span style={{ position: 'absolute', top: 1, left: value ? 17 : 2, width: 12, height: 12, borderRadius: '50%', background: value ? 'var(--neon)' : '#334155', boxShadow: value ? '0 0 6px var(--neon)' : 'none', transition: 'left 0.15s' }}/>
+      </span>
+      <span className="mono" style={{ fontSize: 10, color: value ? 'var(--neon-2)' : 'var(--muted)' }}>{value ? 'ENABLED' : 'DISABLED'}</span>
+    </span>
+  );
+
+  return (
+    <>
+      {err && <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10 }}>// {err}</div>}
+
+      <SettingRow label="Allow temp agents" hint="Master switch — SPAWN_AGENTS_ENABLED">
+        <InteractiveToggle value={draft.enabled} onChange={v => patch('enabled', v)}/>
+      </SettingRow>
+      <SettingRow label="Auto-approve spawns" hint="Skip manual approval for every spawn request">
+        <InteractiveToggle value={draft.autoApprove} onChange={v => patch('autoApprove', v)}/>
+      </SettingRow>
+      <SettingRow label="Max spawn depth" hint="Max recursion depth (1–10). Hard-blocked above this.">
+        <input className="nc-input" value={draft.maxDepth} min={1} max={10} type="number"
+          onChange={e => patch('maxDepth', parseInt(e.target.value,10) || 1)} style={{ maxWidth: 80 }}/>
+      </SettingRow>
+      <SettingRow label="TTL (hours)" hint="Temp agents expire after this many hours">
+        <input className="nc-input" value={draft.ttlHours} min={0.25} max={72} step={0.25} type="number"
+          onChange={e => patch('ttlHours', parseFloat(e.target.value) || 1)} style={{ maxWidth: 100 }}/>
+      </SettingRow>
+      <SettingRow label="Soft limit" hint="Log warning above this many active temp agents">
+        <input className="nc-input" value={draft.softLimit} min={1} max={100} type="number"
+          onChange={e => patch('softLimit', parseInt(e.target.value,10) || 1)} style={{ maxWidth: 80 }}/>
+      </SettingRow>
+      <SettingRow label="Hard limit" hint="Block all new spawns above this count">
+        <input className="nc-input" value={draft.hardLimit} min={1} max={200} type="number"
+          onChange={e => patch('hardLimit', parseInt(e.target.value,10) || 1)} style={{ maxWidth: 80 }}/>
+      </SettingRow>
+      <SettingRow label="Eval threshold" hint="Minimum expected benefit (0–1) to approve spawn via LLM gate">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input className="nc-input" value={draft.evalThreshold} min={0} max={1} step={0.05} type="number"
+            onChange={e => patch('evalThreshold', parseFloat(e.target.value) || 0)} style={{ maxWidth: 90 }}/>
+          <span className="mono muted" style={{ fontSize: 10 }}>({Math.round(draft.evalThreshold*100)}% quality bar)</span>
+        </div>
+      </SettingRow>
+
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button className="nc-btn primary" disabled={!isDirty || saving} onClick={save}>
+          {saving ? '…' : saved ? '✓ Saved' : 'Save Spawn Config'}
+        </button>
+        {isDirty && <span className="mono" style={{ fontSize: 10, color: 'var(--amber)' }}>// unsaved changes</span>}
+      </div>
+
+      {/* Spawn exceptions */}
+      <div style={{ marginTop: 28, borderTop: '1px solid var(--line-soft)', paddingTop: 20 }}>
+        <div className="label-tiny neonc" style={{ marginBottom: 12 }}>SPAWN EXCEPTIONS</div>
+        <div className="mono muted" style={{ fontSize: 10, marginBottom: 14 }}>
+          // agents listed here bypass the evaluateSpawn() LLM gate entirely — their spawn requests are auto-approved
+        </div>
+
+        {exemptAgents.length === 0 ? (
+          <div className="mono muted" style={{ fontSize: 11, padding: '10px 0' }}>// no exceptions configured</div>
+        ) : (
+          <div style={{ marginBottom: 12 }}>
+            {exemptAgents.map(a => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px dashed rgba(0,183,255,0.06)' }}>
+                <span className="dot green" style={{ flexShrink: 0 }}/>
+                <span className="mono" style={{ fontSize: 12, color: 'var(--neon-2)', flex: 1 }}>{a.name}</span>
+                <span className="tag" style={{ fontSize: 9 }}>{a.role}</span>
+                <button className="nc-btn" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--danger)', borderColor: 'rgba(251,59,95,0.4)' }}
+                  onClick={() => toggleExempt(a, false)}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+          <select className="nc-input" value={addAgent} onChange={e => setAddAgent(e.target.value)}
+            style={{ flex: 1, maxWidth: 280 }}>
+            <option value="">— select agent to exempt —</option>
+            {nonExempt.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <button className="nc-btn primary" disabled={!addAgent}
+            onClick={() => { const a = agents.find(x => x.id === addAgent); if (a) { toggleExempt(a, true); setAddAgent(''); } }}>
+            + Add Exception
+          </button>
+        </div>
+      </div>
+    </>
+  );
+};
+
 const Settings = () => {
   const tabs = ['Routing','Spawn','Memory','Dream Cycle','Providers','MCP','Exec & Safety','Dashboard','Live .env'];
   const [tab, setTab] = React.useState('Routing');
@@ -34,7 +168,6 @@ const Settings = () => {
     <div>
       <PageHeader title="Settings" subtitle="// configuration · safety · secrets" right={<>
         <button className="nc-btn"><Icon name="refresh" size={12}/> Reload .env</button>
-        <button className="nc-btn primary">Save</button>
       </>}/>
 
       <div className="tab-bar" style={{ marginBottom: 12 }}>
@@ -59,12 +192,7 @@ const Settings = () => {
             </div>
           </SettingRow>
         </>}
-        {tab === 'Spawn' && <>
-          <SettingRow label="Allow temp agents"><Toggle on/></SettingRow>
-          <SettingRow label="Max spawn depth" hint="Hard cap on recursion"><input className="nc-input" defaultValue="3" style={{ maxWidth: 80 }}/></SettingRow>
-          <SettingRow label="Default TTL"><input className="nc-input" defaultValue="900s" style={{ maxWidth: 120 }}/></SettingRow>
-          <SettingRow label="Concurrent temp cap"><input className="nc-input" defaultValue="6" style={{ maxWidth: 80 }}/></SettingRow>
-        </>}
+        {tab === 'Spawn' && <SpawnTab/>}
         {tab === 'Memory' && <>
           <SettingRow label="Decay rate" hint="Per-day importance reduction"><input className="nc-input" defaultValue="0.04" style={{ maxWidth: 100 }}/></SettingRow>
           <SettingRow label="Auto-promote threshold"><input className="nc-input" defaultValue="0.85" style={{ maxWidth: 100 }}/></SettingRow>

@@ -50,7 +50,13 @@ export type HiveAction =
   | 'skill_script_deleted'
   | 'mcp_agent_call_ok'
   | 'mcp_agent_call_failed'
-  | 'browser_action';
+  | 'review_passed'
+  | 'review_failed'
+  | 'browser_action'
+  | 'tool_call'
+  | 'tool_error'
+  | 'llm_error'
+  | 'task_monitor_alert';
 
 export interface HiveEvent {
   id:         string;

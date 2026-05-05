@@ -323,22 +323,45 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
           </label>
         </div>
         <div className="field" style={{ marginTop: 10 }}>
-          <label>Skills <span className="muted" style={{ fontSize: 10 }}>(toggle to attach; bodies appended to system prompt)</span></label>
+          <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Skills <span className="muted" style={{ fontSize: 10 }}>(bodies appended to system prompt)</span></span>
+            {pickedSkills.length > 0 && (
+              <a href="#" onClick={e => { e.preventDefault(); setPickedSkills([]); }} style={{ color: 'var(--neon-2)', fontSize: 10 }}>clear all</a>
+            )}
+          </label>
           {skills.length === 0
             ? <div className="mono muted" style={{ fontSize: 11, padding: 6 }}>// no SKILL.md files found in .claude/skills/ or ~/.claude/skills/</div>
-            : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {skills.map(s => {
-                  const on = pickedSkills.includes(s.name);
-                  return (
-                    <span key={s.name} onClick={() => setPickedSkills(p => on ? p.filter(x => x !== s.name) : [...p, s.name])}
-                      className={`tag ${on ? 'cyan' : ''}`}
-                      title={s.description + (s.tools.length ? '\nTools: ' + s.tools.join(', ') : '')}
-                      style={{ cursor: 'pointer', fontSize: 10, padding: '3px 8px' }}>
-                      {on ? '✓ ' : ''}{s.name}<span className="muted" style={{ fontSize: 9, marginLeft: 4 }}>· {s.source}</span>
-                    </span>
-                  );
-                })}
-              </div>}
+            : <>
+                <select className="nc-select" onChange={e => {
+                  const val = e.target.value;
+                  if (val && !pickedSkills.includes(val)) setPickedSkills(p => [...p, val]);
+                  e.target.value = '';
+                }} style={{ width: '100%' }}>
+                  <option value="">-- add skill --</option>
+                  {skills.filter(s => !pickedSkills.includes(s.name)).map(s => (
+                    <option key={s.name} value={s.name} title={s.description + (s.tools?.length ? ' · Tools: ' + s.tools.join(', ') : '')}>
+                      {s.name}{s.source ? '  ·  ' + s.source : ''}
+                    </option>
+                  ))}
+                </select>
+                {pickedSkills.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+                    {pickedSkills.map(name => {
+                      const meta = skills.find(s => s.name === name);
+                      return (
+                        <span key={name} className="tag cyan"
+                          title={meta ? (meta.description + (meta.tools?.length ? '\nTools: ' + meta.tools.join(', ') : '')) : name}
+                          style={{ fontSize: 10, padding: '2px 8px', cursor: 'default' }}>
+                          {name}
+                          {meta?.source && <span className="muted" style={{ fontSize: 9, marginLeft: 4 }}>· {meta.source}</span>}
+                          <span onClick={() => setPickedSkills(p => p.filter(x => x !== name))}
+                            style={{ marginLeft: 6, cursor: 'pointer', color: 'var(--muted)', fontWeight: 700 }}>×</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </>}
         </div>
         <div className="field" style={{ marginTop: 10 }}>
           <label>Vision mode <span className="muted" style={{ fontSize: 10 }}>(how this agent handles image attachments)</span></label>
@@ -369,24 +392,47 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
                   <a href="#" onClick={e => { e.preventDefault(); setPickedToolkits(null); }} style={{ color: 'var(--neon-2)' }}>reset to all</a>
                 </span>
               </label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 160, overflow: 'auto', padding: 4, background: 'var(--surface-2)', borderRadius: 4 }}>
-                {composioCatalog.length === 0
-                  ? <div className="mono muted" style={{ fontSize: 10, padding: 4 }}>// catalog loading or empty — verify COMPOSIO_API_KEY</div>
-                  : composioCatalog.map(t => {
-                      const on = pickedToolkits !== null && pickedToolkits.includes(t.slug);
-                      return (
-                        <span key={t.slug} onClick={() => {
-                          setPickedToolkits(prev => {
-                            const cur = prev ?? [];
-                            return cur.includes(t.slug) ? cur.filter(x => x !== t.slug) : [...cur, t.slug];
-                          });
-                        }} className={`tag ${on ? 'cyan' : ''}`} style={{ cursor: 'pointer', fontSize: 10, padding: '3px 8px' }}>
-                          {on ? '✓ ' : ''}{t.name}<span className="muted" style={{ fontSize: 9, marginLeft: 4 }}>· {t.slug}</span>
-                        </span>
-                      );
-                    })
-                }
-              </div>
+              {composioCatalog.length === 0
+                ? <div className="mono muted" style={{ fontSize: 10, padding: '6px 0' }}>// catalog loading or empty — verify COMPOSIO_API_KEY</div>
+                : <>
+                    <select className="nc-select" onChange={e => {
+                      const val = e.target.value;
+                      if (val) {
+                        setPickedToolkits(prev => {
+                          const cur = prev ?? [];
+                          return cur.includes(val) ? cur : [...cur, val];
+                        });
+                      }
+                      e.target.value = '';
+                    }} style={{ width: '100%' }}>
+                      <option value="">-- add toolkit --</option>
+                      {composioCatalog
+                        .filter(t => !(pickedToolkits ?? []).includes(t.slug))
+                        .map(t => (
+                          <option key={t.slug} value={t.slug}>{t.name}  ·  {t.slug}</option>
+                        ))
+                      }
+                    </select>
+                    {pickedToolkits !== null && pickedToolkits.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+                        {pickedToolkits.map(slug => {
+                          const meta = composioCatalog.find(t => t.slug === slug);
+                          return (
+                            <span key={slug} className="tag cyan" style={{ fontSize: 10, padding: '2px 8px', cursor: 'default' }}>
+                              {meta?.name || slug}
+                              <span className="muted" style={{ fontSize: 9, marginLeft: 4 }}>· {slug}</span>
+                              <span onClick={() => setPickedToolkits(p => (p ?? []).filter(x => x !== slug))}
+                                style={{ marginLeft: 6, cursor: 'pointer', color: 'var(--muted)', fontWeight: 700 }}>×</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {(pickedToolkits === null || pickedToolkits.length === 0) && (
+                      <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>// all available toolkits active — add specific ones above to restrict</div>
+                    )}
+                  </>
+              }
             </div>
             {composioUserId.trim() && (
               <div className="mono muted" style={{ fontSize: 10 }}>
