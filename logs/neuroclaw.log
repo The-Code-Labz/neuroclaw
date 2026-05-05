@@ -2056,3 +2056,5 @@
 [2026-05-05T18:17:29.129Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
 [2026-05-05T18:18:29.126Z] [INFO] task-monitor: found stale tasks {"count":1,"staleMinutes":3}
 [2026-05-05T18:18:29.126Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
+[2026-05-05T18:19:29.127Z] [INFO] task-monitor: found stale tasks {"count":1,"staleMinutes":3}
+[2026-05-05T18:19:29.127Z] [DEBUG] task-monitor: stale task has no assigned agent {"taskId":"d3da7fac-42ca-4742-91eb-a3d9369ec448"}
