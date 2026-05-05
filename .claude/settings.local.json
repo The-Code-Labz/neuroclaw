@@ -103,7 +103,9 @@
       "Bash(curl *)",
       "Bash(echo \"EXIT=$?\")",
       "Bash(xargs -I {} dirname {})",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(mkdir -p /home/neuroclaw-v1/.claude/skills/notebooklm)",
+      "Bash(cp /home/neuroclaw-v1/skills/NotebookLMSkill.md /home/neuroclaw-v1/.claude/skills/notebooklm/SKILL.md)"
     ]
   }
 }

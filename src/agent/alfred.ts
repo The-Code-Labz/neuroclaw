@@ -4,6 +4,7 @@ import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionToolMessageParam,
 } from 'openai/resources';
+import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { getClient } from './openai-client';
 import { getAnthropicClient } from './anthropic-client';
@@ -229,6 +230,27 @@ function getOrCreateAnthropicHistory(
 }
 
 
+// ── Error classification ──────────────────────────────────────────────────────
+
+/** Extracts structured diagnostics from an OpenAI/VoidAI SDK error. */
+function classifyApiError(err: unknown): {
+  action: 'llm_auth_error' | 'llm_rate_limit' | 'llm_server_error' | 'llm_error';
+  httpStatus: number | null;
+  requestId:  string | null;
+  message:    string;
+} {
+  if (err instanceof OpenAI.APIError) {
+    const requestId = (err.headers?.['x-request-id'] as string | undefined) ?? null;
+    const base = { httpStatus: err.status ?? null, requestId, message: err.message };
+    if (err instanceof OpenAI.AuthenticationError) return { ...base, action: 'llm_auth_error' };
+    if (err instanceof OpenAI.RateLimitError)      return { ...base, action: 'llm_rate_limit' };
+    if (err instanceof OpenAI.InternalServerError) return { ...base, action: 'llm_server_error' };
+    return { ...base, action: 'llm_error' };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return { action: 'llm_error', httpStatus: null, requestId: null, message };
+}
+
 // ── Core streaming function ───────────────────────────────────────────────────
 
 /**
@@ -341,9 +363,11 @@ async function chatStreamOpenAI(
         ...(tools.length > 0 ? { tools } : {}),
       });
     } catch (llmErr) {
-      const llmErrMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
-      logHive('llm_error', `LLM API error (${resolvedModel}): ${llmErrMsg.slice(0, 200)}`, agentId, { model: resolvedModel, error: llmErrMsg }, activeRunId);
-      generation?.end({ output: '[error]', metadata: { error: llmErrMsg } });
+      const { action, httpStatus, requestId, message: llmErrMsg } = classifyApiError(llmErr);
+      const summary = `VoidAI error${httpStatus ? ` HTTP ${httpStatus}` : ''} (${resolvedModel}): ${llmErrMsg.slice(0, 180)}`;
+      logger.error(summary, { httpStatus, requestId, model: resolvedModel, agentId });
+      logHive(action, summary, agentId, { model: resolvedModel, httpStatus, requestId, error: llmErrMsg }, activeRunId);
+      generation?.end({ output: '[error]', metadata: { error: llmErrMsg, httpStatus } });
       if (ownsRun) endRun(activeRunId, { status: 'error', error_text: llmErrMsg });
       throw llmErr;
     }
@@ -598,7 +622,9 @@ async function chatStreamAnthropic(
       }
     } catch (llmErr) {
       const llmErrMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
-      logHive('llm_error', `LLM API error (anthropic/${model}): ${llmErrMsg.slice(0, 200)}`, agentId, { model, error: llmErrMsg }, activeRunId);
+      const summary = `Anthropic error (${model}): ${llmErrMsg.slice(0, 180)}`;
+      logger.error(summary, { model, agentId });
+      logHive('llm_error', summary, agentId, { model, error: llmErrMsg }, activeRunId);
       generation?.end({ output: '[error]', metadata: { error: llmErrMsg } });
       if (ownsRun) endRun(activeRunId, { status: 'error', error_text: llmErrMsg });
       throw llmErr;

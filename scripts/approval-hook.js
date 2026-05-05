@@ -179,7 +179,7 @@ async function main() {
     payload = JSON.parse(raw);
   } catch (err) {
     process.stderr.write('[approval-hook] Failed to parse stdin JSON: ' + err.message + '\n');
-    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
     process.exit(0);
   }
 
@@ -187,7 +187,7 @@ async function main() {
 
   // 2. Check safe patterns — auto-approve immediately
   if (isSafe(tool_name, tool_input)) {
-    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
     process.exit(0);
   }
 
@@ -209,13 +209,13 @@ async function main() {
         response.status + ': ' + JSON.stringify(response.body) + '\n'
       );
       // Fail open
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
       process.exit(0);
     }
   } catch (err) {
     process.stderr.write('[approval-hook] Dashboard unreachable: ' + err.message + '\n');
     // Fail open — dashboard may not be running
-    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
     process.exit(0);
   }
 
@@ -247,15 +247,12 @@ async function main() {
     const status = record && (record.status || record.decision);
 
     if (status === 'approved') {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
       process.exit(0);
     }
 
     if (status === 'denied') {
-      process.stdout.write(JSON.stringify({
-        decision: 'block',
-        reason:   'Denied via dashboard',
-      }));
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'deny' }, stopReason: 'Denied via dashboard' }));
       process.exit(2);
     }
 
@@ -267,12 +264,12 @@ async function main() {
     '[approval-hook] Approval timed out after 5 minutes for tool "' +
     tool_name + '" (id=' + approvalId + '). Auto-approving.\n'
   );
-  process.stdout.write(JSON.stringify({ decision: 'approve' }));
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
   process.exit(0);
 }
 
 main().catch((err) => {
   process.stderr.write('[approval-hook] Unexpected error: ' + err.message + '\n');
-  process.stdout.write(JSON.stringify({ decision: 'approve' }));
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', permissionDecision: 'allow' } }));
   process.exit(0);
 });

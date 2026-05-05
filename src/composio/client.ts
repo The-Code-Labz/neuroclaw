@@ -26,6 +26,7 @@ interface CachedSession extends ComposioMcpEndpoint {
 }
 
 const sessions = new Map<string, CachedSession>();
+const inflight = new Map<string, Promise<ComposioMcpEndpoint>>();
 
 let cachedClient: Composio | null = null;
 
@@ -65,34 +66,52 @@ export async function getComposioMcp(
   const cached = sessions.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached;
 
-  const client = getClient();
-  // The tool router session is what backs hosted MCP. Pass toolkit filter
-  // when the agent's composio_toolkits column is non-null.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cfg: any = {};
-  if (toolkits && toolkits.length > 0) cfg.toolkits = toolkits;
+  // Deduplicate concurrent callers — if a mint is already in-flight for this
+  // key, wait on that promise instead of calling client.create() again.
+  const pending = inflight.get(key);
+  if (pending) return pending;
 
-  const session = await client.create(userId, cfg);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mcp = (session as any).mcp;
-  if (!mcp?.url || !mcp?.headers) {
-    throw new Error('Composio session did not return an MCP URL/headers');
-  }
+  const mint = (async (): Promise<ComposioMcpEndpoint> => {
+    try {
+      const client = getClient();
+      // The tool router session is what backs hosted MCP. Pass toolkit filter
+      // when the agent's composio_toolkits column is non-null.
+      // manageConnections=false: the SDK defaults this to true, which injects
+      // OAuth initiation tools into the MCP server. Alfred then calls those tools
+      // and creates new connected accounts instead of using existing ones.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cfg: any = { manageConnections: false };
+      if (toolkits && toolkits.length > 0) cfg.toolkits = toolkits;
 
-  const endpoint: CachedSession = {
-    url:       String(mcp.url),
-    headers:   mcp.headers as Record<string, string>,
-    toolkits,
-    expiresAt: Date.now() + config.composio.sessionTtlSec * 1000,
-  };
-  sessions.set(key, endpoint);
-  logger.info('Composio session created', { userId, toolkits, mcpUrl: endpoint.url });
-  return endpoint;
+      const session = await client.create(userId, cfg);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mcp = (session as any).mcp;
+      if (!mcp?.url || !mcp?.headers) {
+        throw new Error('Composio session did not return an MCP URL/headers');
+      }
+
+      const endpoint: CachedSession = {
+        url:       String(mcp.url),
+        headers:   mcp.headers as Record<string, string>,
+        toolkits,
+        expiresAt: Date.now() + config.composio.sessionTtlSec * 1000,
+      };
+      sessions.set(key, endpoint);
+      logger.info('Composio session created', { userId, toolkits, mcpUrl: endpoint.url });
+      return endpoint;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, mint);
+  return mint;
 }
 
 /** Drop the entire session cache (e.g. on user-revoked accounts, key change). */
 export function clearComposioSessionCache(): void {
   sessions.clear();
+  inflight.clear();
 }
 
 /**

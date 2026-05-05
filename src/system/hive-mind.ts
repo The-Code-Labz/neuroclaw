@@ -56,6 +56,9 @@ export type HiveAction =
   | 'tool_call'
   | 'tool_error'
   | 'llm_error'
+  | 'llm_auth_error'
+  | 'llm_rate_limit'
+  | 'llm_server_error'
   | 'task_monitor_alert';
 
 export interface HiveEvent {
@@ -97,6 +100,21 @@ export function getHiveEvents(limit = 100): HiveEvent[] {
     SELECT hm.*, a.name AS agent_name
     FROM hive_mind hm
     LEFT JOIN agents a ON hm.agent_id = a.id
+    ORDER BY hm.created_at DESC
+    LIMIT ?
+  `).all(limit) as HiveEvent[];
+}
+
+export function getHiveErrors(limit = 50): HiveEvent[] {
+  return getDb().prepare(`
+    SELECT hm.*, a.name AS agent_name
+    FROM hive_mind hm
+    LEFT JOIN agents a ON hm.agent_id = a.id
+    WHERE hm.action IN (
+      'llm_error', 'llm_auth_error', 'llm_rate_limit', 'llm_server_error',
+      'tool_error', 'mcp_probe_failed', 'mcp_agent_call_failed',
+      'background_task_failed', 'dream_cycle_failed', 'review_failed'
+    )
     ORDER BY hm.created_at DESC
     LIMIT ?
   `).all(limit) as HiveEvent[];

@@ -21,7 +21,7 @@ import { getTasks, createTask, updateTask, type TaskStatus } from '../system/tas
 import { configEvents } from '../system/config-watcher';
 import { chatStream, orchestrateMultiAgent, resolveAgent, type MetaEvent } from '../agent/alfred';
 import { spawnAgent } from '../system/spawner';
-import { getHiveEvents } from '../system/hive-mind';
+import { getHiveEvents, getHiveErrors } from '../system/hive-mind';
 import { taskEvents, getTasksBySession, type BackgroundTask } from '../system/background-tasks';
 import { getAnthropicAuthStatus } from '../agent/anthropic-client';
 import { getClaudeCliQueueLength, probeClaudeCli } from '../providers/claude-cli';
@@ -1520,6 +1520,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     app.get('/api/analytics', (c) => { try { return c.json(getAnalyticsSummary()); } catch(e) { console.error('Analytics:',e); return c.json({error:String(e)},500); } });
   app.get('/api/logs',      (c) => c.json(getRecentLogs()));
   app.get('/api/hive',          (c) => c.json(getHiveEvents(parseInt(c.req.query('limit') ?? '100', 10))));
+  app.get('/api/errors',        (c) => c.json(getHiveErrors(parseInt(c.req.query('limit') ?? '50', 10))));
   app.get('/api/agent-messages', (c) => c.json(getAgentMessages(parseInt(c.req.query('limit') ?? '100', 10))));
 
   // ── Runs (v2.0 run grouping) ──────────────────────────────────────────────
