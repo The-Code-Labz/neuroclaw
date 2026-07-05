@@ -2,7 +2,7 @@
 # nanobanana-image
 Description: Generate and edit images via the NanoBanana 2 API (Supabase-hosted, Gemini-backed)
 Source: project
-Triggers: generate image, edit image, nanobanana, image generation, image edit, nb_k3vd
+Triggers: generate image, edit image, nanobanana, image generation, image edit
 Tools: run_skill_script
 Scripts: generate.py, edit.py
 # NanoBanana Image — Skill Guide
@@ -16,8 +16,8 @@ Use this skill to **generate new images** or **edit existing images** via the Na
 - **Backend model:** `gemini-3.1-flash-image-preview`
 - **Broker secret name:** `SHARED_SKILL_FORGE_API_KEY` ← inject this as `NB_API_KEY` in run_skill_script
 
-> The NanoBanana API key is: `nb_k3vdTQdP7VEGoGSuezD2D03weMrq5dAqyJO`
-> Store and inject it as an env var — never hardcode it in output.
+> The NanoBanana API key is provided via the broker secret `SHARED_SKILL_FORGE_API_KEY` — never hardcode the raw key in this file, in output, or in logs.
+> Always inject it as an env var (`NB_API_KEY`) through `run_skill_script`'s `secrets` parameter.
 
 ---
 
