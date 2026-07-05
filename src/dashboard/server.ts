@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { serve } from '@hono/node-server';
 import type { HttpBindings } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -261,13 +262,107 @@ app.get('/chat-mode-manifest.json', (c) => {
   });
 });
 
+// ── Dashboard auth helpers ───────────────────────────────────────────────────
+// The HttpOnly cookie is the single source of truth for browser auth. `Secure`
+// is added only when the request arrived over HTTPS (a public reverse proxy sets
+// x-forwarded-proto) so local http://localhost dev keeps working. The token is
+// NEVER placed in a URL — it lives only in this cookie after a one-time login.
+function setAuthCookie(c: Context): void {
+  const https = c.req.header('x-forwarded-proto') === 'https';
+  c.header(
+    'Set-Cookie',
+    `dashboard-token=${config.dashboard.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${https ? '; Secure' : ''}`
+  );
+}
+
+// Only same-origin dashboard paths may be used as a post-login redirect target.
+// Everything else (protocol-relative //evil.com, backslash tricks, absolute URLs,
+// encoded variants) falls back to /dashboard to prevent open-redirect / reflected XSS.
+function safeNext(raw: string | undefined): string {
+  const allow = ['/dashboard', '/chat-mode'];
+  try {
+    const dec = decodeURIComponent(raw ?? '');
+    const u = new URL(dec, 'http://placeholder.invalid');
+    if (u.origin === 'http://placeholder.invalid' && allow.includes(u.pathname)) {
+      return u.pathname;
+    }
+  } catch { /* malformed → default below */ }
+  return '/dashboard';
+}
+
+// Minimal per-IP throttle for the unauthenticated /api/login endpoint. Constant-time
+// compare kills the timing oracle; this blunts online brute-force of a weak token.
+const _loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_WINDOW_MS = 60_000;
+const LOGIN_MAX_ATTEMPTS = 10;
+function loginRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const rec = _loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    _loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return false;
+  }
+  rec.count += 1;
+  return rec.count > LOGIN_MAX_ATTEMPTS;
+}
+
+// Login page — unguarded. Takes the dashboard token once, validates it server-side,
+// and sets the HttpOnly cookie. No token ever appears in a URL. `next` is allowlisted
+// server-side (safeNext) AND the page hardcodes the redirect target, so nothing
+// user-controlled is reflected into the DOM.
+const LOGIN_HTML = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>NeuroClaw — Sign in</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#1a2233,#0b0e14);color:#e6edf3}
+  .card{width:min(92vw,380px);background:#0f141c;border:1px solid #222c3a;border-radius:16px;padding:28px 26px;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+  h1{font-size:20px;margin:0 0 4px;letter-spacing:.5px}
+  p{margin:0 0 18px;color:#8b98a9;font-size:13px}
+  label{display:block;font-size:12px;color:#8b98a9;margin:0 0 6px}
+  input{width:100%;padding:11px 12px;background:#0b0e14;border:1px solid #2a3546;border-radius:10px;color:#e6edf3;font-size:14px;outline:none}
+  input:focus{border-color:#3b82f6}
+  button{width:100%;margin-top:16px;padding:11px;background:#2563eb;color:#fff;border:0;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .err{margin-top:12px;color:#f87171;font-size:13px;min-height:18px}
+</style></head><body>
+<form class="card" id="f" autocomplete="off">
+  <h1>NeuroClaw</h1>
+  <p>Enter your dashboard token to continue.</p>
+  <label for="t">Dashboard token</label>
+  <input id="t" type="password" autocomplete="current-password" autofocus placeholder="••••••••••••••••" />
+  <button id="b" type="submit">Sign in</button>
+  <div class="err" id="e"></div>
+</form>
+<script>
+  var f=document.getElementById('f'),t=document.getElementById('t'),b=document.getElementById('b'),e=document.getElementById('e');
+  f.addEventListener('submit', async function(ev){
+    ev.preventDefault(); e.textContent=''; b.disabled=true;
+    try{
+      var r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({token:t.value})});
+      if(r.ok){ var d=await r.json(); location.replace(d.next||'/dashboard'); return; }
+      e.textContent = r.status===429 ? 'Too many attempts. Wait a minute and try again.' : 'Invalid token.';
+    }catch(_){ e.textContent='Network error. Try again.'; }
+    b.disabled=false;
+  });
+</script></body></html>`;
+
+app.get('/login', (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  return c.html(LOGIN_HTML);
+});
+
 // Token guard for /chat-mode — same pattern as /dashboard
 app.use('/chat-mode', async (c, next) => {
   const cookie = c.req.header('cookie') ?? '';
   const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
   const token = c.req.query('token') ?? cookieToken ?? '';
   if (!tokenMatches(token, config.dashboard.token)) {
-    return c.text('Unauthorized — open Chat Mode from the NeuroClaw dashboard', 401);
+    return c.redirect('/login?next=' + encodeURIComponent('/chat-mode'));
   }
   await next();
 });
@@ -285,7 +380,7 @@ app.get('/chat-mode', (c) => {
       "const TOKEN = _tokenFromUrl || localStorage.getItem('nclaw-token') || '';",
       `const _serverInjectedToken = '${config.dashboard.token}';\nconst TOKEN = _tokenFromUrl || localStorage.getItem('nclaw-token') || _serverInjectedToken;`
     );
-    c.header('Set-Cookie', `dashboard-token=${config.dashboard.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`);
+    setAuthCookie(c);
     return c.html(html);
   } catch (err) {
     return c.text(`Chat Mode not found: ${(err as Error).message}`, 500);
@@ -298,7 +393,7 @@ app.use('/dashboard', async (c, next) => {
   const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
   const token = c.req.query('token') ?? cookieToken ?? '';
   if (!tokenMatches(token, config.dashboard.token)) {
-    return c.text('Unauthorized — append ?token=<your-token> to the URL', 401);
+    return c.redirect('/login?next=' + encodeURIComponent('/dashboard'));
   }
   await next();
 });
@@ -321,7 +416,7 @@ app.get('/dashboard', (c) => {
       html = html.replace('<head>', '<head>\n<base href="/dashboard/">');
     }
     // Set a long-lived cookie so PWA launches and cookie-only clients stay auth'd
-    c.header('Set-Cookie', `dashboard-token=${config.dashboard.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`);
+    setAuthCookie(c);
     return c.html(html);
   } catch (err) {
     return c.text(`Dashboard not found: ${(err as Error).message}`, 500);
@@ -411,6 +506,36 @@ app.post('/api/claude-hook', async (c) => {
   return c.json({ ok: handled });
 });
 
+// Login endpoint — unguarded, registered BEFORE registerApiRoutes so it stays
+// outside the /api/* auth middleware. Validates the token (constant-time) and sets
+// the HttpOnly cookie; per-IP throttled. Returns a server-validated `next` target
+// so the client can never be redirected off-origin.
+app.post('/api/login', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+    (c.env as HttpBindings)?.incoming?.socket?.remoteAddress ||
+    'unknown';
+  if (loginRateLimited(ip)) {
+    return c.json({ ok: false, error: 'Too many attempts' }, 429);
+  }
+  let body: { token?: string; next?: string };
+  try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid request' }, 400); }
+  if (!tokenMatches(body.token, config.dashboard.token)) {
+    logger.warn(`dashboard: failed login attempt from ${ip}`);
+    return c.json({ ok: false, error: 'Invalid token' }, 401);
+  }
+  setAuthCookie(c);
+  return c.json({ ok: true, next: safeNext(body.next) });
+});
+
+// Logout — clears the auth cookie.
+app.get('/logout', (c) => {
+  c.header('Set-Cookie', 'dashboard-token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  return c.redirect('/login');
+});
+
 registerApiRoutes(app);
 registerOpenAiCompatRoutes(app);
 
@@ -419,14 +544,17 @@ registerOpenAiCompatRoutes(app);
 // same transport on the same path.
 app.all('/mcp', handleMcpRequest);
 
-// Redirect root → dashboard
-app.get('/', (c) => c.redirect(`/dashboard?token=${config.dashboard.token}`));
+// Redirect root → dashboard. No token in the URL — the /dashboard guard falls
+// through to /login when there's no valid cookie, so anonymous visitors get the
+// login page, never the token.
+app.get('/', (c) => c.redirect('/dashboard'));
 
 const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostname: '127.0.0.1' }, (info) => {
-  if (!process.env.DASHBOARD_TOKEN || config.dashboard.token === 'change-me') {
-    logger.warn('dashboard: DASHBOARD_TOKEN is unset or default ("change-me") — set a strong token in .env before exposing this server');
+  if (!process.env.DASHBOARD_TOKEN || config.dashboard.token === 'change-me' || config.dashboard.token.length < 16) {
+    logger.warn('⚠️  dashboard: DASHBOARD_TOKEN is unset, default ("change-me"), or weak (<16 chars). Set a strong token in .env BEFORE exposing this server behind a reverse proxy.');
   }
-  logger.info(`dashboard: listening → http://localhost:${info.port}/dashboard?token=${config.dashboard.token}`);
+  // Never echo the token. Sign in via the login page using your DASHBOARD_TOKEN.
+  logger.info(`dashboard: listening → http://localhost:${info.port}/  (sign in with your DASHBOARD_TOKEN)`);
   
   // Track server startup in analytics
   logAnalytics('server_started', {

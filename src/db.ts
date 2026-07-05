@@ -3626,7 +3626,7 @@ export function createAgentUserMessage(input: {
     body: record.body,
     severity: record.kind as DashboardNotificationEvent['severity'],
     metadata: record.metadata ? JSON.parse(record.metadata) : undefined,
-    url: `/dashboard?token=${config.dashboard.token}#/comms`,
+    url: `/dashboard#/comms`,
   };
   notificationEvents.emit('new', event);
   return record;
@@ -3863,7 +3863,7 @@ export function createApproval(fields: {
     body: `Agent ${record.agent_name ?? 'system'} requests approval for \`${record.tool_name}\`.`,
     severity: 'warn',
     metadata: { toolInput: JSON.parse(record.tool_input) },
-    url: `/dashboard?token=${config.dashboard.token}#/approvals`,
+    url: `/dashboard#/approvals`,
   };
   notificationEvents.emit('new', event);
   return record;
@@ -4085,7 +4085,7 @@ export function createAnalystAlert(
     body: record.message,
     severity: record.severity,
     metadata: record.metadata ? JSON.parse(record.metadata) : undefined,
-    url: `/dashboard?token=${config.dashboard.token}#/comms`,
+    url: `/dashboard#/comms`,
   };
   notificationEvents.emit('new', event);
   return record;
