@@ -19,7 +19,14 @@ venv/
 env/
 **/.venv/
 **/venv/
-pydantic-agents/.venv/
+
+# ---------- Removed from repo (kept local-only, not tracked) ----------
+# Pydantic AI agent stack — moved off the main repo; run separately if needed.
+/pydantic-agents/
+# Docker orchestration script for the (now-removed) pydantic-agents stack.
+/docker-start-all.sh
+# Supabase Edge Function for text humanization — moved off the main repo.
+/supabase/functions/humanize-text/
 
 # ---------- Secrets & env files ----------
 .env
@@ -72,9 +79,6 @@ hyperframes/
 # ---------- Logs & runtime ----------
 *.log
 logs/
-pydantic-agents/image_agent/outputs/
-pydantic-agents/chatgpt_image_agent/outputs/
-pydantic-agents/chatgpt_image_agent/profile/
 .canvas-projects/
 .DS_Store
 Thumbs.db

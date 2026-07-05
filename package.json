@@ -30,8 +30,6 @@
     "test:snapshot": "tsx --test src/tools/tool-schemas.snapshot.test.ts",
     "bot:discord": "tsx src/integrations/discord-bot.ts",
     "bot:discord:watch": "tsx watch src/integrations/discord-bot.ts",
-    "pydantic:install": "cd pydantic-agents && python -m venv .venv && .venv/bin/pip install -r requirements.txt",
-    "pydantic:run": "cd pydantic-agents && ./run-all.sh",
     "docs": "typedoc",
     "docs:check": "tsx scripts/docs-freshness.ts"
   },
