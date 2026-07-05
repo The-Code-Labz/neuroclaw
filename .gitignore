@@ -1,0 +1,113 @@
+# ---------- Node / build ----------
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- Virtualenvs (NEVER commit these) ----------
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+pydantic-agents/.venv/
+
+# ---------- Secrets & env files ----------
+.env
+.env.*
+!.env.example
+!.env.sample
+*.env
+secrets.json
+secrets.yaml
+secrets.yml
+
+# ---------- NC Broker (HMAC key + secret metadata sidecar) ----------
+.nc-broker-hmac-key
+.env.broker-meta.json
+*.pem
+*.key
+*_rsa
+*_rsa.pub
+*_ed25519
+*_ed25519.pub
+credentials.json
+service-account*.json
+
+# ---------- Claude Code / agent skills (contain machine-local secrets) ----------
+.claude/
+.claude/**
+!.claude/.gitkeep
+
+# ---------- Agent skills bundles (machine-local, may contain secrets) ----------
+.agents/
+.agents/**
+!.agents/.gitkeep
+
+# ---------- Cloud agent / sandbox state ----------
+.cloud/
+.cloud/**
+!.cloud/.gitkeep
+
+# ---------- Databases / local state ----------
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+backups/
+cache/
+hyperframes/
+
+# ---------- Logs & runtime ----------
+*.log
+logs/
+pydantic-agents/image_agent/outputs/
+pydantic-agents/chatgpt_image_agent/outputs/
+pydantic-agents/chatgpt_image_agent/profile/
+.canvas-projects/
+.DS_Store
+Thumbs.db
+
+# ---------- Editor / IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+/sysdash/
+/skills/
+/references/
+/dashboard/
+/paperclip/
+/uploads/
+/workspaces/
+docs/superpowers/**
+/.superpowers/
+docs/specs/**
+/CLAUDE.md
+/AGENTS.md
+GEMINI.md
+.codex/
+.codex/**tmp/audio/
+
+# ---------- Local dev scratch / agent working dirs (never publish) ----------
+.planning/
+forge/
+projects/
+forge_api_gateway_*
+*.redacted.json
+
+# ---------- Embedded foreign repo / nested runtime uploads ----------
+huashu-design/
+src/dashboard/v2/uploads/
+**/uploads/

@@ -1,0 +1,25 @@
+name: debug-loop
+description: Run tests then iteratively analyze failures and suggest fixes (max 5 iterations)
+provider: openai
+
+nodes:
+  - id: run-tests
+    bash: npm test 2>&1 || true
+
+  - id: analyze
+    depends_on: [run-tests]
+    loop:
+      prompt: |
+        Test output:
+        $run-tests.output
+
+        Previous analysis: $LOOP_PREV_OUTPUT
+
+        Analyze the failing tests. Identify root causes. Provide specific, concrete code changes
+        to fix the failures — show exact file paths and diffs where possible.
+
+        When you believe all failures are addressed, output exactly on its own line:
+        ALL_TESTS_PASS
+      until: ALL_TESTS_PASS
+      max_iterations: 5
+      fresh_context: true

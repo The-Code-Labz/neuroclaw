@@ -1,0 +1,16 @@
+# Browser session profiles (contain cookies + binary cache — never commit)
+*/profile/
+chatgpt_image_agent/profile/
+gemini_web_agent/profile/
+
+# Generated outputs
+*/outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Env
+.env

@@ -1,0 +1,2312 @@
+{
+  "abacus_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit/upscale instruction."
+      },
+      "operation": {
+        "description": "Default 'generate'. 'edit' transforms input_image per the prompt; 'upscale' increases its resolution. edit/upscale REQUIRE input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit",
+          "upscale"
+        ]
+      },
+      "input_image": {
+        "description": "For edit/upscale: the source image as an https URL or base64 data URL.",
+        "type": "string"
+      },
+      "model": {
+        "description": "Abacus image model id (free-form string — pass any id below). Defaults per operation: generate→flux_pro, edit→flux_kontext_edit, upscale→magnific. AVAILABLE MODELS — generate: flux_pro, flux_pro_ultra, flux2, flux2_pro, flux_kontext, flux_pro_canny, flux_pro_depth, gpt_image15, gpt_image2, imagen, nano_banana, nano_banana2, nano_banana_lite, nano_banana_pro, ideogram, ideogram_character, midjourney, seedream, recraft, recraft_svg, dreamina, hunyuan_image, imagine_art, grok_imagine_image, grok_imagine_image_quality. edit (need input_image): flux_kontext_edit, gpt_image_edit, gpt_image2_edit, qwen_image_edit, recraft_vectorize. upscale (need input_image): magnific. Known-UNSUPPORTED (will fail, do not use): dalle, wan27. Live list: /api/models?provider=abacus (media_type=image).",
+        "type": "string"
+      },
+      "num_images": {
+        "description": "How many images to generate (1-4, generate only). Default 1.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4
+      },
+      "aspect_ratio": {
+        "description": "e.g. \"1:1\", \"16:9\", \"2:3\" — varies by model.",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution where supported, e.g. \"1K\", \"2K\", \"4K\".",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "abacus_speech": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Text to synthesize into speech."
+      },
+      "model": {
+        "description": "Abacus TTS model id. Defaults to gemini-2.5-flash-preview-tts (verified). Others: gpt-audio-mini, gemini-2.5-pro-preview-tts. Not every listed id is invocable (openai_tts/elevenlabs are rejected).",
+        "type": "string"
+      },
+      "voice": {
+        "description": "Voice id/name, model-specific. Omit for the model default.",
+        "type": "string"
+      },
+      "format": {
+        "description": "Audio output format, e.g. \"mp3\", \"wav\", \"opus\". Default mp3.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "analyze_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The image upload id from list_uploads."
+      },
+      "question": {
+        "description": "Optional focus for the vision model.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
+  "ask_alfred": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "The message or question to send to the agent team."
+      },
+      "agent_name": {
+        "description": "Route directly to a named agent instead of Alfred. Must match the agent's name exactly (case-insensitive).",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Continue an existing conversation session. Omit to start a fresh session.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "assign_task_to_agent": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Agent name to assign the task to."
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "priority": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "execute_now": {
+        "description": "Run immediately and return the result.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "to",
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "audio_configure_agent": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "agent": {
+        "type": "string",
+        "description": "Agent name or id to configure."
+      },
+      "enabled": {
+        "type": "boolean",
+        "description": "Turn TTS on or off for this agent. When off, the speaker button is hidden in the dashboard and Discord skips the audio attachment."
+      },
+      "provider": {
+        "description": "TTS backend. Defaults to voidai when first enabling. ElevenLabs requires ELEVENLABS_API_KEY; Kokoro requires KOKORO_API_KEY.",
+        "type": "string",
+        "enum": [
+          "voidai",
+          "elevenlabs",
+          "kokoro"
+        ]
+      },
+      "voice": {
+        "description": "Voice id for the chosen provider. VoidAI: alloy / echo / fable / onyx / nova / shimmer. ElevenLabs: a voice_id from audio_list_voices. Kokoro: a voice id from audio_list_voices with provider=kokoro. Pass empty string to clear and use the env default.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent",
+      "enabled"
+    ],
+    "additionalProperties": false
+  },
+  "audio_configure_discord_bot": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot": {
+        "type": "string",
+        "description": "Discord bot name or id (from discord_list_bots)."
+      },
+      "enabled": {
+        "type": "boolean",
+        "description": "Master switch for whether this bot attaches synthesized .mp3s to its replies. Inbound voice transcription always works regardless of this flag."
+      }
+    },
+    "required": [
+      "bot",
+      "enabled"
+    ],
+    "additionalProperties": false
+  },
+  "audio_list_voices": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "provider": {
+        "description": "Filter to one provider. Omit to get all. ElevenLabs is empty unless ELEVENLABS_API_KEY is configured; Kokoro is empty unless KOKORO_API_KEY is configured.",
+        "type": "string",
+        "enum": [
+          "voidai",
+          "elevenlabs",
+          "kokoro"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "audio_status": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "agent": {
+        "description": "Optional agent name or id to inspect. When omitted, returns voice config for ALL agents that have TTS on, plus the voice toggle for every Discord bot.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "autonomous_mode": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "start",
+          "stop",
+          "status"
+        ],
+        "description": "start the autonomous Mission Control loop, stop it, or report status."
+      },
+      "maxTasks": {
+        "description": "Override: max tasks to work before reporting back.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "maxMinutes": {
+        "description": "Override: wall-clock budget in minutes.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "defaultAgentName": {
+        "description": "Fallback agent (by name) for tasks with no assignee.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "bash_run": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Full shell command (bash -lc)."
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "secrets": {
+        "description": "Broker secret names to inject as environment variables for this command, scoped to you. Values are placed directly into the child process and never shown to you; command output is scrubbed of them.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "purpose": {
+        "description": "Short reason the secrets are needed — recorded in the broker audit log.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "additionalProperties": false
+  },
+  "browserless_fetch": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Absolute URL to fetch. Browserless renders the page in a headless Chromium and returns the post-JS HTML. NOT a search — use this when you need the rendered page content."
+      },
+      "wait_for": {
+        "description": "Either a CSS selector to wait for, or a number of milliseconds to delay before snapshotting the DOM. Useful for SPA pages that hydrate after load.",
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        ]
+      },
+      "include_main_text": {
+        "description": "When true, run @mozilla/readability on the HTML and include {mainText, title, byline, length} alongside the raw html. Great for article extraction.",
+        "type": "boolean"
+      },
+      "include_screenshot": {
+        "description": "When true, also call /screenshot for the same URL and include a base64 JPEG (full page, quality 70) in the response.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "browserless_pdf": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Absolute URL to render as PDF via hosted Chromium."
+      },
+      "format": {
+        "description": "Paper size. Default A4.",
+        "type": "string",
+        "enum": [
+          "Letter",
+          "Legal",
+          "Tabloid",
+          "Ledger",
+          "A0",
+          "A1",
+          "A2",
+          "A3",
+          "A4",
+          "A5",
+          "A6"
+        ]
+      },
+      "landscape": {
+        "description": "Rotate to landscape. Default false.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "browserless_run_js": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Absolute URL the script will run against. The page is loaded with networkidle2 before the script body executes."
+      },
+      "script": {
+        "type": "string",
+        "description": "Body of an async function executed in the Puppeteer Node context (NOT in the page DOM). The variables `page` and `context` are in scope; `context.url` is the URL above. Use `await page.$eval(...)` to read DOM. End with `return ...;` to return data."
+      },
+      "return_value": {
+        "description": "When true (default), the value returned by the script is JSON-decoded and surfaced as `result`. When false, only ok/status are returned.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "url",
+      "script"
+    ],
+    "additionalProperties": false
+  },
+  "browserless_screenshot": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Absolute URL to screenshot using hosted Chromium. Returns a base64 image — NOT a search result."
+      },
+      "full_page": {
+        "description": "Capture the full scrollable page. Default true.",
+        "type": "boolean"
+      },
+      "format": {
+        "description": "Image format. Default png.",
+        "type": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ]
+      },
+      "viewport": {
+        "description": "Browser viewport in pixels. Defaults to browserless's 1920x1080.",
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 3840
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 2160
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "claim_next_task": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "project_id": {
+        "description": "Restrict to tasks in this project id.",
+        "type": "string"
+      },
+      "feature": {
+        "description": "Restrict to tasks with this feature label.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "compact_context": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "conversation": {
+        "type": "string",
+        "description": "Serialized recent turns to compact."
+      }
+    },
+    "required": [
+      "conversation"
+    ],
+    "additionalProperties": false
+  },
+  "crawl_and_index": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to crawl and index into the knowledge base."
+      },
+      "deep": {
+        "description": "Multi-page BFS crawl instead of a single page.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "create_n8n_workflow": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "workflow_json": {
+        "type": "string",
+        "description": "Complete n8n workflow JSON as a string — must include name, nodes, and connections fields"
+      },
+      "activate": {
+        "description": "Activate immediately after creation (default true)",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "workflow_json"
+    ],
+    "additionalProperties": false
+  },
+  "delete_job": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "job_id": {
+        "type": "string",
+        "description": "ID of the job to delete"
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "additionalProperties": false
+  },
+  "discord_add_channel_route": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string",
+        "description": "Discord bot id (from discord_list_bots)."
+      },
+      "channel_id": {
+        "type": "string",
+        "description": "Discord channel id (right-click channel → Copy ID with Developer Mode on)."
+      },
+      "agent": {
+        "type": "string",
+        "description": "Agent name or id to handle messages in this channel."
+      },
+      "require_mention": {
+        "description": "When true, override any guild-level auto-reply for this specific channel — bot will only respond to @mentions here, even if the server is otherwise on auto-reply. Useful when multiple bots share a server.",
+        "type": "boolean"
+      },
+      "auto_reply": {
+        "description": "When true, bot replies to all messages in this channel without an @mention, regardless of guild-level auto-reply settings. Useful for channels \"owned\" by a specific agent on a shared server.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "bot_id",
+      "channel_id",
+      "agent"
+    ],
+    "additionalProperties": false
+  },
+  "discord_list_bots": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "discord_list_guilds": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "bot_id"
+    ],
+    "additionalProperties": false
+  },
+  "discord_react": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string",
+        "description": "Discord bot id (from discord_list_bots)."
+      },
+      "channel_id": {
+        "type": "string",
+        "description": "Discord channel id where the message lives."
+      },
+      "emoji": {
+        "type": "string",
+        "description": "Emoji to react with — unicode like \"👍\" \"🔥\" \"❤️\", or custom guild emoji as <:name:id>."
+      },
+      "message_id": {
+        "description": "Specific message id to react to. Right-click message → Copy ID with Developer Mode on.",
+        "type": "string"
+      },
+      "last_user_message": {
+        "description": "If true and message_id is omitted, react to the most recent non-bot message in the channel. Convenient for \"react to what the user just said\".",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "bot_id",
+      "channel_id",
+      "emoji"
+    ],
+    "additionalProperties": false
+  },
+  "discord_register_bot": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Display name for this bot configuration (e.g. \"Coder Bot\", \"Team Server\")."
+      },
+      "token": {
+        "type": "string",
+        "description": "Discord bot token from the Developer Portal. Sensitive — never echo it back to the user."
+      },
+      "default_agent": {
+        "description": "Agent name or id that handles mentions when no per-channel route matches.",
+        "type": "string"
+      },
+      "application_id": {
+        "description": "Optional Discord application id (skips a startup REST call when set).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "token"
+    ],
+    "additionalProperties": false
+  },
+  "discord_remove_bot": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "bot_id"
+    ],
+    "additionalProperties": false
+  },
+  "discord_set_auto_reply_guilds": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string",
+        "description": "Discord bot id (from discord_list_bots)."
+      },
+      "guild_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Array of Discord guild (server) ids where the bot should respond to every non-bot message without requiring an @mention. Empty array disables auto-reply everywhere."
+      }
+    },
+    "required": [
+      "bot_id",
+      "guild_ids"
+    ],
+    "additionalProperties": false
+  },
+  "discord_set_user_voice": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "bot_id": {
+        "type": "string",
+        "description": "Discord bot id (from the system context — \"bot_id\" in your Discord context block)."
+      },
+      "user_id": {
+        "type": "string",
+        "description": "Discord user id of the person whose preference you are setting (the \"author id\" in your context block)."
+      },
+      "enabled": {
+        "type": "boolean",
+        "description": "Whether this user should receive .mp3 audio attachments on replies from this bot. Pass false when the user asks you to stop sending audio / voice / mp3s; pass true to re-enable."
+      },
+      "reason": {
+        "description": "Short note for the audit log explaining why the toggle was flipped. Optional but recommended.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "bot_id",
+      "user_id",
+      "enabled"
+    ],
+    "additionalProperties": false
+  },
+  "find_projects": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "description": "Keyword search across project title + description (case-insensitive).",
+        "type": "string"
+      },
+      "project_id": {
+        "description": "Get a specific project by id; returns full record including docs/features/data.",
+        "type": "string"
+      },
+      "include_archived": {
+        "description": "Include archived projects in the result. Default false.",
+        "type": "boolean"
+      },
+      "page": {
+        "description": "1-based page number. Default 1.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "per_page": {
+        "description": "Items per page. Default 10, max 100.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      }
+    },
+    "additionalProperties": false
+  },
+  "find_tasks": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "description": "Keyword search across title + description.",
+        "type": "string"
+      },
+      "task_id": {
+        "description": "Get a specific task by id (returns full record including sources + code_examples).",
+        "type": "string"
+      },
+      "filter_by": {
+        "description": "Field to filter on. Pair with filter_value.",
+        "type": "string",
+        "enum": [
+          "status",
+          "project",
+          "assignee",
+          "parent"
+        ]
+      },
+      "filter_value": {
+        "description": "Value for the chosen filter — status name, project id, assignee string, or parent task id.",
+        "type": "string"
+      },
+      "project_id": {
+        "description": "Restrict to a single project (in addition to filter_by). Often used with filter_by=status.",
+        "type": "string"
+      },
+      "include_closed": {
+        "description": "Include archived/done tasks. Default true.",
+        "type": "boolean"
+      },
+      "page": {
+        "description": "1-based page number. Default 1.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "per_page": {
+        "description": "Items per page. Default 10, max 100.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      }
+    },
+    "additionalProperties": false
+  },
+  "fs_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  },
+  "fs_read": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  },
+  "fs_search": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "max_results": {
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "additionalProperties": false
+  },
+  "fs_write": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "create",
+          "overwrite",
+          "append"
+        ]
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ],
+    "additionalProperties": false
+  },
+  "gemini_image_edit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Edit instruction to apply to the image."
+      },
+      "image_path": {
+        "type": "string",
+        "description": "Absolute path to a PNG or JPEG to edit."
+      }
+    },
+    "required": [
+      "prompt",
+      "image_path"
+    ],
+    "additionalProperties": false
+  },
+  "gemini_image_generate": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate (Gemini Nano Banana / Imagen)."
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "gemini_web_generate_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "What to generate."
+      },
+      "quality": {
+        "description": "\"standard\" uses grok-imagine-image (~5-10s). \"hd\" uses grok-imagine-image-quality (~10-20s). Defaults to standard.",
+        "type": "string",
+        "enum": [
+          "standard",
+          "hd"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "generate_carbone_document": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "templateHtml": {
+        "description": "Raw HTML template content containing Carbone tags like {d.name}. Optional if templatePath is provided.",
+        "type": "string"
+      },
+      "templatePath": {
+        "description": "Absolute path to a local template file (DOCX, XLSX, ODT, ODS, HTML) on the host. Optional if templateHtml is provided.",
+        "type": "string"
+      },
+      "data": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {},
+        "description": "JSON data payload representing the fields to merge into the template."
+      },
+      "convertTo": {
+        "default": "pdf",
+        "description": "The output document format. Default is pdf.",
+        "type": "string",
+        "enum": [
+          "pdf",
+          "html",
+          "docx",
+          "xlsx",
+          "odt",
+          "ods"
+        ]
+      }
+    },
+    "required": [
+      "data",
+      "convertTo"
+    ],
+    "additionalProperties": false
+  },
+  "generate_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "What to generate."
+      },
+      "quality": {
+        "description": "\"standard\" uses grok-imagine-image (~5-10s). \"hd\" uses grok-imagine-image-quality (~10-20s). Defaults to standard.",
+        "type": "string",
+        "enum": [
+          "standard",
+          "hd"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "generate_image_venice": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "What to generate. Be descriptive — Venice models respond well to detailed cinematic prompts."
+      },
+      "model": {
+        "description": "Venice image model. Defaults to flux-2-pro. Other options: flux-dev, stable-diffusion-3-5, etc.",
+        "type": "string"
+      },
+      "width": {
+        "description": "Output width in pixels. Defaults to 1024.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "height": {
+        "description": "Output height in pixels. Defaults to 1024.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "negative_prompt": {
+        "description": "What to avoid in the image (e.g. \"blurry, low quality, watermark\").",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "generate_speech": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Text to synthesize into speech."
+      },
+      "voice": {
+        "description": "xAI voice id override. Omit to use the default configured voice.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "get_attachment": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The attachment_id surfaced in the system context block. NOT the filename — the UUID after \"attachment_id:\"."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
+  "get_attachment_parsed": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The attachment_id from the system context block — the UUID after \"attachment_id:\". Use this tool for files marked \"✓ pre-parsed\"; use get_attachment for the base64 fallback path."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
+  "get_downtime_windows": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "hours": {
+        "description": "How many hours back to look (default 168 / 7 days).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 720
+      }
+    },
+    "additionalProperties": false
+  },
+  "get_error_timeline": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "hours": {
+        "description": "How many hours back (default 24). Returns one bucket per hour.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 168
+      }
+    },
+    "additionalProperties": false
+  },
+  "get_job_runs": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "job_id": {
+        "type": "string",
+        "description": "Job ID to fetch run history for"
+      },
+      "limit": {
+        "description": "Number of runs to return (default 20)",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "additionalProperties": false
+  },
+  "get_n8n_workflow": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "workflow_id": {
+        "type": "string",
+        "description": "n8n workflow id"
+      }
+    },
+    "required": [
+      "workflow_id"
+    ],
+    "additionalProperties": false
+  },
+  "get_recent_errors": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "hours": {
+        "description": "How many hours back to look (default 24, max 168).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 168
+      }
+    },
+    "additionalProperties": false
+  },
+  "get_subtask_result": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "The taskId returned by a prior run_subtask call"
+      }
+    },
+    "required": [
+      "task_id"
+    ],
+    "additionalProperties": false
+  },
+  "get_upload": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The upload id from list_uploads."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
+  "gpt_image_edit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Edit instruction to apply to the image."
+      },
+      "image_path": {
+        "type": "string",
+        "description": "Absolute path to the image to edit."
+      }
+    },
+    "required": [
+      "prompt",
+      "image_path"
+    ],
+    "additionalProperties": false
+  },
+  "gpt_image_generate": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate."
+      },
+      "style": {
+        "description": "Image style. Default 'auto'.",
+        "type": "string",
+        "enum": [
+          "auto",
+          "vivid",
+          "natural"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "grok_image_compose": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Instruction guiding how to composite/blend the images."
+      },
+      "image_paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Ordered absolute paths; referenced as \"First image\", \"Second image\", etc."
+      },
+      "quality": {
+        "description": "Output quality. Default 'standard'.",
+        "type": "string",
+        "enum": [
+          "standard",
+          "hd"
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "image_paths"
+    ],
+    "additionalProperties": false
+  },
+  "grok_image_edit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Natural-language edit instruction."
+      },
+      "image_path": {
+        "type": "string",
+        "description": "Absolute path to the image to edit."
+      },
+      "quality": {
+        "description": "Output quality. Default 'standard'.",
+        "type": "string",
+        "enum": [
+          "standard",
+          "hd"
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "image_path"
+    ],
+    "additionalProperties": false
+  },
+  "index_content": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Raw text/markdown to index directly (no crawl)."
+      },
+      "label": {
+        "type": "string",
+        "description": "Source label/id to group this content under."
+      },
+      "url": {
+        "description": "Optional origin URL for attribution.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text",
+      "label"
+    ],
+    "additionalProperties": false
+  },
+  "list_agents": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "include_inactive": {
+        "type": "boolean"
+      },
+      "include_temp": {
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_attachments": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "list_jobs": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "description": "Filter by job type",
+        "type": "string",
+        "enum": [
+          "agent_message",
+          "outbound_webhook",
+          "shell_command",
+          "n8n_workflow",
+          "kestra_flow"
+        ]
+      },
+      "enabled": {
+        "description": "Filter by enabled status",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_knowledge_sources": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "list_my_subtasks": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "status_filter": {
+        "description": "Filter by status group: 'active' = currently running, 'done' = completed/failed/blocked, 'all' = everything (default: 'all')",
+        "type": "string",
+        "enum": [
+          "all",
+          "active",
+          "done"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_n8n_workflows": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "active": {
+        "description": "Filter to only active or inactive workflows. Omit to return all.",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_skills": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "include_body": {
+        "description": "When true, return each skill's full markdown body. Default false (just metadata + scripts list).",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_temp_agents": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "list_uploads": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "list_workflows": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "manage_project": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete"
+        ],
+        "description": "\"create\" | \"update\" | \"delete\". Delete is soft (archive) by default."
+      },
+      "project_id": {
+        "description": "Project id; required for update/delete.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Display title (required on create).",
+        "type": "string"
+      },
+      "description": {
+        "description": "Goals and scope.",
+        "type": "string"
+      },
+      "github_repo": {
+        "description": "GitHub repo URL.",
+        "type": "string"
+      },
+      "pinned": {
+        "description": "Pin to top of project list.",
+        "type": "boolean"
+      },
+      "hard": {
+        "description": "On delete: when true, permanently remove the row instead of archiving. Tasks are reassigned to the default NeuroClaw project. Cannot delete the default project.",
+        "type": "boolean"
+      },
+      "docs": {
+        "description": "JSON array. Optional. Replaces existing docs."
+      },
+      "features": {
+        "description": "JSON array. Optional. Replaces existing features."
+      },
+      "data": {
+        "description": "JSON object. Optional. Replaces existing data."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "manage_skill": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete"
+        ],
+        "description": "\"create\" | \"update\" | \"delete\". Skills must live in the project (.claude/skills/) to be edited or deleted; user-global skills are read-only."
+      },
+      "name": {
+        "type": "string",
+        "description": "Skill name. On create: sanitized to lowercase + dashes. On update/delete: must match an existing skill."
+      },
+      "description": {
+        "description": "One-line summary the agent's system prompt will display.",
+        "type": "string"
+      },
+      "body": {
+        "description": "Markdown body — instructions to the agent on when/how to use the skill. Required on create.",
+        "type": "string"
+      },
+      "triggers": {
+        "description": "Keywords or phrases that hint when the skill applies. Currently informational (no auto-routing).",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "tools": {
+        "description": "Allowed tool names — informational metadata for now.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "scripts": {
+        "description": "Optional list of scripts to bundle on create. Each {filename, content} writes to scripts/<filename>. Use manage_skill_script to add later.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "filename": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "filename",
+            "content"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "action",
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "manage_skill_script": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete"
+        ],
+        "description": "\"create\" | \"update\" | \"delete\". create and update use the same code path (writeSkillScript) — both overwrite if present."
+      },
+      "skill_name": {
+        "type": "string",
+        "description": "Skill that owns the script."
+      },
+      "filename": {
+        "type": "string",
+        "description": "Single-segment filename, e.g. \"extract.py\", \"transform.sh\". Validated against [a-zA-Z0-9_.-]."
+      },
+      "content": {
+        "description": "Full file contents. Required on create/update.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "skill_name",
+      "filename"
+    ],
+    "additionalProperties": false
+  },
+  "manage_task": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete"
+        ],
+        "description": "\"create\" | \"update\" | \"delete\". Delete archives the task by default (use hard=true to remove)."
+      },
+      "task_id": {
+        "description": "Task id; required for update/delete.",
+        "type": "string"
+      },
+      "project_id": {
+        "description": "Project id (required on create unless using default project).",
+        "type": "string"
+      },
+      "parent_task_id": {
+        "description": "Parent task id for subtasks.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Task title (required on create).",
+        "type": "string"
+      },
+      "description": {
+        "description": "Detailed task description with completion criteria.",
+        "type": "string"
+      },
+      "status": {
+        "description": "Workflow status. todo→doing→review→done is the normal flow; use \"blocked\" to park a task that cannot proceed (needs input/dependency) or \"cancelled\" to abandon one you cannot or should not do — both cleanly release the task off the active board.",
+        "type": "string",
+        "enum": [
+          "todo",
+          "doing",
+          "review",
+          "done",
+          "blocked",
+          "cancelled"
+        ]
+      },
+      "assignee": {
+        "description": "Free-text assignee. Accepts agent names, \"User\", \"AI IDE Agent\", or anything else. Defaults to \"User\" on create.",
+        "type": "string"
+      },
+      "priority_level": {
+        "description": "Priority enum used by the Kanban UI.",
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "task_order": {
+        "description": "Drag-reorder position within the (status) column. Lower numbers float up.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "feature": {
+        "description": "Free-text feature label that cuts across projects (e.g. \"auth\", \"billing\").",
+        "type": "string"
+      },
+      "sources": {
+        "description": "JSON array of citations. Each entry typically {url, title, relevance}. Hooks NeuroVault retrievals onto the task."
+      },
+      "code_examples": {
+        "description": "JSON array of code snippet references. Each entry typically {file, line, summary}."
+      },
+      "hard": {
+        "description": "On delete: when true, permanently remove. Default false (archive).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "message_agent": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Name of the agent to message."
+      },
+      "message": {
+        "type": "string"
+      },
+      "context": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "to",
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "meta:call_tool": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Exact tool name from search_tools results."
+      },
+      "args_json": {
+        "description": "Tool arguments as a plain object (preferred) or a JSON string. Object example: {\"skill_name\":\"humanize-text\",\"script\":\"humanize.py\",\"args\":[\"your text here\"]}. String example: '{\"query\":\"test\",\"limit\":5}'. Pass {} or \"{}\" for tools with no required arguments. Use get_tool_schema(name) first if you are unsure of the parameter format."
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "meta:get_tool_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Exact tool name to inspect (use search_tools to find it). Returns the full parameter schema so you know what to pass to call_tool."
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "meta:search_tools": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Keywords describing what you need to do (2-6 words). Searched against tool names and descriptions."
+      },
+      "limit": {
+        "description": "Max results to return (default 10).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "notify_user": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "The notification message to send to the user. Be clear and specific about what you need."
+      },
+      "kind": {
+        "description": "Type of notification: info (general), question (needs user response/decision), alert (urgent/blocking issue), update (progress on long task).",
+        "type": "string",
+        "enum": [
+          "info",
+          "question",
+          "alert",
+          "update"
+        ]
+      },
+      "context": {
+        "description": "Optional additional context, background info, or metadata to help the user understand the situation.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "respond": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "Your complete response to the user's message."
+      },
+      "session_id": {
+        "description": "Session ID from the system prompt (if provided).",
+        "type": "string"
+      },
+      "run_id": {
+        "description": "Run ID from the system prompt (if provided).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "content"
+    ],
+    "additionalProperties": false
+  },
+  "run_skill_script": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "skill_name": {
+        "type": "string",
+        "description": "Name of the skill that owns the script (must already exist; create one with manage_skill first)."
+      },
+      "script": {
+        "type": "string",
+        "description": "Filename of the script inside that skill's scripts/ folder, e.g. \"extract.py\". Single segment — no path components."
+      },
+      "args": {
+        "description": "Argv passed to the script. Each element is one CLI argument; no shell interpolation.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "stdin": {
+        "description": "Optional input piped to the script's stdin (capped at 1 MB).",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Working directory for the script. Defaults to the script's folder.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Hard timeout in ms. Capped at 2× EXEC_TIMEOUT_MS.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "secrets": {
+        "description": "Broker secret names to inject as environment variables for this script, scoped to you. Values are placed directly into the child process and never shown to you; script output is scrubbed of them.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "purpose": {
+        "description": "Short reason the secrets are needed — recorded in the broker audit log.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "skill_name",
+      "script"
+    ],
+    "additionalProperties": false
+  },
+  "run_subtask": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "What the sub-agent should do — be specific and self-contained"
+      },
+      "context": {
+        "type": "string",
+        "description": "Relevant context the sub-agent needs (max ~2000 tokens). Do NOT paste the full conversation — summarize what matters."
+      },
+      "agent_name": {
+        "description": "Optional specialist persona name for the sub-agent",
+        "type": "string"
+      },
+      "priority": {
+        "description": "Override automatic complexity triage",
+        "type": "string",
+        "enum": [
+          "simple",
+          "complex",
+          "frontier"
+        ]
+      },
+      "notify_policy": {
+        "description": "Controls when proactive updates are delivered. done_only (default): notify on completion/failure/blocked only. all_updates: also notify on progress heartbeats. never: silent — result queryable only via get_subtask_result.",
+        "type": "string",
+        "enum": [
+          "done_only",
+          "all_updates",
+          "never"
+        ]
+      },
+      "allow_bash": {
+        "description": "Set true to route this sub-agent through the shell-capable executor (supports git, npm, file writes). Off by default — sub-agents use Kimi K2.6/MiniMax and return output as text.",
+        "type": "boolean"
+      },
+      "kind": {
+        "description": "Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content.",
+        "type": "string",
+        "enum": [
+          "code",
+          "prose"
+        ]
+      },
+      "force": {
+        "description": "Bypass the duplicate-task guard and spawn even if an identical subtask recently ran in this session. Only set when the user explicitly wants a re-run.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "task",
+      "context"
+    ],
+    "additionalProperties": false
+  },
+  "run_workflow": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Workflow name, e.g. \"code-review\", \"ship\""
+      },
+      "input": {
+        "description": "Optional context string stored with the run record (not interpolated as $INPUT in workflow nodes)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "save_session_summary": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "summary": {
+        "type": "string",
+        "description": "Distilled summary of what happened in the session."
+      },
+      "title": {
+        "type": "string"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "importance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "required": [
+      "summary"
+    ],
+    "additionalProperties": false
+  },
+  "schedule_job": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Human-readable job name"
+      },
+      "schedule": {
+        "description": "Cron expression e.g. \"0 9 * * *\". Omit for inbound-webhook-only jobs.",
+        "type": "string"
+      },
+      "job_type": {
+        "type": "string",
+        "enum": [
+          "agent_message",
+          "outbound_webhook",
+          "shell_command",
+          "n8n_workflow",
+          "kestra_flow"
+        ],
+        "description": "Type of job to run"
+      },
+      "config": {
+        "type": "string",
+        "description": "JSON string with type-specific config. agent_message: {agentId,message,sessionId?}. outbound_webhook: {url,method?,headers?,body?}. shell_command: {command,timeout?}. n8n_workflow: {baseUrl,apiKey,workflowId,payload?}. kestra_flow: {namespace,flowId,inputs?,baseUrl?,apiKey?}"
+      },
+      "description": {
+        "description": "Optional human-readable description",
+        "type": "string"
+      },
+      "on_complete_webhook_url": {
+        "description": "URL to POST to after each successful run",
+        "type": "string"
+      },
+      "enable_inbound": {
+        "description": "Generate an inbound webhook slug so external services can trigger this job",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "name",
+      "job_type",
+      "config"
+    ],
+    "additionalProperties": false
+  },
+  "search_code_examples": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural-language query to search the knowledge base."
+      },
+      "source": {
+        "description": "Restrict to a single source_id (from list_knowledge_sources).",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max results (default 5).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "search_knowledge_base": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural-language query to search the knowledge base."
+      },
+      "source": {
+        "description": "Restrict to a single source_id (from list_knowledge_sources).",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max results (default 5).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "search_log_lines": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Substring to search for in log messages."
+      },
+      "limit": {
+        "description": "Max results (default 50).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "search_memory": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "What to look up (2-8 keywords)."
+      },
+      "limit": {
+        "description": "Max hits (default 20).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "secrets_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "service": {
+        "description": "Optional service filter, e.g. \"N8N\" or \"GH\" — matched case-insensitively.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "send_document": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute path to the file on disk. The file must already exist — use fs_write to create it first if needed."
+      },
+      "caption": {
+        "description": "Optional message shown above the file card in chat.",
+        "type": "string"
+      },
+      "filename": {
+        "description": "Override the display name shown to the user. Defaults to the basename of path.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  },
+  "send_image_to_user": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "base64": {
+        "description": "Raw base64-encoded image bytes (no data: prefix). Use when you produced the image yourself (e.g. from browserless_screenshot). Provide either this OR url, not both.",
+        "type": "string"
+      },
+      "url": {
+        "description": "Remote http(s) URL of an existing image to display. Use when referencing an image already hosted elsewhere. Provide either this OR base64, not both.",
+        "type": "string",
+        "format": "uri"
+      },
+      "mime_type": {
+        "description": "MIME type. Required when passing base64. Determines the saved file extension. Defaults to image/png.",
+        "type": "string",
+        "enum": [
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp"
+        ]
+      },
+      "alt": {
+        "description": "Short description of the image (used as alt text and rendered as a caption in the markdown image tag). Strongly recommended for accessibility.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption text shown below the image. Plain text — keep it short.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "spawn_agent": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Unique name for the temporary agent."
+      },
+      "role": {
+        "type": "string",
+        "description": "Role tag, e.g. \"specialist\", \"analyst\"."
+      },
+      "description": {
+        "type": "string",
+        "description": "One-line description."
+      },
+      "systemPrompt": {
+        "type": "string",
+        "description": "Full system prompt for the spawn."
+      },
+      "taskDescription": {
+        "type": "string",
+        "description": "The specific task the spawn should execute now."
+      },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "modelTier": {
+        "type": "string",
+        "enum": [
+          "pinned",
+          "auto",
+          "low",
+          "mid",
+          "high"
+        ]
+      },
+      "model": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "role",
+      "description",
+      "systemPrompt",
+      "taskDescription"
+    ],
+    "additionalProperties": false
+  },
+  "update_job": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "job_id": {
+        "type": "string",
+        "description": "ID of the job to update"
+      },
+      "name": {
+        "type": "string"
+      },
+      "schedule": {
+        "description": "New cron expression",
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "config": {
+        "description": "Updated JSON config string",
+        "type": "string"
+      },
+      "on_complete_webhook_url": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "additionalProperties": false
+  },
+  "voidai_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source image as an https URL or a base64 data URL. Ignored for generate.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. \"1:1\", \"16:9\", \"2:3\", \"3:4\". Default \"1:1\".",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution. STANDARD≈1K (default), plus 2K and 4K.",
+        "type": "string",
+        "enum": [
+          "STANDARD",
+          "2K",
+          "4K"
+        ]
+      },
+      "model": {
+        "description": "VoidAI image model id. Default \"gemini-3.1-flash-image\" (Nano-Banana). Other Gemini image ids like \"gemini-3-pro-image\" also work.",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "web_search": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query. 2-8 keywords work better than full sentences."
+      },
+      "category": {
+        "description": "Search category (default general). Use \"it\" for programming/dev queries, \"science\" for academic papers, \"news\" with time_range=day for fresh news.",
+        "type": "string",
+        "enum": [
+          "general",
+          "news",
+          "images",
+          "videos",
+          "it",
+          "science",
+          "files",
+          "social media",
+          "map"
+        ]
+      },
+      "time_range": {
+        "description": "Restrict results to this recency window.",
+        "type": "string",
+        "enum": [
+          "day",
+          "month",
+          "year"
+        ]
+      },
+      "max_results": {
+        "description": "Max results to return (default 8).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 25
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "write_vault_note": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "4-8 words."
+      },
+      "type": {
+        "type": "string",
+        "description": "episodic | semantic | procedural | preference | insight | project | session_summary"
+      },
+      "summary": {
+        "type": "string",
+        "description": "1-2 sentence distilled lesson."
+      },
+      "content": {
+        "description": "Optional richer body.",
+        "type": "string"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "importance": {
+        "description": "0-1, default 0.7.",
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "required": [
+      "title",
+      "type",
+      "summary"
+    ],
+    "additionalProperties": false
+  }
+}

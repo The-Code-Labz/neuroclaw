@@ -1,0 +1,21 @@
+{
+  "name": "@neuroclaw/pi-pack",
+  "version": "0.1.0",
+  "description": "Pi extension pack for NeuroClaw — multi-agent registry, delegation, persistent memory, Discord/LiveKit integration",
+  "keywords": ["pi-package", "neuroclaw", "multi-agent", "mcp"],
+  "author": "NeuroClaw",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neuroclaw/neuroclaw-v1"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.1.0"
+  }
+}

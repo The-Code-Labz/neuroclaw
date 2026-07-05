@@ -1,0 +1,23 @@
+name: code-review
+description: Run TypeScript type check then summarize issues with fix suggestions
+provider: openai
+
+nodes:
+  - id: typecheck
+    bash: npx tsc --noEmit 2>&1 || true
+
+  - id: summarize
+    depends_on: [typecheck]
+    prompt: |
+      Review the following TypeScript type-check output:
+
+      $typecheck.output
+
+      If there are no errors, respond with: "No type errors found."
+
+      Otherwise, list each error in this format:
+      - File: <path>:<line>
+        Error: <message>
+        Fix: <one-sentence suggestion>
+
+      Group by file. Be concise.

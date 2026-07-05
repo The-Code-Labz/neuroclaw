@@ -1,0 +1,24 @@
+name: ship
+description: Type-check, request approval with commit message, then commit and push
+provider: openai
+
+nodes:
+  - id: typecheck
+    bash: npx tsc --noEmit 2>&1 || true
+
+  - id: approve
+    depends_on: [typecheck]
+    approval:
+      message: |
+        TypeScript check output:
+        $typecheck.output
+
+        Type a commit message to approve and ship, or /workflow reject to abort:
+      capture_response: true
+
+  - id: commit-push
+    depends_on: [approve]
+    bash: |
+      git add -A
+      git commit -m "$approve.output"
+      git push

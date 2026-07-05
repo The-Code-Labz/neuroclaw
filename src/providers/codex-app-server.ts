@@ -1,0 +1,451 @@
+// Codex `app-server` provider (subscription auth via the local `codex` binary).
+//
+// Unlike codex-cli.ts (which spawns `codex exec --json` per message — text-only,
+// cold-start, no in-process tools), this drives a single persistent
+// `codex app-server` JSON-RPC 2.0 server over stdio. Codex agents get full
+// NeuroClaw tool access via `dynamicTools` (registered on thread/start) +
+// `item/tool/call` server-initiated callbacks and true token streaming via
+// `item/agentMessage/delta`. Each turn runs on a FRESH ephemeral thread whose
+// developerInstructions carry the caller's freshly-rebuilt system prompt, so the
+// dynamic prompt is never stale (NeuroClaw owns the conversation history). The
+// process is shared across all Codex agents; per-turn tool calls are routed to the
+// correct agent/session via a threadId → ToolContext map.
+//
+// Spec: docs/specs/codex-app-server-spec.md. Protocol shapes verified against
+// codex 0.136.0 via `codex app-server generate-ts`.
+//
+// Tool building + dispatch deliberately reuse the OpenAI adapter
+// (buildOpenAiTools / dispatchOpenAiTool) so the dynamicTools schemas are the
+// SAME zod-4-correct JSON Schemas the OpenAI Agents backbone and HTTP-MCP server
+// emit (z.toJSONSchema + stripSchemaMeta), and so meta-tools (search_tools /
+// get_tool_schema / call_tool), gating, and sub-agent lockdown all work. The
+// spec's hand-rolled findTool dispatcher predated the zod-4 migration and would
+// have produced empty schemas — not used.
+
+import { spawn, type ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
+import path from 'path';
+import fs from 'fs';
+import { config } from '../config';
+import { logger } from '../utils/logger';
+import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
+import { createStreamScrubber } from '../broker/scrubber';
+import { buildOpenAiTools, dispatchOpenAiTool } from '../tools/adapters/openai';
+import { buildComposioOpenAiTools } from '../tools/adapters/composio';
+import type { ToolContext } from '../tools/context';
+import type { CodexCliUsage } from './codex-cli';
+
+// ── Error types ───────────────────────────────────────────────────────────
+export class CodexAppServerAuthError      extends Error { constructor(m = 'codex login required (run `codex login`)') { super(m); this.name = 'CodexAppServerAuthError'; } }
+export class CodexAppServerRateLimitError extends Error { constructor(m = 'codex rate limit')                          { super(m); this.name = 'CodexAppServerRateLimitError'; } }
+export class CodexAppServerCrashError     extends Error { constructor(m = 'codex app-server exited unexpectedly')      { super(m); this.name = 'CodexAppServerCrashError'; } }
+
+// ── Protocol shapes (subset, from `codex app-server generate-ts`) ───────────
+interface DynamicToolSpec { namespace?: string; name: string; description: string; inputSchema: unknown; deferLoading?: boolean; }
+interface DynamicToolCallParams { threadId: string; turnId: string; callId: string; namespace: string | null; tool: string; arguments: unknown; }
+interface DynamicToolCallResponse { contentItems: Array<{ type: 'inputText'; text: string }>; success: boolean; }
+interface AgentMessageDeltaNotification { threadId: string; turnId: string; itemId: string; delta: string; }
+interface TokenUsageBreakdown { totalTokens: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number; }
+interface ThreadTokenUsageUpdatedNotification { threadId: string; turnId: string; tokenUsage: { total: TokenUsageBreakdown; last: TokenUsageBreakdown; modelContextWindow: number | null }; }
+
+// ── JSON-RPC transport ──────────────────────────────────────────────────────
+type ServerRequestHandler = (params: unknown, id: number | string) => Promise<unknown>;
+
+class CodexAppServerProcess {
+  private proc: ChildProcess | null = null;
+  private nextId = 1;
+  private buf = '';
+  private initialized = false;
+  private pending = new Map<number | string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private handlers = new Map<string, ServerRequestHandler>();      // one handler per method (Map.set semantics)
+  private emitter = new EventEmitter();
+  private startPromise: Promise<void> | null = null;
+
+  constructor() { this.emitter.setMaxListeners(0); }
+
+  isRunning(): boolean { return this.proc !== null && !this.proc.killed && this.proc.exitCode === null; }
+
+  // Idempotent + concurrency-safe cold start. Returns immediately when the
+  // process is already up AND the initialize handshake has completed. While a
+  // cold start is in flight, every concurrent caller awaits the SAME promise, so
+  // a second caller can never send thread/start before the handshake finishes
+  // (and no second process is ever spawned over the first).
+  start(env: Record<string, string | undefined>): Promise<void> {
+    if (this.isRunning() && this.initialized) return Promise.resolve();
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this._start(env).finally(() => { this.startPromise = null; });
+    return this.startPromise;
+  }
+
+  private async _start(env: Record<string, string | undefined>): Promise<void> {
+    // Tear down any half-alive process left by a prior init that failed AFTER
+    // spawn (e.g. the initialize request rejected without an exit event), so we
+    // never orphan a running child by overwriting this.proc below.
+    if (this.proc) { try { this.proc.kill(); } catch { /* ignore */ } this.proc = null; }
+    const cmd = config.codex.cliCommand;
+    const proc = spawn(cmd, ['app-server'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.proc = proc;
+    this.buf = '';
+    this.initialized = false;
+
+    proc.stdout!.setEncoding('utf-8');
+    proc.stdout!.on('data', (chunk: string) => this.onData(chunk));
+    proc.stderr!.setEncoding('utf-8');
+    proc.stderr!.on('data', (d: string) => { const s = d.trim(); if (s) logger.debug('codex app-server stderr', { line: s.slice(0, 400) }); });
+
+    proc.on('exit', (code, signal) => this.onExit(code, signal));
+    proc.on('error', (err) => { logger.error('codex app-server spawn error', { err: err.message }); this.onExit(null, null); });
+
+    // Required handshake before any thread/start. `experimentalApi: true` is
+    // mandatory to use `dynamicTools` on thread/start (the server rejects it
+    // otherwise: "thread/start.dynamicTools requires experimentalApi capability").
+    await this.request('initialize', {
+      clientInfo: { name: 'neuroclaw', title: 'NeuroClaw', version: '1.0.0' },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    this.initialized = true;
+    logger.info('codex app-server: started + initialized', { cmd });
+  }
+
+  async request<T>(method: string, params: unknown): Promise<T> {
+    const proc = this.proc;
+    if (!proc || !proc.stdin) throw new CodexAppServerCrashError('codex app-server not running');
+    const id = this.nextId++;
+    const payload = { jsonrpc: '2.0', id, method, params };
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      try { proc.stdin!.write(JSON.stringify(payload) + '\n'); }
+      catch (e) { this.pending.delete(id); reject(e as Error); }
+    });
+  }
+
+  onServerRequest(method: string, handler: ServerRequestHandler): void { this.handlers.set(method, handler); }
+  on(event: string, listener: (...args: unknown[]) => void): void   { this.emitter.on(event, listener); }
+  once(event: string, listener: (...args: unknown[]) => void): void { this.emitter.once(event, listener); }
+  off(event: string, listener: (...args: unknown[]) => void): void  { this.emitter.off(event, listener); }
+
+  private onData(chunk: string): void {
+    this.buf += chunk;
+    let nl: number;
+    while ((nl = this.buf.indexOf('\n')) >= 0) {
+      const line = this.buf.slice(0, nl).trim();
+      this.buf = this.buf.slice(nl + 1);
+      if (line) this.handleLine(line);
+    }
+  }
+
+  private handleLine(line: string): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let msg: any;
+    try { msg = JSON.parse(line); } catch { logger.warn('codex app-server: non-JSON line', { line: line.slice(0, 200) }); return; }
+
+    // Response to one of our requests.
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      this.pending.delete(msg.id);
+      if (msg.error) p.reject(this.toError(msg.error));
+      else p.resolve(msg.result);
+      return;
+    }
+
+    // Server-initiated request (has id + method): dispatch to a handler, write the response.
+    if (msg.id !== undefined && msg.method) {
+      const handler = this.handlers.get(msg.method);
+      if (!handler) {
+        this.write({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `No handler for ${msg.method}` } });
+        return;
+      }
+      handler(msg.params, msg.id)
+        .then((result) => this.write({ jsonrpc: '2.0', id: msg.id, result }))
+        .catch((err: Error) => this.write({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: err.message } }));
+      return;
+    }
+
+    // Notification (method, no id) — emit namespaced by threadId where present.
+    if (msg.method) {
+      const tid = msg.params?.threadId;
+      const suffix = tid ? `:${tid}` : '';
+      this.emitter.emit(`${msg.method}${suffix}`, msg.params);
+    }
+  }
+
+  private write(msg: object): void {
+    try { this.proc?.stdin?.write(JSON.stringify(msg) + '\n'); }
+    catch (e) { logger.warn('codex app-server: write failed', { err: (e as Error).message }); }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private toError(err: any): Error {
+    const m = typeof err?.message === 'string' ? err.message : JSON.stringify(err);
+    if (/unauthor|login|401/i.test(m)) return new CodexAppServerAuthError(m);
+    if (/rate.?limit|quota|429/i.test(m)) return new CodexAppServerRateLimitError(m);
+    return new Error(m);
+  }
+
+  private onExit(code: number | null, signal: string | null): void {
+    logger.warn('codex app-server: exited', { code, signal });
+    const err = new CodexAppServerCrashError(`codex app-server exited (code=${code}, signal=${signal})`);
+    for (const [, p] of this.pending) p.reject(err);
+    this.pending.clear();
+    this.emitter.emit('process_exit', err);
+    this.proc = null;
+    this.initialized = false;
+    // Threads + the dispatch handler die with the process — reset shared state.
+    threadCtx.clear();
+    _toolDispatchRegistered = false;
+  }
+
+  async stop(): Promise<void> {
+    if (this.proc) { try { this.proc.kill(); } catch { /* ignore */ } this.proc = null; }
+  }
+}
+
+// ── Module state ──────────────────────────────────────────────────────────
+let _instance: CodexAppServerProcess | null = null;
+// Per-turn tool-call routing: each (ephemeral) thread maps to the ToolContext of
+// the agent/session that started it, so item/tool/call dispatches with the CORRECT
+// per-turn context even though the app-server process is shared across all Codex
+// agents. (Without this, a single shared dispatch handler would attribute every
+// agent's tool calls to whichever agent started the process first.)
+const threadCtx = new Map<string, ToolContext>();   // threadId → ToolContext
+let _toolDispatchRegistered = false;
+
+function getProcess(): CodexAppServerProcess {
+  if (!_instance) _instance = new CodexAppServerProcess();
+  return _instance;
+}
+
+// Strip OPENAI_API_KEY so Codex uses ~/.codex/auth.json subscription tokens.
+// SECURITY POSTURE (intentional): the process is shared across all Codex agents, so
+// by design we do NOT inject any agent's broker secrets into its environment — a
+// long-lived shared process must never hold one agent's decrypted secrets where
+// another agent's sandboxed shell could read them. Codex's own native shell thus
+// runs without broker secrets (and is read-only by default). Secret-injected shell
+// work goes through the NeuroClaw `bash_run` tool, dispatched via item/tool/call
+// with the correct PER-AGENT ToolContext (threadCtx) and per-call broker injection
+// — the same model the CLI providers use.
+function buildChildEnv(): Record<string, string | undefined> {
+  const env = { ...process.env };
+  delete env.OPENAI_API_KEY;
+  return env;
+}
+
+// ── Dynamic tools ───────────────────────────────────────────────────────────
+async function buildDynamicTools(ctx: ToolContext): Promise<DynamicToolSpec[]> {
+  // Reuse the canonical OpenAI tool list: core tools + the 3 meta-tools, with
+  // zod-4-correct JSON Schemas. (Spec Section 3's zodToJsonSchema(.schema) path
+  // is dead under zod 4 — buildOpenAiTools is the live, correct source.)
+  const base = buildOpenAiTools(ctx);
+  // Composio meta-tools (COMPOSIO_SEARCH_TOOLS, COMPOSIO_MULTI_EXECUTE_TOOL, …)
+  // when the agent is opted in; [] otherwise. Without this, codex agents were
+  // the only plane silently missing Composio (backbone/claude-cli both wire it).
+  // COMPOSIO_* dispatch already works: registerToolDispatch → dispatchOpenAiTool
+  // routes COMPOSIO_* to dispatchComposioTool (openai.ts).
+  const composio = await buildComposioOpenAiTools(ctx);
+  return [...base, ...composio].map((t) => ({
+    name:        t.function.name,
+    description: t.function.description ?? '',
+    inputSchema: t.function.parameters ?? { type: 'object', properties: {} },
+  }));
+}
+
+// ── Tool dispatcher (registered once per process lifetime) ──────────────────
+// The handler is ctx-AGNOSTIC: it resolves the originating agent/session per call
+// from threadCtx[params.threadId], so a shared process serves every Codex agent
+// with the correct context.
+function registerToolDispatch(proc: CodexAppServerProcess): void {
+  if (_toolDispatchRegistered) return;
+  _toolDispatchRegistered = true;
+
+  proc.onServerRequest('item/tool/call', async (raw: unknown): Promise<DynamicToolCallResponse> => {
+    const params = raw as DynamicToolCallParams;
+    // Route to the agent/session that started this thread (set before turn/start).
+    // Empty fallback only if the thread is unknown (shouldn't happen).
+    const ctx = threadCtx.get(params.threadId) ?? {};
+    logger.debug('codex app-server: item/tool/call', { tool: params.tool, threadId: params.threadId, agentId: ctx.agentId });
+    try {
+      // dispatchOpenAiTool handles meta-tools, registry lookup, gating, and the
+      // sub-agent lockdown — and returns a JSON string result.
+      const argsStr = JSON.stringify(params.arguments ?? {});
+      const result = await dispatchOpenAiTool(params.tool, argsStr, ctx);
+      return { success: true, contentItems: [{ type: 'inputText', text: result }] };
+    } catch (err) {
+      return { success: false, contentItems: [{ type: 'inputText', text: (err as Error).message }] };
+    }
+  });
+
+  // Token refresh: read ~/.codex/auth.json and map to ChatgptAuthTokensRefreshResponse.
+  proc.onServerRequest('account/chatgptAuthTokens/refresh', async () => {
+    const authFile = path.join(process.env.HOME ?? '', '.codex', 'auth.json');
+    const auth = JSON.parse(fs.readFileSync(authFile, 'utf-8'));
+    const tokens = (auth.tokens ?? {}) as { accessToken?: string; chatgptAccountId?: string; chatgptPlanType?: string | null };
+    return {
+      accessToken:      tokens.accessToken      ?? '',
+      chatgptAccountId: tokens.chatgptAccountId ?? '',
+      chatgptPlanType:  tokens.chatgptPlanType  ?? null,
+    };
+  });
+
+  // Approval prompts: auto-approve (we set approvalPolicy:'never', but handle residuals).
+  for (const method of [
+    'item/commandExecution/requestApproval',
+    'item/fileChange/requestApproval',
+    'item/permissions/requestApproval',
+    'applyPatchApproval',
+    'execCommandApproval',
+  ]) {
+    proc.onServerRequest(method, async () => ({ approved: true }));
+  }
+
+  proc.onServerRequest('mcpServer/elicitation/request', async (raw: unknown) => {
+    const p = raw as { serverName?: string };
+    return p?.serverName === 'neuroclaw'
+      ? { action: 'accept', content: null, _meta: null }
+      : { action: 'decline', content: null, _meta: null };
+  });
+}
+
+// ── Per-turn subscription (attach listeners BEFORE turn/start — no delta race) ─
+function createTurnSubscription(proc: CodexAppServerProcess, threadId: string) {
+  const queue: string[] = [];
+  let done = false;
+  let pendingError: Error | undefined;
+  let wake: (() => void) | null = null;
+  let latestUsage: TokenUsageBreakdown | undefined;
+  let sawCompletion = false;
+  const ping = () => { wake?.(); wake = null; };
+
+  // Bound the turn. Without this, a wedged codex (deltas then silence, or one
+  // that never sends turn/completed) keeps `drain` blocked on its wake promise
+  // forever — the SSE stream never closes, the session queue jams, and the run
+  // heartbeats "thinking" indefinitely. Mirror codex-cli's hard cap
+  // (config.codex.timeoutMs). On expiry we fail the turn; the caller's finally
+  // archives the ephemeral thread, which stops codex working on it.
+  let hardTimer: ReturnType<typeof setTimeout> | null = null;
+  const failTimeout = () => {
+    if (done) return;
+    const mins = Math.round(config.codex.timeoutMs / 60000);
+    pendingError = new Error(`codex app-server turn exceeded hard timeout (${mins}m)`);
+    done = true;
+    ping();
+  };
+
+  const onDelta = (raw: unknown) => { const p = raw as AgentMessageDeltaNotification; if (p?.delta) { queue.push(p.delta); ping(); } };
+  const onUsageNote = (raw: unknown) => { const p = raw as ThreadTokenUsageUpdatedNotification; if (p?.tokenUsage?.last) latestUsage = p.tokenUsage.last; };
+  const onCompleted = () => { sawCompletion = true; done = true; ping(); };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const onError = (raw: unknown) => { const p = raw as any; pendingError = new Error(p?.error?.message ?? 'codex turn error'); done = true; ping(); };
+  const onProcExit = (err: unknown) => { pendingError = err as Error; done = true; ping(); };
+
+  proc.on(`item/agentMessage/delta:${threadId}`, onDelta);
+  proc.on(`thread/tokenUsage/updated:${threadId}`, onUsageNote);
+  proc.once(`turn/completed:${threadId}`, onCompleted);
+  proc.once(`error:${threadId}`, onError);
+  proc.once('process_exit', onProcExit);
+  hardTimer = setTimeout(failTimeout, config.codex.timeoutMs);
+
+  const dispose = () => {
+    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+    proc.off(`item/agentMessage/delta:${threadId}`, onDelta);
+    proc.off(`thread/tokenUsage/updated:${threadId}`, onUsageNote);
+    proc.off(`turn/completed:${threadId}`, onCompleted);
+    proc.off(`error:${threadId}`, onError);
+    proc.off('process_exit', onProcExit);
+  };
+
+  async function* drain(
+    scrubber: ReturnType<typeof createStreamScrubber>,
+    onUsage?: (u: CodexCliUsage) => void,
+  ): AsyncGenerator<string, void, void> {
+    try {
+      while (!done || queue.length > 0) {
+        while (queue.length > 0) { const safe = scrubber.push(queue.shift()!); if (safe) yield safe; }
+        if (!done) await new Promise<void>((res) => { wake = res; });
+      }
+      const tail = scrubber.flush();
+      if (tail) yield tail;
+      if (pendingError) throw pendingError;
+      if (latestUsage && onUsage) {
+        onUsage({
+          input_tokens:            latestUsage.inputTokens,
+          output_tokens:           latestUsage.outputTokens,
+          cached_input_tokens:     latestUsage.cachedInputTokens,
+          reasoning_output_tokens: latestUsage.reasoningOutputTokens,
+        });
+      }
+    } finally {
+      dispose();
+    }
+  }
+
+  return { drain, fail: (e: Error) => { pendingError = e; done = true; ping(); }, get sawCompletion() { return sawCompletion; }, dispose };
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+export interface CodexAppServerOptions {
+  prompt:        string;
+  systemPrompt?: string;
+  model?:        string;
+  agentId?:      string | null;
+  sessionId?:    string | null;
+  cwd?:          string;
+  onUsage?:      (u: CodexCliUsage) => void;
+}
+
+export async function* streamCodexAppServerChat(
+  opts: CodexAppServerOptions,
+): AsyncGenerator<string, void, void> {
+  const ctx: ToolContext = { agentId: opts.agentId ?? null, sessionId: opts.sessionId ?? null };
+  const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'codex-app-server', buildChildEnv());
+  const scrubber = createStreamScrubber(sub.resolved);
+
+  const proc = getProcess();
+  // Always await — start() is idempotent and a no-op on a warm process, but on
+  // a cold/in-flight start it makes concurrent turns share one handshake so none
+  // sends thread/start before initialize completes.
+  await proc.start(buildChildEnv());
+
+  registerToolDispatch(proc);   // no-op after first call (guarded); ctx-agnostic
+
+  // Fresh EPHEMERAL thread per turn. developerInstructions carry the CURRENT system
+  // prompt (the caller rebuilds it every turn — team/memory/inbox + recent history),
+  // so the dynamic prompt is never stale, matching the CLI path. dynamicTools are
+  // this agent's visible tools. NeuroClaw owns conversation history; the Codex
+  // thread is transient. `dynamicTools`/`ephemeral` pass through though they are
+  // absent from the generated ThreadStartParams bindings (verified live).
+  const startParams: Record<string, unknown> = {
+    cwd:                   opts.cwd ?? process.cwd(),
+    developerInstructions: opts.systemPrompt,
+    dynamicTools:          await buildDynamicTools(ctx),
+    approvalPolicy:        'never',
+    ephemeral:             true,
+  };
+  if (opts.model) startParams.model = opts.model;
+  const res = await proc.request<{ thread: { id: string } }>('thread/start', startParams);
+  const threadId = res.thread.id;
+  // Route this thread's tool calls to THIS turn's agent/session.
+  threadCtx.set(threadId, ctx);
+
+  // Attach listeners BEFORE starting the turn so no agentMessage/delta is missed.
+  const turnSub = createTurnSubscription(proc, threadId);
+  const turnPromise = proc.request('turn/start', {
+    threadId,
+    input: [{ type: 'text', text: opts.prompt }],
+  }).catch((e: Error) => { turnSub.fail(e); });
+
+  try {
+    yield* turnSub.drain(scrubber, opts.onUsage);
+    await turnPromise;
+  } finally {
+    threadCtx.delete(threadId);
+    // Ephemeral thread — best-effort archive so threads don't accumulate in the
+    // long-lived process. Fire-and-forget; any failure is harmless.
+    proc.request('thread/archive', { threadId }).catch(() => {});
+  }
+}
+
+// Best-effort shutdown for process exit / tests.
+export async function stopCodexAppServer(): Promise<void> {
+  if (_instance) { await _instance.stop(); _instance = null; }
+}

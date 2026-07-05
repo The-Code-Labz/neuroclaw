@@ -1,0 +1,588 @@
+#!/usr/bin/env node
+/* eslint-disable no-console */
+/**
+ * bin/nc-broker — operator CLI for the NC Broker (spec v3 §0.2).
+ *
+ * v1 commands:
+ *   nc-broker bootstrap            — generate + persist HMAC key
+ *   nc-broker bootstrap --hmac-key <base64>  — install a specific key
+ *   nc-broker keyring-status       — show key presence + length
+ *   nc-broker mint-token --agent <name> [--ttl 30]  — mint a token for testing
+ *
+ * The key is persisted as base64 in `.nc-broker-hmac-key` (chmod 600). For
+ * production, copy the value into `NC_BROKER_HMAC_KEY` in your env (or OS
+ * keyring per spec §8) so the file can be deleted.
+ */
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const ROOT = path.resolve(__dirname, '..');
+const KEY_FILE = path.join(ROOT, '.nc-broker-hmac-key');
+
+// Auto-load .env so subcommands see NC_BROKER_*, DASHBOARD_TOKEN, etc. without
+// the operator needing to `source .env` first. Dotenv is already a project
+// dep so this resolves cleanly when nc-broker is run from the repo root.
+try { require(path.join(ROOT, 'node_modules', 'dotenv')).config({ path: path.join(ROOT, '.env') }); }
+catch { /* dotenv missing or .env missing — fall back to whatever the shell exported */ }
+
+function fail(msg, code = 1) {
+  console.error('nc-broker: ' + msg);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const out = { _: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        out[key] = true;
+      } else {
+        out[key] = next;
+        i++;
+      }
+    } else {
+      out._.push(a);
+    }
+  }
+  return out;
+}
+
+function cmdBootstrap(args) {
+  let b64;
+  if (args['hmac-key']) {
+    b64 = String(args['hmac-key']).trim();
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length !== 32) fail('hmac-key must decode to 32 bytes (got ' + buf.length + ')');
+  } else {
+    const key = crypto.randomBytes(32);
+    b64 = key.toString('base64');
+    console.log('Generated new 32-byte HMAC key.');
+  }
+  fs.writeFileSync(KEY_FILE, b64 + '\n', { mode: 0o600 });
+  console.log('Wrote ' + KEY_FILE + ' (mode 600).');
+  console.log();
+  console.log('Next steps:');
+  console.log('  1. Copy this value into your .env as NC_BROKER_HMAC_KEY:');
+  console.log('       NC_BROKER_HMAC_KEY=' + b64);
+  console.log('  2. Store the value in 1Password under "NeuroClaw Broker Bootstrap".');
+  console.log('  3. (optional) Delete ' + KEY_FILE + ' once env var is set.');
+  console.log('  4. Restart the dashboard so the new key is picked up.');
+}
+
+function cmdKeyringStatus() {
+  const envVal = (process.env.NC_BROKER_HMAC_KEY || '').trim();
+  if (envVal) {
+    try {
+      const buf = Buffer.from(envVal, 'base64');
+      console.log('NC_BROKER_HMAC_KEY (env): present (' + buf.length + ' bytes)');
+    } catch {
+      console.log('NC_BROKER_HMAC_KEY (env): present but malformed');
+    }
+  } else {
+    console.log('NC_BROKER_HMAC_KEY (env): absent');
+  }
+
+  if (fs.existsSync(KEY_FILE)) {
+    const raw = fs.readFileSync(KEY_FILE, 'utf8').trim();
+    try {
+      const buf = Buffer.from(raw, 'base64');
+      console.log(KEY_FILE + ': present (' + buf.length + ' bytes)');
+    } catch {
+      console.log(KEY_FILE + ': present but malformed');
+    }
+  } else {
+    console.log(KEY_FILE + ': absent');
+  }
+}
+
+function cmdMintToken(args) {
+  const agentName = args.agent;
+  const ttl = parseInt(String(args.ttl || '30'), 10);
+  if (!agentName) fail('--agent <name> is required');
+
+  let keyBuf = null;
+  if (process.env.NC_BROKER_HMAC_KEY) {
+    try { keyBuf = Buffer.from(process.env.NC_BROKER_HMAC_KEY.trim(), 'base64'); } catch {}
+  }
+  if (!keyBuf && fs.existsSync(KEY_FILE)) {
+    try { keyBuf = Buffer.from(fs.readFileSync(KEY_FILE, 'utf8').trim(), 'base64'); } catch {}
+  }
+  if (!keyBuf || keyBuf.length !== 32) fail('no HMAC key available; run `nc-broker bootstrap` first');
+
+  const sid = crypto.randomUUID();
+  const payload = {
+    v: 1,
+    agt: agentName,
+    sid,
+    exp: Math.floor(Date.now() / 1000) + ttl,
+    jti: crypto.randomBytes(16).toString('hex'),
+  };
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', keyBuf).update(b64Payload).digest('base64url');
+  const token = b64Payload + '.' + sig;
+  console.log(token);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// migrate-env — three-step state-tracked .env → broker migration (spec v3 §13)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Phases:
+//   A. classify  — propose SCOPE_SERVICE_TYPE names for every .env entry
+//   B. apply     — write broker secrets, snapshot .env, rewrite .env
+//   C. rollback  — walk state.json backward, restore prior .env
+//
+// State file: /tmp/nc-broker-migration-state.json (overrideable via --state)
+// Mapping file: human-readable JSON the operator edits between dry-run + apply.
+
+const DEFAULT_STATE   = '/tmp/nc-broker-migration-state.json';
+const DEFAULT_MAPPING = '/tmp/nc-broker-mapping.json';
+
+const SECRET_SUFFIX_RE = /_(KEY|TOKEN|SECRET|PASSWORD|PAT)$|^(API_KEY|SECRET|PASSWORD)$/i;
+const URL_RE = /_URL$/i;
+
+function parseEnvFile(text) {
+  const out = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1);
+    // Strip wrapping quotes
+    if ((val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+function classifyKey(key) {
+  // Heuristic: keys that already start with SHARED_/NEUROCLAW_/<AGENT>_ keep their
+  // existing prefix. Keys ending in _KEY/_TOKEN/_SECRET/_PASSWORD/_PAT get
+  // SHARED_<rest>. _URL → NEUROCLAW_<rest>_URL. Everything else → skip.
+  if (/^SHARED_/.test(key) || /^NEUROCLAW_/.test(key)) return { proposed: key, kind: 'keep' };
+  if (URL_RE.test(key)) {
+    return { proposed: 'NEUROCLAW_' + key.replace(URL_RE, '') + '_URL', kind: 'project' };
+  }
+  if (SECRET_SUFFIX_RE.test(key)) {
+    return { proposed: 'SHARED_' + key, kind: 'shared' };
+  }
+  return { proposed: null, kind: 'skip' };
+}
+
+function readJsonOrNull(p) {
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
+function writeJson(p, data) {
+  fs.writeFileSync(p, JSON.stringify(data, null, 2));
+}
+
+async function brokerFetch(method, route, body) {
+  const port = process.env.DASHBOARD_PORT || '3141';
+  const tok = process.env.DASHBOARD_TOKEN;
+  if (!tok) throw new Error('DASHBOARD_TOKEN not set in env (needed to reach broker)');
+  const url = 'http://127.0.0.1:' + port + route;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      'x-dashboard-token': tok,
+      'content-type': 'application/json',
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  if (!res.ok) {
+    const detail = json.error || json.raw || ('HTTP ' + res.status);
+    throw new Error(detail);
+  }
+  return json;
+}
+
+function cmdMigrateEnv(args) {
+  const statePath = args.state || DEFAULT_STATE;
+  const mappingPath = args.mapping || DEFAULT_MAPPING;
+
+  if (args['dry-run']) {
+    cmdMigrateDryRun(mappingPath);
+  } else if (args.apply) {
+    cmdMigrateApply(statePath, mappingPath);
+  } else if (args.rollback) {
+    cmdMigrateRollback(statePath);
+  } else if (args.status) {
+    cmdMigrateStatus(statePath);
+  } else {
+    fail('migrate-env requires --dry-run | --apply | --rollback | --status');
+  }
+}
+
+function cmdMigrateDryRun(mappingPath) {
+  const envPath = path.join(ROOT, '.env');
+  if (!fs.existsSync(envPath)) fail('.env not found at ' + envPath);
+  const entries = parseEnvFile(fs.readFileSync(envPath, 'utf8'));
+
+  const proposals = [];
+  let secretsCount = 0;
+  let skipCount = 0;
+  for (const [key, value] of Object.entries(entries)) {
+    const c = classifyKey(key);
+    if (c.kind === 'skip') {
+      skipCount++;
+      proposals.push({ key, proposed: null, kind: 'skip' });
+    } else {
+      secretsCount++;
+      proposals.push({ key, proposed: c.proposed, kind: c.kind, value_preview: maskPreview(value) });
+    }
+  }
+
+  writeJson(mappingPath, { generatedAt: new Date().toISOString(), proposals });
+
+  console.log('Wrote proposed mapping to ' + mappingPath);
+  console.log();
+  console.log('Summary:');
+  console.log('  total .env entries : ' + Object.keys(entries).length);
+  console.log('  migrate (secrets)  : ' + secretsCount);
+  console.log('  skip (non-secret)  : ' + skipCount);
+  console.log();
+  console.log('Review and edit ' + mappingPath + ' as needed, then run:');
+  console.log('  nc-broker migrate-env --apply --mapping ' + mappingPath);
+}
+
+function maskPreview(v) {
+  if (!v) return '';
+  if (v.length <= 8) return '***';
+  return v.slice(0, 4) + '...' + v.slice(-4);
+}
+
+async function cmdMigrateApply(statePath, mappingPath) {
+  const mapping = readJsonOrNull(mappingPath);
+  if (!mapping) fail('mapping file not found: ' + mappingPath + ' (run --dry-run first)');
+
+  const envPath = path.join(ROOT, '.env');
+  const envText = fs.readFileSync(envPath, 'utf8');
+  const entries = parseEnvFile(envText);
+
+  // Existing state file → resume; otherwise fresh.
+  let state = readJsonOrNull(statePath) || {
+    startedAt: new Date().toISOString(),
+    step1_complete: false, step2_complete: false, step3_complete: false,
+    created_secrets: [],
+    env_backup_path: null,
+  };
+
+  if (state.step1_complete && state.step2_complete) {
+    console.log('Migration already complete per ' + statePath);
+    return;
+  }
+
+  // ── Step 1: write each migrate-able secret into the broker ─────────────
+  if (!state.step1_complete) {
+    console.log('Step 1/3: creating broker secrets...');
+    for (const p of mapping.proposals) {
+      if (p.kind === 'skip' || !p.proposed) continue;
+      if (state.created_secrets.includes(p.proposed)) continue;
+      const val = entries[p.key];
+      if (val === undefined) {
+        console.log('  · ' + p.key + ' → MISSING in .env, skipping');
+        continue;
+      }
+      try {
+        await brokerFetch('POST', '/api/broker/admin/create', {
+          name: p.proposed, value: val, notes: 'migrated from .env:' + p.key, tags: ['migrated'],
+        });
+        state.created_secrets.push(p.proposed);
+        writeJson(statePath, state);
+        console.log('  ✓ ' + p.proposed);
+      } catch (e) {
+        if (String(e.message).startsWith('secret_already_exists')) {
+          console.log('  ~ ' + p.proposed + ' (already exists; skipping)');
+          if (!state.created_secrets.includes(p.proposed)) {
+            state.created_secrets.push(p.proposed);
+            writeJson(statePath, state);
+          }
+        } else {
+          console.error('  ✗ ' + p.proposed + ': ' + e.message);
+          fail('step 1 aborted — state preserved at ' + statePath);
+        }
+      }
+    }
+    state.step1_complete = true;
+    writeJson(statePath, state);
+  }
+
+  // ── Step 2: backup + rewrite .env ───────────────────────────────────────
+  if (!state.step2_complete) {
+    console.log('Step 2/3: backing up + rewriting .env...');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = envPath + '.migrated-' + ts;
+    fs.copyFileSync(envPath, backupPath);
+    state.env_backup_path = backupPath;
+
+    // Drop migrated keys from .env; keep skipped (non-secret) ones.
+    const migratedSet = new Set(
+      mapping.proposals.filter((p) => p.kind !== 'skip' && p.proposed).map((p) => p.key),
+    );
+    const newLines = [];
+    let droppedHeaderShown = false;
+    for (const raw of envText.split('\n')) {
+      const trim = raw.trim();
+      if (!trim || trim.startsWith('#')) { newLines.push(raw); continue; }
+      const eq = trim.indexOf('=');
+      if (eq <= 0) { newLines.push(raw); continue; }
+      const key = trim.slice(0, eq).trim();
+      if (migratedSet.has(key)) {
+        if (!droppedHeaderShown) {
+          newLines.push('# Secrets migrated to NC Broker on ' + new Date().toISOString());
+          droppedHeaderShown = true;
+        }
+        newLines.push('# (broker) ' + key + ' → ' + (mapping.proposals.find((p) => p.key === key) || {}).proposed);
+        continue;
+      }
+      newLines.push(raw);
+    }
+    fs.writeFileSync(envPath, newLines.join('\n'));
+    state.step2_complete = true;
+    writeJson(statePath, state);
+    console.log('  ✓ backup: ' + backupPath);
+    console.log('  ✓ .env rewritten (migrated keys commented out)');
+  }
+
+  state.step3_complete = true;
+  state.completedAt = new Date().toISOString();
+  writeJson(statePath, state);
+
+  console.log();
+  console.log('Migration complete.');
+  console.log('  state    : ' + statePath);
+  console.log('  backup   : ' + state.env_backup_path);
+  console.log('  created  : ' + state.created_secrets.length + ' secrets');
+  console.log();
+  console.log('Codebase still references process.env.<KEY> for migrated keys.');
+  console.log('Update those call sites to broker.use(...) one by one.');
+}
+
+async function cmdMigrateRollback(statePath) {
+  const state = readJsonOrNull(statePath);
+  if (!state) fail('no migration state at ' + statePath);
+
+  console.log('Rolling back migration (state: ' + statePath + ')...');
+
+  // Step 2 reverse — restore .env from backup
+  if (state.step2_complete && state.env_backup_path) {
+    if (fs.existsSync(state.env_backup_path)) {
+      const envPath = path.join(ROOT, '.env');
+      fs.copyFileSync(state.env_backup_path, envPath);
+      console.log('  ✓ .env restored from ' + state.env_backup_path);
+    } else {
+      console.log('  ! backup file missing: ' + state.env_backup_path);
+    }
+  }
+
+  // Step 1 reverse — delete broker secrets
+  if (state.step1_complete && state.created_secrets.length > 0) {
+    for (const name of state.created_secrets) {
+      try {
+        await brokerFetch('POST', '/api/broker/admin/delete', { name });
+        console.log('  ✓ deleted ' + name);
+      } catch (e) {
+        console.log('  ! delete failed for ' + name + ': ' + e.message);
+      }
+    }
+  }
+
+  fs.unlinkSync(statePath);
+  console.log('Rollback complete.');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// webhook-secret — generate or rotate NC_BROKER_WEBHOOK_SECRET
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Writes the new secret into .env (overwriting any existing
+// NC_BROKER_WEBHOOK_SECRET line). The operator pastes the value into the
+// Infisical UI webhook config. The broker reads it from .env at boot.
+
+function cmdWebhookSecret(args) {
+  const envPath = path.join(ROOT, '.env');
+  if (!fs.existsSync(envPath)) fail('.env not found at ' + envPath);
+
+  const force = args.rotate || args.force;
+  let envText = fs.readFileSync(envPath, 'utf8');
+  const existing = /^NC_BROKER_WEBHOOK_SECRET=([^\n]*)$/m.exec(envText);
+
+  if (existing && existing[1].trim() && !force) {
+    console.log('NC_BROKER_WEBHOOK_SECRET is already set in ' + envPath);
+    console.log('Re-run with --rotate to generate a fresh value.');
+    return;
+  }
+
+  const newSecret = crypto.randomBytes(32).toString('hex');
+  const line = 'NC_BROKER_WEBHOOK_SECRET=' + newSecret;
+
+  if (existing) {
+    envText = envText.replace(/^NC_BROKER_WEBHOOK_SECRET=[^\n]*$/m, line);
+  } else {
+    envText = envText.replace(/\s*$/, '\n' + line + '\n');
+  }
+  fs.writeFileSync(envPath, envText);
+
+  console.log((force ? 'Rotated' : 'Generated') + ' NC_BROKER_WEBHOOK_SECRET (hex, 64 chars):');
+  console.log();
+  console.log('  ' + newSecret);
+  console.log();
+  console.log('Already written to ' + envPath + '.');
+  console.log('Restart the dashboard for the broker to pick it up.');
+  console.log();
+  console.log('Next: paste the value into the Infisical webhook config');
+  console.log('(see `nc-broker webhook-info`).');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// webhook-info — print the URL + header name to paste into Infisical
+// ────────────────────────────────────────────────────────────────────────────
+
+async function cmdWebhookInfo() {
+  // Prefer the broker's live introspection endpoint when the dashboard is up;
+  // fall back to deriving URLs locally otherwise.
+  try {
+    const json = await brokerFetch('GET', '/api/broker/admin/webhook-info');
+    console.log('Webhook URL              : ' + json.url);
+    console.log('Signature header         : ' + json.signatureHeader);
+    console.log('Signature algorithm      : ' + json.signatureAlgorithm);
+    console.log('Secret configured?       : ' + (json.secretConfigured ? 'yes (' + json.secretLength + ' chars)' : 'NO — run `nc-broker webhook-secret`'));
+    console.log('Public URL source        : ' + json.publicBaseSource);
+    console.log();
+    console.log('In the Infisical UI:');
+    console.log('  1. Project Settings → Webhooks → Create Webhook');
+    console.log('  2. URL                : paste the URL above');
+    console.log('  3. Secret             : paste the value of NC_BROKER_WEBHOOK_SECRET');
+    console.log('  4. Trigger events     : select "Secret modified" (rotation)');
+    console.log('  5. Save, then click "Send test event" — broker should log:');
+    console.log('       broker: rotation webhook fired');
+  } catch (e) {
+    const port = process.env.DASHBOARD_PORT || '3141';
+    const publicBase = (process.env.DASHBOARD_PUBLIC_URL || '').trim().replace(/\/+$/, '')
+      || ('http://127.0.0.1:' + port);
+    console.log('(dashboard not reachable — showing values from .env)');
+    console.log('Webhook URL              : ' + publicBase + '/webhooks/broker/rotation');
+    console.log('Signature header         : x-broker-webhook-signature');
+    console.log('Signature algorithm      : HMAC-SHA256(hex)');
+    console.log('Secret configured?       : ' + (process.env.NC_BROKER_WEBHOOK_SECRET ? 'yes' : 'NO'));
+    console.log();
+    console.log('Live probe failed: ' + e.message);
+  }
+}
+
+async function cmdInfisicalStatus() {
+  const backend = (process.env.NC_BROKER_STORAGE || 'env-manager').trim().toLowerCase();
+  console.log('NC_BROKER_STORAGE       : ' + backend);
+  if (backend !== 'infisical') {
+    console.log('-> Currently using env-manager. Set NC_BROKER_STORAGE=infisical');
+    console.log('   in .env and restart the dashboard to switch.');
+    return;
+  }
+
+  const siteUrl  = process.env.NC_BROKER_INFISICAL_SITE_URL  || 'http://127.0.0.1:8222';
+  const clientId = (process.env.NC_BROKER_INFISICAL_CLIENT_ID || '').trim();
+  const project  = (process.env.NC_BROKER_INFISICAL_PROJECT_ID || '').trim();
+  const env      = (process.env.NC_BROKER_INFISICAL_ENVIRONMENT || 'prod').trim();
+  console.log('Infisical site URL      : ' + siteUrl);
+  console.log('Project ID              : ' + (project ? project.slice(0, 8) + '...' : '(unset)'));
+  console.log('Environment             : ' + env);
+  console.log('Client ID               : ' + (clientId ? clientId.slice(0, 8) + '...' : '(unset)'));
+  console.log('Client secret           : ' + (process.env.NC_BROKER_INFISICAL_CLIENT_SECRET ? '(present)' : '(unset)'));
+
+  // Live health probe via the broker's own /storage endpoint.
+  try {
+    const json = await brokerFetch('GET', '/api/broker/admin/storage');
+    console.log('');
+    console.log('Live health             : ' + (json.ok ? 'OK' : 'FAIL'));
+    console.log('Detail                  : ' + json.detail);
+  } catch (e) {
+    console.log('');
+    console.log('Live health probe       : FAILED (' + e.message + ')');
+    console.log('  - is the dashboard running on the configured port?');
+  }
+}
+
+function cmdMigrateStatus(statePath) {
+  const state = readJsonOrNull(statePath);
+  if (!state) { console.log('No migration in progress (' + statePath + ' missing)'); return; }
+  console.log('Migration state: ' + statePath);
+  console.log('  started  : ' + state.startedAt);
+  console.log('  step 1   : ' + (state.step1_complete ? '✓' : '·'));
+  console.log('  step 2   : ' + (state.step2_complete ? '✓' : '·'));
+  console.log('  step 3   : ' + (state.step3_complete ? '✓' : '·'));
+  console.log('  created  : ' + (state.created_secrets || []).length + ' secrets');
+  if (state.env_backup_path) console.log('  backup   : ' + state.env_backup_path);
+  if (state.completedAt)     console.log('  done     : ' + state.completedAt);
+}
+
+function help() {
+  console.log('Usage: nc-broker <command> [options]');
+  console.log();
+  console.log('Commands:');
+  console.log('  bootstrap [--hmac-key <base64>]      Generate or install an HMAC key');
+  console.log('  keyring-status                       Show HMAC key presence');
+  console.log('  mint-token --agent <name> [--ttl 30] Mint an HMAC token (for testing/scripts)');
+  console.log();
+  console.log('  migrate-env --dry-run [--mapping <path>]');
+  console.log('                                       Propose SCOPE_SERVICE_TYPE mapping');
+  console.log('  migrate-env --apply  [--mapping <path>] [--state <path>]');
+  console.log('                                       Apply migration (step-tracked, resumable)');
+  console.log('  migrate-env --rollback [--state <path>]');
+  console.log('                                       Reverse migration using state file');
+  console.log('  migrate-env --status   [--state <path>]');
+  console.log('                                       Show current migration state');
+  console.log();
+  console.log('  infisical-status                     Show storage backend + Infisical health');
+  console.log();
+  console.log('  webhook-secret [--rotate]            Generate (or rotate) NC_BROKER_WEBHOOK_SECRET');
+  console.log('  webhook-info                         Show webhook URL + header for Infisical UI');
+  console.log();
+  console.log('Env required for broker-talking commands:');
+  console.log('  DASHBOARD_TOKEN     — same value the dashboard checks');
+  console.log('  DASHBOARD_PORT      — optional, defaults to 3141');
+  console.log();
+  console.log('Files:');
+  console.log('  ' + KEY_FILE);
+  console.log('  ' + DEFAULT_STATE);
+  console.log('  ' + DEFAULT_MAPPING);
+  console.log();
+  console.log('See docs/specs/nc-broker-v3.md for the full spec.');
+}
+
+const args = parseArgs(process.argv.slice(2));
+const cmd = args._[0];
+(async () => {
+  switch (cmd) {
+    case 'bootstrap':       cmdBootstrap(args); break;
+    case 'keyring-status':  cmdKeyringStatus(); break;
+    case 'mint-token':      cmdMintToken(args); break;
+    case 'migrate-env':     await cmdMigrateEnv(args); break;
+    case 'infisical-status': await cmdInfisicalStatus(); break;
+    case 'webhook-secret':  cmdWebhookSecret(args); break;
+    case 'webhook-info':    await cmdWebhookInfo(); break;
+    case undefined:
+    case 'help':
+    case '-h':
+    case '--help':          help(); break;
+    default:                fail('unknown command: ' + cmd); break;
+  }
+})().catch((err) => {
+  console.error('nc-broker: ' + (err && err.message ? err.message : err));
+  process.exit(1);
+});

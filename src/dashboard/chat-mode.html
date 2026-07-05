@@ -1,0 +1,1127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#d97b5e"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="NC Chat"/>
+<link rel="manifest" href="/chat-mode-manifest.json"/>
+<link rel="apple-touch-icon" href="/icon.svg"/>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<title>NeuroClaw Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<style>
+:root {
+  --bg-dark: #1a1814; --bg-main: #201e1b; --bg-topbar: #1c1a17; --bg-input: #161412;
+  --text: #f0ece4; --text-soft: #c8c4bc; --text-muted: #9a9490; --text-dim: #6b6560;
+  --accent: #d97b5e; --accent-2: #c9a56a;
+  --border: rgba(255,240,210,0.07); --border-soft: rgba(255,240,210,0.05);
+  --border-input: rgba(255,240,210,0.12); --border-focus: rgba(217,123,94,0.40);
+  --user-bg: rgba(217,123,94,0.15); --user-border: rgba(217,123,94,0.30);
+  --agent-bg: rgba(255,240,210,0.04); --agent-border: rgba(255,240,210,0.08);
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --display: 'Space Grotesk', system-ui, sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg-dark);color:var(--text);font-family:var(--display);touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+#root{height:100%}
+.cm-shell{display:flex;height:100vh;height:100dvh;overflow:hidden}
+/* Sidebar */
+.cm-sidebar{width:240px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg-dark);border-right:1px solid var(--border)}
+.cm-sb-hdr{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.cm-logo{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:700;font-size:13px;letter-spacing:.08em}
+.cm-logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px rgba(217,123,94,.6)}
+.cm-new-btn{display:flex;align-items:center;gap:5px;background:rgba(217,123,94,.12);border:1px solid rgba(217,123,94,.3);border-radius:6px;padding:5px 10px;color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--display)}
+.cm-new-btn:hover{background:rgba(217,123,94,.2)}
+.cm-sec-lbl{padding:10px 16px 5px;font-size:10px;font-weight:600;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;flex-shrink:0}
+.cm-sessions{flex:1;overflow-y:auto}
+.cm-sitem{padding:9px 16px;border-left:2px solid transparent;color:var(--text-muted);font-size:12px;display:flex;flex-direction:column;gap:2px;cursor:pointer}
+.cm-sitem:hover{background:rgba(255,240,210,.04)}
+.cm-sitem.active{border-left-color:var(--accent);background:rgba(217,123,94,.08);color:var(--text)}
+.cm-sitem-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-sitem-meta{font-size:10px;color:var(--text-dim)}
+.cm-sitem.active .cm-sitem-meta{color:var(--text-muted)}
+.cm-sb-foot{padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
+.cm-av{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;flex-shrink:0}
+/* Main */
+.cm-main{flex:1;display:flex;flex-direction:column;background:var(--bg-main);overflow:hidden;min-width:0}
+.cm-topbar{padding:12px 20px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:10px;background:var(--bg-topbar);flex-shrink:0}
+.cm-chat-title{color:var(--text);font-size:14px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-agent-pill{display:flex;align-items:center;gap:6px;background:rgba(217,123,94,.1);border:1px solid rgba(217,123,94,.25);border-radius:20px;padding:4px 12px 4px 8px;white-space:nowrap}
+.cm-agent-pill select{background:transparent;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;outline:none;font-family:var(--display)}
+.cm-pdot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 5px rgba(217,123,94,.7);flex-shrink:0}
+/* Mobile menu button (hidden on desktop) */
+.cm-mob-menu-btn{display:none}
+/* Thread */
+.cm-thread{flex:1;padding:20px 24px;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
+.cm-empty{text-align:center;padding:60px 20px;color:var(--text-dim);font-size:13px;font-family:var(--mono)}
+/* User bubble */
+.cm-umsg{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.cm-ububble{background:var(--user-bg);border:1px solid var(--user-border);border-radius:16px 16px 4px 16px;padding:10px 16px;color:var(--text);font-size:13px;line-height:1.55;max-width:65%;white-space:pre-wrap;word-break:break-word}
+.cm-msg-meta{color:var(--text-dim);font-size:10px;font-family:var(--mono)}
+.cm-attach-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px}
+.cm-attach-img{height:60px;border-radius:6px;border:1px solid var(--border-input)}
+.cm-attach-doc{display:inline-flex;align-items:center;gap:4px;background:rgba(255,240,210,.06);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--mono);font-size:10px;color:var(--text-muted)}
+/* Agent bubble */
+.cm-amsg{display:flex;gap:10px;max-width:80%}
+.cm-aav{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#2c2a26,#3a3630);border:1px solid rgba(217,123,94,.25);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:var(--accent);flex-shrink:0;overflow:hidden}
+.cm-aav img{width:100%;height:100%;object-fit:cover}
+.cm-abody{display:flex;flex-direction:column;gap:4px;min-width:0}
+.cm-ahdr{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cm-albl{color:var(--accent);font-size:12px;font-weight:600}
+.cm-mtag{background:rgba(255,240,210,.06);border:1px solid rgba(255,240,210,.1);border-radius:4px;padding:1px 6px;color:var(--text-dim);font-size:10px;font-family:var(--mono)}
+.cm-speak-btn{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:13px;cursor:pointer;padding:1px 4px;border-radius:4px}
+.cm-speak-btn:hover{color:var(--text-muted);background:rgba(255,240,210,.06)}
+.cm-abubble{background:var(--agent-bg);border:1px solid var(--agent-border);border-radius:4px 16px 16px 16px;padding:10px 16px;color:var(--text-soft);font-size:13px;line-height:1.65;word-break:break-word;min-width:120px}
+/* Activity log */
+.cm-activity{border-left:2px solid rgba(217,123,94,.2);padding-left:10px;margin-bottom:6px;display:flex;flex-direction:column;gap:3px}
+.cm-act-row{display:flex;align-items:center;gap:6px;font-size:10px;font-family:var(--mono);color:var(--text-dim)}
+.cm-act-row.live{color:var(--accent)}
+.cm-spin{display:inline-block;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Markdown */
+.cm-md h1,.cm-md h2,.cm-md h3{color:var(--text);margin:10px 0 4px}
+.cm-md h1{font-size:15px}.cm-md h2{font-size:14px}.cm-md h3{font-size:13px}
+.cm-md p{margin:4px 0}.cm-md ul,.cm-md ol{padding-left:18px;margin:4px 0}.cm-md li{margin:2px 0}
+.cm-md code{background:rgba(201,165,106,.1);border:1px solid rgba(201,165,106,.2);border-radius:3px;padding:1px 5px;font-family:var(--mono);font-size:11px;color:var(--accent-2)}
+.cm-md pre{position:relative;background:rgba(0,0,0,.35);border:1px solid rgba(255,240,210,.1);border-radius:6px;padding:10px 12px;margin:8px 0;overflow-x:auto}
+.cm-md pre code{background:none;border:none;padding:0;color:var(--text-soft);font-size:12px}
+.cm-md strong{color:var(--accent);font-weight:600}.cm-md em{font-style:italic;color:var(--text-muted)}
+.cm-md table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12px}
+.cm-md th,.cm-md td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.cm-md th{background:rgba(217,123,94,.1);color:var(--accent)}
+.cm-md blockquote{border-left:3px solid var(--accent);padding-left:10px;color:var(--text-muted);margin:6px 0;font-style:italic}
+.cm-md a{color:var(--accent-2);text-decoration:underline}
+.cm-md img{max-width:100%;max-height:480px;border-radius:6px;border:1px solid var(--border-input);display:block;margin:6px 0}
+.cm-agent-imgs{display:flex;flex-direction:column;gap:6px;margin:6px 0 8px}
+.cm-agent-img-wrap{display:flex;flex-direction:column;gap:2px}
+.cm-agent-img{max-width:100%;max-height:480px;border-radius:6px;border:1px solid var(--border-input);display:block}
+.cm-agent-img-cap{font-family:var(--mono);font-size:10px;color:var(--text-muted);opacity:.85}
+.copy-btn{position:absolute;top:6px;right:8px;background:rgba(255,240,210,.08);border:1px solid rgba(255,240,210,.15);border-radius:4px;color:var(--text-dim);font-size:10px;padding:2px 7px;cursor:pointer;font-family:var(--display)}
+.copy-btn:hover{background:rgba(255,240,210,.14);color:var(--text-muted)}
+/* Cursor */
+.cm-cursor{display:inline-block;width:8px;height:14px;background:var(--accent);opacity:.8;vertical-align:text-bottom;animation:blink 1s step-end infinite}
+@keyframes blink{0%,100%{opacity:.8}50%{opacity:0}}
+/* Composer */
+.cm-composer{padding:10px 20px 14px;border-top:1px solid var(--border-soft);background:var(--bg-topbar);flex-shrink:0}
+.cm-input-wrap{border:1px solid var(--border-input);border-radius:14px;background:var(--bg-input);overflow:hidden;transition:border-color .15s}
+.cm-input-wrap:focus-within{border-color:var(--border-focus)}
+.cm-textarea{width:100%;padding:12px 16px 6px;background:transparent;border:none;color:var(--text);font-size:13px;font-family:var(--display);outline:none;resize:none;line-height:1.5;min-height:44px;max-height:200px;display:block}
+.cm-textarea::placeholder{color:var(--text-dim)}
+.cm-pending-row{padding:6px 12px 0;display:flex;gap:6px;flex-wrap:wrap}
+.cm-pending-img-wrap{position:relative;display:inline-block}
+.cm-pending-img{height:48px;border-radius:4px;border:1px solid var(--border-input)}
+.cm-remove-btn{position:absolute;top:-6px;right:-6px;background:#e05050;color:#fff;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.cm-doc-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,240,210,.06);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--mono);font-size:10px;color:var(--text-muted)}
+.cm-doc-badge button{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:0 2px;margin-left:2px}
+.cm-actions{padding:6px 10px 8px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--border-soft)}
+.cm-act-btn{display:flex;align-items:center;gap:5px;background:rgba(255,240,210,.05);border:1px solid rgba(255,240,210,.08);border-radius:8px;padding:5px 10px;color:var(--text-dim);font-size:11px;cursor:pointer;font-family:var(--display);font-weight:500;white-space:nowrap}
+.cm-act-btn:hover{background:rgba(255,240,210,.09);color:var(--text-muted)}
+.cm-act-btn:disabled{opacity:.4;cursor:not-allowed}
+.cm-act-btn.voice{color:var(--accent-2);border-color:rgba(201,165,106,.25);background:rgba(201,165,106,.07)}
+.cm-act-btn.recording{color:#e05050;border-color:rgba(224,80,80,.4);background:rgba(224,80,80,.1)}
+.cm-send-btn{display:flex;align-items:center;gap:6px;background:var(--accent);border:none;border-radius:8px;padding:7px 16px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--display);box-shadow:0 2px 10px rgba(217,123,94,.3);white-space:nowrap}
+.cm-send-btn:hover{background:#e0875f}.cm-send-btn:disabled{opacity:.5;cursor:not-allowed}
+.cm-stop-btn{display:flex;align-items:center;gap:6px;background:rgba(224,80,80,.12);border:1px solid rgba(224,80,80,.4);border-radius:8px;padding:6px 14px;color:#e05050;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--display)}
+/* Slash popup */
+.cm-slash-popup{position:absolute;bottom:calc(100% + 6px);left:0;right:0;background:#1e1c18;border:1px solid var(--border-input);border-radius:8px;overflow:hidden;z-index:20;box-shadow:0 6px 20px rgba(0,0,0,.5);max-height:260px;overflow-y:auto}
+.cm-slash-lbl{padding:5px 12px 3px;font-size:10px;font-weight:600;letter-spacing:.1em;color:var(--accent);text-transform:uppercase}
+.cm-slash-item{padding:6px 12px;font-size:11px;font-family:var(--mono);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--text-muted)}
+.cm-slash-item:hover{background:rgba(217,123,94,.08)}
+.cm-slash-name{color:var(--accent)}.cm-slash-desc{color:var(--text-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Error */
+.cm-error{padding:8px 12px;background:rgba(224,80,80,.1);border:1px solid rgba(224,80,80,.3);border-radius:6px;color:#e05050;font-size:12px;font-family:var(--mono);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+/* Scrollbar */
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,240,210,.1);border-radius:2px}
+  /* Mobile */
+@media(max-width:640px){
+  /* Safe-area aware shell */
+  .cm-shell{height:100dvh}
+  .cm-main{padding-bottom:env(safe-area-inset-bottom,0px)}
+  /* Hide sidebar on mobile — sessions shown via drawer */
+  .cm-sidebar{display:none}
+  /* Session drawer */
+  .cm-sidebar.mob-open{
+    display:flex;
+    position:fixed;
+    top:0;left:0;bottom:0;
+    width:calc(260px + env(safe-area-inset-left,0px));
+    max-width:80vw;
+    z-index:300;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-left:env(safe-area-inset-left,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  /* Session overlay */
+  #sb-overlay{
+    display:none;
+    position:fixed;inset:0;
+    background:rgba(0,0,0,0.6);
+    z-index:299;
+  }
+  #sb-overlay.open{display:block}
+  /* Mobile menu button */
+  .cm-mob-menu-btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:var(--bg-topbar);
+    border:1px solid var(--border);
+    border-radius:6px;
+    color:var(--text);
+    font-size:16px;
+    width:34px;
+    height:34px;
+    cursor:pointer;
+    padding:0;
+    -webkit-tap-highlight-color:transparent;
+  }
+  /* Topbar */
+  .cm-topbar{
+    padding-left:max(48px,env(safe-area-inset-left,0px) + 6px);
+    padding-right:max(12px,env(safe-area-inset-right,0px));
+    padding-top:env(safe-area-inset-top,0px);
+    min-height:calc(44px + env(safe-area-inset-top,0px));
+  }
+  /* Thread */
+  .cm-thread{padding:12px 14px;gap:12px}
+  /* Bubbles */
+  .cm-ububble{max-width:82%;padding:8px 12px;font-size:14px}
+  .cm-amsg{max-width:92%;gap:8px}
+  .cm-abubble{padding:8px 12px;font-size:14px}
+  .cm-aav{width:30px;height:30px;font-size:12px;border-radius:8px}
+  /* Composer */
+  .cm-composer{padding:8px 12px 12px}
+  /* Textarea 16px prevents iOS zoom on focus */
+  .cm-textarea{font-size:16px;padding:10px 14px 6px}
+  /* Buttons */
+  .cm-act-btn,.cm-send-btn,.cm-stop-btn{min-height:40px;padding:6px 10px;font-size:12px}
+  /* Attach images */
+  .cm-attach-img{height:48px}
+}
+@media(max-width:375px){
+  .cm-topbar{min-height:calc(40px + env(safe-area-inset-top,0px))}
+  .cm-thread{padding:10px 12px}
+  .cm-ububble,.cm-abubble{font-size:13px}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+/* @jsxRuntime classic */
+// Force the classic JSX runtime so Babel emits React.createElement (using the
+// global React UMD) instead of injecting `import {jsx} from "react/jsx-runtime"`,
+// which would throw "Cannot use import statement outside a module" in this
+// non-module in-browser script. Version is pinned for the same reason.
+const { useState, useEffect, useRef } = React;
+
+// ── Auth token ───────────────────────────────────────────────────────────────
+// Priority: URL param → localStorage (persisted from last auth'd visit → PWA works offline)
+const _tokenFromUrl = new URLSearchParams(location.search).get('token') || '';
+if (_tokenFromUrl) localStorage.setItem('nclaw-token', _tokenFromUrl);
+const TOKEN = _tokenFromUrl || localStorage.getItem('nclaw-token') || '';
+
+// ── API helper ───────────────────────────────────────────────────────────────
+const api = (path, opts = {}) =>
+  fetch(path, {
+    ...opts,
+    credentials: 'same-origin',
+    headers: { 'x-dashboard-token': TOKEN, ...(opts.headers || {}) },
+  }).then(async r => {
+    if (!r.ok) throw new Error(`${r.status}: ${(await r.text().catch(() => ''))}`);
+    return r.json();
+  });
+
+// ── Markdown ─────────────────────────────────────────────────────────────────
+marked.setOptions({ breaks: true, gfm: true });
+
+const renderMarkdown = (text) => {
+  const html = marked.parse(text || '');
+  return html.replace(/<pre>/g, '<pre><button class="copy-btn" onclick="window.__copyCode(this)">Copy</button>');
+};
+
+window.__copyCode = (btn) => {
+  const code = btn.nextElementSibling?.textContent || '';
+  navigator.clipboard?.writeText(code).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  });
+};
+
+// ── File helpers ─────────────────────────────────────────────────────────────
+const MAX_TEXT = 100 * 1024;
+// Hard cap on binary attachment size. Mirrors the backend per-session cap
+// (attachment-registry.ts MAX_BYTES_PER_SES = 50 MB) so the user sees the
+// rejection immediately instead of after a round-trip.
+const MAX_DOC_BYTES = 50 * 1024 * 1024;
+const fileToDataUrl = f => new Promise((res, rej) => {
+  const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(f);
+});
+const fileToText = f => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => {
+    let t = r.result;
+    if (t.length > MAX_TEXT) t = t.slice(0, MAX_TEXT) + '\n[truncated — file exceeds 100KB]';
+    res(t);
+  };
+  r.onerror = () => rej(r.error);
+  r.readAsText(f);
+});
+// Read a File as raw base64 (no data: prefix) for the binary-document path.
+// The backend registers these bytes in the per-session attachment registry
+// and tells the agent how to retrieve them via the `get_attachment` tool,
+// which forwards to docuflow's parse_document_base64 / parse_pdf_base64.
+const fileToBase64 = f => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => {
+    const result = r.result || '';
+    const comma = result.indexOf(',');
+    res(comma >= 0 ? result.slice(comma + 1) : result);
+  };
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(f);
+});
+// Text files inlined as fenced blocks. .html intentionally excluded — it
+// flows through the binary-doc path so docuflow can structure it.
+const TEXT_EXTS = ['.txt', '.md', '.csv', '.json', '.yaml', '.yml', '.xml', '.py', '.js', '.ts', '.css', '.sh', '.sql'];
+// Binary / structured documents — sent as base64 to the registry, parsed by docuflow.
+const DOC_EXTS = ['.pdf', '.docx', '.epub', '.html', '.htm', '.xhtml'];
+const isText = f => TEXT_EXTS.some(e => f.name.toLowerCase().endsWith(e));
+const isImage = f => f.type.startsWith('image/');
+const isBinaryDoc = f => DOC_EXTS.some(e => f.name.toLowerCase().endsWith(e));
+
+const nowTime = () => new Date().toLocaleTimeString('en-US', { hour12: true });
+
+const mapRows = (rows, byId) => (rows || []).map(r => ({
+  kind: r.role === 'user' ? 'user' : 'agent',
+  who:  r.role === 'user' ? 'You' : (r.agent_name || byId[r.agent_id] || 'agent'),
+  agent:r.role === 'user' ? null  : (r.agent_name || byId[r.agent_id] || 'agent'),
+  model:r.model || '',
+  t:    r.created_at ? new Date(r.created_at).toLocaleTimeString('en-US',{hour12:true}) : '',
+  body: r.content || '',
+  streaming: false,
+}));
+
+// ── App ───────────────────────────────────────────────────────────────────────
+const ChatMode = () => {
+  const [agents,       setAgents]       = useState([]);
+  const [sessions,     setSessions]     = useState([]);
+  const [status,       setStatus]       = useState(null);
+  const [skills,       setSkills]       = useState([]);
+  const [activeSession,setActiveSession]= useState(() => {
+    try { return localStorage.getItem('nclaw-active-session') || null; } catch { return null; }
+  });
+  const [activeAgent,  setActiveAgent]  = useState(() => {
+    try { return localStorage.getItem('nclaw-active-agent') || null; } catch { return null; }
+  });
+  const [messages,     setMessages]     = useState([]);
+  const [streaming,    setStreaming]     = useState(false);
+  const [draft,        setDraft]        = useState('');
+  const [pendingImgs,  setPendingImgs]  = useState([]);
+  const [pendingDocs,  setPendingDocs]  = useState([]);
+  const [recording,    setRecording]    = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [playingIdx,   setPlayingIdx]   = useState(null);
+  const [error,        setError]        = useState(null);
+  const [showSessions, setShowSessions] = useState(false);
+
+  const scrollRef    = useRef(null);
+  const liveRef      = useRef(null);
+  const abortRef     = useRef(null);
+  const recorderRef  = useRef(null);
+  const chunksRef    = useRef([]);
+  const audioRef     = useRef(null);
+  const fileRef      = useRef(null);
+  const skipRef      = useRef(null);
+  const taRef        = useRef(null);
+  // Sticky-bottom: follow stream while user is at the bottom, release when
+  // they scroll up to read history. See page-chat.jsx for the same pattern.
+  const stickRef     = useRef(true);
+  const bgPollRef    = useRef(null);   // cleanup fn for the active background-run poll
+  // ── PWA reconnect plumbing ────────────────────────────────────────────────
+  // The OS suspends a backgrounded PWA/tab, silently severing the in-flight SSE
+  // fetch. These refs let a foreground `visibilitychange` handler (defined in an
+  // effect with [] deps → stale closures) read live state and re-attach.
+  const streamingRef     = useRef(false);
+  const activeSessionRef = useRef(activeSession);
+  const reattachRef      = useRef(null);
+
+  // ── Background-run poll ──────────────────────────────────────────────────
+  // Mirrors page-chat.jsx startBackgroundPoll. Polls /api/runs/:id every 3–10s,
+  // rebuilds the activityLog from hive_mind events, and reloads history on terminal.
+  const startBackgroundPoll = (run, bubbleIdx, sessionId) => {
+    if (bgPollRef.current) bgPollRef.current(); // cancel any existing poll
+    let cancelled = false;
+    let pollTimer = null;
+    let delay     = 3000;
+    const poll = async () => {
+      if (cancelled) return;
+      let data;
+      try { data = await api('/api/runs/' + run.id); }
+      catch { pollTimer = setTimeout(poll, 5000); return; }
+      if (cancelled) return;
+      const r = data && data.run;
+      if (!r) { pollTimer = setTimeout(poll, 5000); return; }
+      if (['running', 'detached', 'paused'].includes(r.status)) {
+        const events = data.events || [];
+        const pending = {};
+        const newLog  = [];
+        for (const e of events) {
+          let toolName = null;
+          try { if (e.metadata) toolName = JSON.parse(e.metadata).tool; } catch {}
+          if (e.action === 'tool_start' && toolName) {
+            newLog.push({ label: toolName, done: false });
+            (pending[toolName] = pending[toolName] || []).push(newLog.length - 1);
+          } else if (e.action === 'tool_end' && toolName && pending[toolName]?.length) {
+            newLog[pending[toolName].shift()].done = true;
+          }
+        }
+        setMessages(m => m.map((msg, i) => i !== bubbleIdx ? msg : {
+          ...msg,
+          body:     r.partial_output   || msg.body,
+          activity: r.current_activity || msg.activity,
+          ...(newLog.length > 0 ? { activityLog: newLog } : {}),
+        }));
+        delay     = Math.min(delay + 1000, 10000);
+        pollTimer = setTimeout(poll, delay);
+      } else {
+        // Terminal — reload canonical session history and release the composer.
+        setStreaming(false);
+        const byId = Object.fromEntries(agents.map(a => [a.id, a.name]));
+        api(`/api/sessions/${sessionId}/messages`)
+          .then(rows => { if (!cancelled) setMessages(mapRows(rows, byId)); })
+          .catch(() => {});
+      }
+    };
+    pollTimer = setTimeout(poll, delay);
+    bgPollRef.current = () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      bgPollRef.current = null;
+    };
+  };
+
+  // ── Persist session/agent + mirror live state into refs ───────────────────
+  // Restoring activeSession on mount is what keeps a refresh IN the conversation
+  // instead of bouncing to the home / new-chat screen.
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+    try {
+      if (activeSession) localStorage.setItem('nclaw-active-session', activeSession);
+      else localStorage.removeItem('nclaw-active-session');
+    } catch {}
+  }, [activeSession]);
+  useEffect(() => {
+    try { if (activeAgent) localStorage.setItem('nclaw-active-agent', activeAgent); } catch {}
+  }, [activeAgent]);
+  useEffect(() => { streamingRef.current = streaming; }, [streaming]);
+
+  // ── PWA foreground reconnect ──────────────────────────────────────────────
+  // A suspended PWA/tab usually has its SSE socket killed WITHOUT the fetch
+  // reader erroring — it just hangs, so send()'s own end-of-stream recovery
+  // never runs and the reply looks frozen. On a real hidden→visible transition
+  // (or bfcache restore) during an in-flight turn, tear down the dead reader and
+  // re-attach to the still-running server run via the poll rescue.
+  useEffect(() => {
+    let hiddenAt = 0;
+    const kick = () => {
+      try { abortRef.current?.abort(); } catch {}
+      setTimeout(() => { if (reattachRef.current) reattachRef.current(); }, 200);
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+      if (!streamingRef.current) { hiddenAt = 0; return; }
+      if (!hiddenAt) return;             // only after a genuine background stint
+      hiddenAt = 0;
+      kick();
+    };
+    const onPageShow = (e) => { if (e && e.persisted && streamingRef.current) kick(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, []);
+
+  // ── Bootstrap ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!TOKEN) return;
+    Promise.all([api('/api/agents'), api('/api/sessions'), api('/api/skills'), api('/api/status')])
+      .then(([ags, sess, sk, st]) => {
+        const active = (ags || []).filter(a => a.status === 'active');
+        setAgents(active);
+        const def = active.find(a => a.name === 'A.S.A.G.I') || active.find(a => a.name === 'Alfred') || active[0];
+        // Preserve a restored agent selection; only fall back to the default when none.
+        setActiveAgent(prev => prev || def?.id || null);
+        setSessions(sess || []);
+        setSkills((sk || []).filter(s => s.name));
+        setStatus(st || null);
+      })
+      .catch(err => setError(err.message));
+
+    const t = setInterval(() => {
+      api('/api/sessions').then(setSessions).catch(() => {});
+      api('/api/status').then(setStatus).catch(() => {});
+    }, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Load session history ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!activeSession) { setMessages([]); return; }
+    if (skipRef.current === activeSession) { skipRef.current = null; return; }
+    let cancelled = false;
+    const byId = Object.fromEntries(agents.map(a => [a.id, a.name]));
+    api(`/api/sessions/${activeSession}/messages`)
+      .then(rows => {
+        if (cancelled) return;
+        setMessages(mapRows(rows, byId));
+        const last = [...(rows || [])].reverse().find(r => r.role === 'assistant');
+        if (last?.agent_id) setActiveAgent(last.agent_id);
+        // Re-attach to any still-running background run for this session.
+        return api('/api/runs?session=' + activeSession + '&limit=1').catch(() => []);
+      })
+      .then(runs => {
+        if (cancelled || !runs) return;
+        const run = (runs || [])[0];
+        if (!run || !['running', 'detached', 'paused'].includes(run.status)) return;
+        let bubbleIdx = -1;
+        setMessages(m => {
+          bubbleIdx = m.length;
+          return [...m, {
+            kind: 'agent', agent: run.agent_name || 'agent', model: '', t: nowTime(),
+            body: run.partial_output || '', streaming: true,
+            activity: run.current_activity || 'working in the background',
+            activityLog: [{ label: 'reconnecting to background run…', done: false }],
+          }];
+        });
+        startBackgroundPoll(run, bubbleIdx, activeSession);
+      })
+      .catch(err => { if (!cancelled) setError(err.message); });
+    return () => { cancelled = true; if (bgPollRef.current) bgPollRef.current(); };
+  }, [activeSession]);
+
+  // ── Auto-scroll ──────────────────────────────────────────────────────────
+  // Keyed on `messages` (not just length) so streamed token updates re-pin to
+  // bottom. Respects the stickRef so the user can scroll up without being
+  // dragged back. Without this, a long streaming reply would grow past the
+  // viewport and look like the stream had stopped.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages, streaming]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickRef.current = distanceFromBottom < 40;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // ── Auto-resize textarea ─────────────────────────────────────────────────
+  useEffect(() => {
+    const ta = taRef.current; if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+  }, [draft]);
+
+  // ── Slash autocomplete ───────────────────────────────────────────────────
+  const slash = (() => {
+    if (!draft.startsWith('/')) return { open: false, matches: [], word: '' };
+    const rest = draft.slice(1);
+    const sp = rest.indexOf(' ');
+    if (sp !== -1) return { open: false, matches: [], word: rest.slice(0, sp) };
+    const q = rest.toLowerCase();
+    return { open: true, matches: skills.filter(s => s.name.toLowerCase().startsWith(q)).slice(0, 8), word: rest };
+  })();
+
+  const acceptSlash = name => setDraft(`/${name} `);
+
+  const expand = text => {
+    if (!text.startsWith('/')) return text;
+    const [name, ...rest] = text.slice(1).split(/\s+/);
+    const sk = skills.find(s => s.name === name);
+    if (!sk?.body) return text;
+    const args = rest.join(' ').trim();
+    return `[Skill: /${sk.name}]\n${sk.body}${args ? `\n\n---\n\n${args}` : ''}`;
+  };
+
+  // ── File pick ────────────────────────────────────────────────────────────
+  // Order matters: check binary-doc BEFORE text so .html / .htm flow through
+  // the parser path (docuflow) rather than being inlined as raw markup.
+  const pickFiles = async files => {
+    for (const f of [...files]) {
+      if (isImage(f)) {
+        const dataUrl = await fileToDataUrl(f);
+        setPendingImgs(p => [...p, { name: f.name, dataUrl }]);
+      } else if (isBinaryDoc(f)) {
+        if (f.size > MAX_DOC_BYTES) {
+          setError(`${f.name} exceeds ${Math.round(MAX_DOC_BYTES / 1024 / 1024)} MB limit`);
+          continue;
+        }
+        try {
+          const base64 = await fileToBase64(f);
+          setPendingDocs(p => [...p, { name: f.name, base64, mime: f.type || null, size: f.size, kind: 'binary' }]);
+        } catch (err) {
+          setError(`Failed to read ${f.name}: ${err.message || err}`);
+        }
+      } else if (isText(f)) {
+        // Small text files inline as fenced blocks. Files over the inline cap
+        // would be silently truncated (lossy) — instead route them through the
+        // attachment registry like binary docs, so the agent reads the whole
+        // file via get_attachment. text/plain is an accepted attachment mime.
+        if (f.size > MAX_TEXT) {
+          if (f.size > MAX_DOC_BYTES) {
+            setError(`${f.name} exceeds ${Math.round(MAX_DOC_BYTES / 1024 / 1024)} MB limit`);
+            continue;
+          }
+          try {
+            const base64 = await fileToBase64(f);
+            setPendingDocs(p => [...p, { name: f.name, base64, mime: f.type || 'text/plain', size: f.size, kind: 'binary' }]);
+            setError(`${f.name} (${Math.round(f.size / 1024)} KB) too large to inline — attached as a file; the agent will read it via get_attachment`);
+          } catch (err) {
+            setError(`Failed to read ${f.name}: ${err.message || err}`);
+          }
+        } else {
+          const text = await fileToText(f);
+          setPendingDocs(p => [...p, { name: f.name, text, kind: 'text' }]);
+        }
+      } else {
+        setError(`Unsupported file type: ${f.name}`);
+      }
+    }
+  };
+
+  const onPaste = async e => {
+    const imgs = [...(e.clipboardData?.items ?? [])].filter(i => i.type.startsWith('image/'));
+    if (!imgs.length) return;
+    e.preventDefault();
+    pickFiles(imgs.map(i => i.getAsFile()).filter(Boolean));
+  };
+
+  // ── Voice ────────────────────────────────────────────────────────────────
+  const startRec = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) { setError('Microphone not supported in this browser'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                 : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = e => { if (e.data?.size > 0) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        chunksRef.current = [];
+        if (!blob.size) { setRecording(false); return; }
+        setRecording(false); setTranscribing(true);
+        try {
+          const fd = new FormData(); fd.append('file', blob, 'voice.webm');
+          const r = await fetch('/api/audio/transcribe', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'x-dashboard-token': TOKEN }, body: fd,
+          });
+          if (!r.ok) throw new Error(r.status);
+          const { text } = await r.json();
+          if (text?.trim()) setDraft(d => d ? `${d} ${text.trim()}` : text.trim());
+        } catch (err) { setError('Transcription failed: ' + err.message); }
+        finally { setTranscribing(false); }
+      };
+      recorderRef.current = rec; rec.start(); setRecording(true); setError(null);
+    } catch (err) { setError('Mic: ' + err.message); }
+  };
+  const stopRec = () => { const r = recorderRef.current; if (r?.state !== 'inactive') r.stop(); };
+
+  // ── TTS ──────────────────────────────────────────────────────────────────
+  const speak = async (msg, idx) => {
+    if (playingIdx === idx) { audioRef.current?.pause(); audioRef.current = null; setPlayingIdx(null); return; }
+    audioRef.current?.pause(); setPlayingIdx(idx);
+    try {
+      const agId = agents.find(a => a.name === msg.agent)?.id || activeAgent;
+      const r = await fetch('/api/audio/speak', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-dashboard-token': TOKEN },
+        body: JSON.stringify({ text: msg.body, agentId: agId }),
+      });
+      if (!r.ok) throw new Error(r.status);
+      const url = URL.createObjectURL(await r.blob());
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; setPlayingIdx(null); };
+      audio.onerror = () => { URL.revokeObjectURL(url); setPlayingIdx(null); setError('Playback failed'); };
+      await audio.play();
+    } catch (err) { setPlayingIdx(null); setError('TTS: ' + err.message); }
+  };
+
+  // ── Send ─────────────────────────────────────────────────────────────────
+  const send = async () => {
+    const text = draft.trim();
+    if ((!text && !pendingImgs.length && !pendingDocs.length) || streaming) return;
+
+    const attachments = pendingImgs.map(p => ({ url: p.dataUrl, name: p.name }));
+
+    // Split pending docs:
+    //   text-mode   → inline as fenced blocks in the message (cheap, fits in
+    //                 the prompt for source files / notes).
+    //   binary-mode → send as base64 in the `documents[]` field; backend
+    //                 registers them in the per-session attachment registry
+    //                 and tells the agent how to retrieve them via
+    //                 `get_attachment` → docuflow. The bytes never enter the
+    //                 user message — they reach MCP parsers on demand.
+    let docPrefix = '';
+    const documents = [];
+    for (const d of pendingDocs) {
+      if (d.kind === 'binary' && d.base64) {
+        documents.push({ name: d.name, data: d.base64, mime_type: d.mime || undefined });
+      } else if ((d.kind === 'text' || d.kind === undefined) && d.text != null) {
+        // d.kind undefined = legacy entry shape (text-only); fall through.
+        docPrefix += `[file: ${d.name}]\n\`\`\`\n${d.text}\n\`\`\`\n\n`;
+      }
+    }
+
+    const fullText = docPrefix + (text || '');
+    const sentText = fullText.startsWith('/') ? expand(fullText) : fullText;
+    const slashSkill = text.startsWith('/') && sentText !== fullText ? text.slice(1).split(/\s+/)[0] : null;
+
+    setDraft(''); setPendingImgs([]); setPendingDocs([]); setError(null);
+
+    setMessages(m => [...m, {
+      kind: 'user', who: 'You', t: nowTime(),
+      body: text || (pendingImgs.length ? `[${pendingImgs.length} image(s)]` : '[file attached]'),
+      attachments, docs: pendingDocs.map(d => d.name), slashSkill,
+    }]);
+    setStreaming(true);
+    setMessages(m => {
+      liveRef.current = m.length;
+      return [...m, { kind:'agent', agent:'…', model:'', t:'…', body:'', streaming:true, activityLog:[{label:'connecting',done:false}] }];
+    });
+
+    let buf = '', agentName = null;
+    let sessionIdLive = activeSession;
+    let terminal = false;
+
+    const log = (label, done = false) => setMessages(m => m.map((msg, i) => i !== liveRef.current ? msg : {
+      ...msg, activityLog: [...(msg.activityLog||[]).map(e=>({...e,done:true})), {label,done}],
+    }));
+    const updateLive = () => setMessages(m => m.map((msg, i) => i !== liveRef.current ? msg : {
+      ...msg, agent: agentName || msg.agent, body: buf,
+    }));
+
+    const handleEvt = (evt) => {
+      if (evt.type === 'session') {
+        sessionIdLive = evt.sessionId;
+        if (!activeSession) {
+          skipRef.current = evt.sessionId; setActiveSession(evt.sessionId);
+          setSessions(s => s.some(x => x.id === evt.sessionId) ? s : [{ id: evt.sessionId, title: 'New chat', last: 'just now' }, ...s]);
+        }
+      } else if (evt.type === 'agent') { agentName = evt.name; updateLive(); log('processing'); }
+      else if (evt.type === 'chunk')  { buf += evt.content; updateLive(); }
+      else if (evt.type === 'replay') { buf  = evt.content; updateLive(); }  // replace — replay is the canonical full partial_output
+      else if (evt.type === 'heartbeat') {
+        const sec = Math.round((evt.elapsedMs || 0) / 1000);
+        setMessages(m => m.map((msg, i) => i !== liveRef.current ? msg : {
+          ...msg, activity: `${evt.currentActivity || 'working…'} · ${sec}s`,
+        }));
+      }
+      else if (evt.type === 'tool_start') { log('tool · ' + evt.tool, false); }
+      else if (evt.type === 'tool_done')  { log('tool · ' + evt.tool, true); }
+      else if (evt.type === 'tool')       { log('tool · ' + evt.name, true); }
+      else if (evt.type === 'agent_image') {
+        const img = { url: evt.url, alt: evt.alt || '', caption: evt.caption || '' };
+        setMessages(m => m.map((msg, i) => i === liveRef.current
+          ? { ...msg, agentImages: [...(msg.agentImages || []), img] }
+          : msg));
+        log('image · ' + (evt.alt || 'sent'), true);
+      }
+      else if (evt.type === 'done') {
+        terminal = true;
+        setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+        api('/api/sessions').then(setSessions).catch(() => {});
+      }
+      else if (evt.type === 'paused') {
+        terminal = true;
+        setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+      }
+      else if (evt.type === 'error') {
+        terminal = true;
+        setError(evt.message);
+        setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+      }
+    };
+
+    const consumeSse = async (body) => {
+      const reader = body.getReader(); const dec = new TextDecoder(); let rbuf = '';
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        rbuf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = rbuf.indexOf('\n\n')) !== -1) {
+          const chunk = rbuf.slice(0, idx); rbuf = rbuf.slice(idx + 2);
+          const line = chunk.split('\n').find(l => l.startsWith('data: ')); if (!line) continue;
+          let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+          handleEvt(evt);
+        }
+      }
+    };
+
+    const attemptResume = async () => {
+      if (!sessionIdLive) return false;
+      try {
+        const ctrl2 = new AbortController(); abortRef.current = ctrl2;
+        const rr = await fetch(`/api/chat/resume/${sessionIdLive}`, {
+          credentials: 'same-origin', signal: ctrl2.signal,
+          headers: { 'x-dashboard-token': TOKEN },
+        });
+        if (rr.status === 404 || !rr.body) return false;
+        await consumeSse(rr.body);
+        return true;
+      } catch { return false; }
+    };
+
+    const rescueWithPoll = async () => {
+      const sid = sessionIdLive || activeSession;
+      if (!sid) { setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg)); return; }
+      try {
+        const runs = await api('/api/runs?session=' + sid + '&limit=1').catch(() => []);
+        const run  = (runs || [])[0];
+        if (run && ['running', 'detached', 'paused'].includes(run.status)) {
+          const bubbleIdx = liveRef.current;
+          setMessages(m => m.map((msg, i) => i !== bubbleIdx ? msg : {
+            ...msg, streaming: true,
+            activity: run.current_activity || 'working in the background',
+            activityLog: [{ label: 'reconnecting to background run…', done: false }],
+          }));
+          startBackgroundPoll(run, bubbleIdx, sid);
+          return; // poll calls setStreaming on terminal
+        }
+      } catch {}
+      setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+    };
+
+    try {
+      const ctrl = new AbortController(); abortRef.current = ctrl;
+      const r = await fetch('/api/chat', {
+        method: 'POST', credentials: 'same-origin', signal: ctrl.signal,
+        headers: { 'content-type': 'application/json', 'x-dashboard-token': TOKEN },
+        body: JSON.stringify({
+          message: sentText,
+          sessionId: activeSession,
+          agentId: activeAgent,
+          ...(attachments.length ? { attachments } : {}),
+          ...(documents.length  ? { documents }  : {}),
+        }),
+      });
+      if (!r.body) throw new Error('No SSE stream');
+      await consumeSse(r.body);
+      if (!terminal) {
+        const resumed = await attemptResume();
+        if (!resumed) await rescueWithPoll();
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        if (!terminal) setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+      } else {
+        setError(err.message);
+        if (!terminal) {
+          const resumed = await attemptResume();
+          if (!resumed) await rescueWithPoll();
+        }
+      }
+    } finally { abortRef.current = null; setStreaming(false); }
+  };
+
+  const stopStream = () => {
+    abortRef.current?.abort();
+    if (activeSession) fetch('/api/chat/stop', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', 'x-dashboard-token': TOKEN },
+      body: JSON.stringify({ sessionId: activeSession }),
+    }).catch(() => {});
+  };
+
+  // ── Re-attach to a still-running run (foreground reconnect) ───────────────
+  // Does NOT depend on the dead fetch reader — it queries /api/runs and rides the
+  // existing poll rescue. The server keeps the run alive on disconnect (detachRun)
+  // and accumulates partial_output, so we resume straight from the DB. Assigned to
+  // reattachRef every render so the []-deps visibility effect always calls fresh.
+  const reattachLiveRun = async () => {
+    const sid = activeSessionRef.current;
+    if (!sid) { setStreaming(false); return; }
+    let run = null;
+    try {
+      const runs = await api('/api/runs?session=' + sid + '&limit=1').catch(() => []);
+      run = (runs || [])[0];
+    } catch { return; }
+    const byId = Object.fromEntries(agents.map(a => [a.id, a.name]));
+    if (run && ['running', 'detached', 'paused'].includes(run.status)) {
+      let bubbleIdx = liveRef.current;
+      setMessages(m => {
+        if (bubbleIdx == null || bubbleIdx < 0 || !m[bubbleIdx] || m[bubbleIdx].kind !== 'agent') {
+          bubbleIdx = m.length;
+          liveRef.current = bubbleIdx;
+          return [...m, {
+            kind: 'agent', agent: run.agent_name || byId[run.agent_id] || 'agent', model: '',
+            t: nowTime(), body: run.partial_output || '', streaming: true,
+            activity: run.current_activity || 'reconnecting…',
+            activityLog: [{ label: 'reconnecting to your reply…', done: false }],
+          }];
+        }
+        return m.map((msg, i) => i !== bubbleIdx ? msg : {
+          ...msg, streaming: true,
+          activity: run.current_activity || msg.activity || 'reconnecting…',
+        });
+      });
+      setStreaming(true);
+      startBackgroundPoll(run, bubbleIdx, sid);
+    } else {
+      // Run already finished while we were away — pull canonical history so the
+      // final answer appears, and release the composer.
+      setStreaming(false);
+      liveRef.current = null;
+      api('/api/sessions/' + sid + '/messages')
+        .then(rows => setMessages(mapRows(rows, byId)))
+        .catch(() => {});
+    }
+  };
+  reattachRef.current = reattachLiveRun;
+
+  // ── No token guard ───────────────────────────────────────────────────────
+  if (!TOKEN) return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12,padding:24}}>
+      <div style={{color:'var(--accent)',fontSize:18,fontWeight:700}}>NeuroClaw Chat</div>
+      <div className="cm-error" style={{margin:0}}>No token — open Chat Mode from the NeuroClaw dashboard.</div>
+    </div>
+  );
+
+  const initials = 'NC'; // /api/status has no display_name; static badge
+
+  const curSession = sessions.find(s => s.id === activeSession);
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div className="cm-shell">
+
+      {/* ── Mobile session overlay ─────────────────────────────────────────── */}
+      <div id="sb-overlay" className={showSessions?'open':''} onClick={()=>setShowSessions(false)}/>
+
+      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+      <div className={'cm-sidebar'+(showSessions?' mob-open':'')}>
+        <div className="cm-sb-hdr">
+          <div className="cm-logo"><div className="cm-logo-dot"/>NEUROCLAW</div>
+          <button className="cm-new-btn" onClick={() => {
+            const def = agents.find(a=>a.name==='A.S.A.G.I')||agents.find(a=>a.name==='Alfred')||agents[0];
+            setActiveAgent(def?.id||null); setActiveSession(null); setMessages([]);
+          }}>+ New</button>
+        </div>
+        <div className="cm-sec-lbl">Sessions</div>
+        <div className="cm-sessions">
+          {sessions.length === 0 && <div style={{padding:'14px 16px',color:'var(--text-dim)',fontSize:11,fontFamily:'var(--mono)'}}>// no sessions yet</div>}
+          {sessions.map(s => (
+            <div key={s.id} className={'cm-sitem'+(activeSession===s.id?' active':'')} onClick={() => setActiveSession(s.id)}>
+              <div className="cm-sitem-title">{s.title||s.id.slice(0,12)}</div>
+              <div className="cm-sitem-meta">{s.last||''}</div>
+            </div>
+          ))}
+        </div>
+        <div className="cm-sb-foot">
+          <div className="cm-av">{initials}</div>
+          <div style={{fontSize:11,color:'var(--text-muted)',lineHeight:1.3}}>
+            <div>NeuroClaw</div>
+            <div style={{fontSize:10,color:'var(--text-dim)'}}>{agents.length} agents · online</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Main ────────────────────────────────────────────────────────── */}
+      <div className="cm-main">
+
+        {/* Topbar */}
+        <div className="cm-topbar">
+          <button
+            className="cm-mob-menu-btn"
+            onClick={()=>setShowSessions(s=>!s)}
+          >☰</button>
+          <div className="cm-chat-title">{curSession?.title||'New chat'}</div>
+          <div className="cm-agent-pill">
+            <div className="cm-pdot"/>
+            <select value={activeAgent||''} onChange={e=>setActiveAgent(e.target.value)}>
+              {agents.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* Thread */}
+        <div className="cm-thread" ref={scrollRef}>
+          {messages.length===0 && (
+            <div className="cm-empty">{activeSession?'// no messages yet':'// start a new chat or select a session'}</div>
+          )}
+          {messages.map((m,i) => {
+            if (m.kind==='user') return (
+              <div key={i} className="cm-umsg">
+                {((m.attachments?.length||0)+(m.docs?.length||0))>0 && (
+                  <div className="cm-attach-row">
+                    {(m.attachments||[]).map((a,ai)=><img key={ai} src={a.url} alt={a.name} className="cm-attach-img"/>)}
+                    {(m.docs||[]).map((d,di)=><span key={di} className="cm-attach-doc">📄 {d}</span>)}
+                  </div>
+                )}
+                <div className="cm-ububble">{m.body}</div>
+                <div className="cm-msg-meta">
+                  You · {m.t}
+                  {m.slashSkill && <span style={{marginLeft:6,color:'var(--accent-2)'}}>/{m.slashSkill}</span>}
+                </div>
+              </div>
+            );
+            const agRec = agents.find(a=>a.name===m.agent);
+            const ava = agRec?._raw?.avatar_url||agRec?.avatar_url||null;
+            return (
+              <div key={i} className="cm-amsg">
+                <div className="cm-aav">{ava?<img src={ava} alt={m.agent}/>:(m.agent||'?')[0].toUpperCase()}</div>
+                <div className="cm-abody">
+                  <div className="cm-ahdr">
+                    <span className="cm-albl">{m.agent}</span>
+                    {m.model&&<span className="cm-mtag">{m.model}</span>}
+                    <span className="cm-msg-meta" style={{marginLeft:'auto'}}>{m.t}</span>
+                    {m.body&&!m.streaming&&(
+                      <button className="cm-speak-btn" onClick={()=>speak(m,i)} title={playingIdx===i?'Stop':'Read aloud'}>
+                        {playingIdx===i?'■':'🔊'}
+                      </button>
+                    )}
+                  </div>
+                  {!m.body&&m.streaming&&(m.activityLog?.length||0)>0&&(
+                    <div className="cm-activity">
+                      {m.activityLog.map((e,ei)=>(
+                        <div key={ei} className={'cm-act-row'+(e.done?'':' live')}>
+                          <span className={e.done?'':'cm-spin'}>{e.done?'✓':'◌'}</span>
+                          <span>{e.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {m.streaming&&(m.activity||'').trim()&&!(m.body===''&&(m.activityLog?.length||0)>0)&&(
+                    <div style={{display:'flex',alignItems:'center',gap:5,fontSize:10,fontFamily:'var(--mono)',color:'var(--text-dim)',marginBottom:4}}>
+                      <span className="cm-spin">◌</span>
+                      <span>{m.activity}</span>
+                    </div>
+                  )}
+                  {(m.agentImages?.length||0)>0&&(
+                    <div className="cm-agent-imgs">
+                      {m.agentImages.map((img,ii)=>(
+                        <div key={ii} className="cm-agent-img-wrap">
+                          <a href={img.url} target="_blank" rel="noreferrer">
+                            <img src={img.url} alt={img.alt||'image'} className="cm-agent-img"/>
+                          </a>
+                          {img.caption&&<div className="cm-agent-img-cap">{img.caption}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div
+                    className="cm-abubble cm-md"
+                    ref={el=>{if(el&&m.body)el.innerHTML=renderMarkdown(m.body)}}
+                  >
+                    {!m.body&&m.streaming&&<span className="cm-cursor"/>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Composer */}
+        <div className="cm-composer">
+          {error&&(
+            <div className="cm-error">
+              {error}
+              <button onClick={()=>setError(null)} style={{background:'none',border:'none',color:'#e05050',cursor:'pointer',fontSize:16,lineHeight:1}}>×</button>
+            </div>
+          )}
+          <div className="cm-input-wrap">
+            {(pendingImgs.length>0||pendingDocs.length>0)&&(
+              <div className="cm-pending-row">
+                {pendingImgs.map((p,i)=>(
+                  <div key={i} className="cm-pending-img-wrap">
+                    <img src={p.dataUrl} alt={p.name} className="cm-pending-img"/>
+                    <button className="cm-remove-btn" onClick={()=>setPendingImgs(prev=>prev.filter((_,j)=>j!==i))}>×</button>
+                  </div>
+                ))}
+                {pendingDocs.map((d,i)=>(
+                  <span key={i} className="cm-doc-badge">
+                    📄 {d.name}
+                    <button onClick={()=>setPendingDocs(prev=>prev.filter((_,j)=>j!==i))}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{position:'relative'}}>
+              {slash.open&&(
+                <div className="cm-slash-popup">
+                  <div className="cm-slash-lbl">Skills · Tab to insert</div>
+                  {slash.matches.map(s=>(
+                    <div key={s.name} className="cm-slash-item" onMouseDown={e=>{e.preventDefault();acceptSlash(s.name);}}>
+                      <span className="cm-slash-name">/{s.name}</span>
+                      {s.description&&<span className="cm-slash-desc">{s.description}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <textarea
+                ref={taRef}
+                className="cm-textarea"
+                value={draft}
+                onChange={e=>setDraft(e.target.value)}
+                onPaste={onPaste}
+                onKeyDown={e=>{
+                  if(slash.open&&(e.key==='Tab'||(e.key==='Enter'&&slash.matches[0]?.name!==slash.word))){e.preventDefault();acceptSlash(slash.matches[0].name);return;}
+                  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+                }}
+                placeholder={pendingImgs.length+pendingDocs.length>0?'Add a message or press Send…':'Message your agent — / for skills, paste images…'}
+                disabled={streaming}
+                rows={1}
+              />
+            </div>
+            <div className="cm-actions">
+              <input ref={fileRef} type="file" accept="image/*,.txt,.md,.csv,.json,.yaml,.yml,.xml,.py,.js,.ts,.css,.sh,.sql,.pdf,.docx,.epub,.html,.htm,.xhtml" multiple
+                     style={{display:'none'}} onChange={e=>{pickFiles(e.target.files);e.target.value='';}}/>
+              <button className="cm-act-btn" onClick={()=>fileRef.current?.click()} disabled={streaming}>📎 Attach</button>
+              <button
+                className={'cm-act-btn voice'+(recording?' recording':'')}
+                onClick={recording?stopRec:startRec}
+                disabled={streaming||transcribing}
+                title={recording?'Stop recording':transcribing?'Transcribing…':'Voice input'}
+              >{recording?'● REC':transcribing?'…':'🎤 Voice'}</button>
+              <div style={{flex:1}}/>
+              {streaming
+                ? <button className="cm-stop-btn" onClick={stopStream}>■ Stop</button>
+                : <button className="cm-send-btn" onClick={send} disabled={streaming}>Send ↑</button>
+              }
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<ChatMode/>);
+</script>
+<script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+</body>
+</html>

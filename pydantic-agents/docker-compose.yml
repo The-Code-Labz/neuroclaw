@@ -1,0 +1,248 @@
+# Pydantic-AI MCP agents — one container per agent.
+#
+# Goals:
+#   - persistent across host reboots (`restart: unless-stopped`)
+#   - isolated (own container, own filesystem, own venv) so a crash/upgrade
+#     of one agent cannot interfere with the others
+#   - ports published only on host loopback (NeuroClaw on the host keeps
+#     using http://localhost:71xx/mcp — no config change)
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f deep-research
+#   docker compose restart image-agent
+
+x-base: &base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.base
+  image: pydantic-agents/base:latest
+  env_file:
+    - .env
+  environment:
+    HOST: 0.0.0.0
+  restart: unless-stopped
+  networks:
+    - agents
+  # Healthcheck: FastMCP's HTTP transport returns 406 to a bare GET /mcp (it
+  # wants an MCP-formatted POST). Any HTTP response = process alive.
+  healthcheck:
+    test: ["CMD-SHELL", "curl -sS -o /dev/null -m 3 http://127.0.0.1:$${PORT}/mcp || exit 1"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+
+services:
+  deep-research:
+    <<: *base
+    container_name: pa-deep-research
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: deep_research.agent
+      PORT: 7100
+    ports:
+      - "127.0.0.1:7100:7100"
+
+  web-research:
+    <<: *base
+    container_name: pa-web-research
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: web_research.agent
+      PORT: 7101
+    ports:
+      - "127.0.0.1:7101:7101"
+
+  reviewer-council:
+    <<: *base
+    container_name: pa-reviewer-council
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: reviewer_council.agent
+      PORT: 7102
+    ports:
+      - "127.0.0.1:7102:7102"
+
+  notebooklm:
+    <<: *base
+    container_name: pa-notebooklm
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: notebooklm.agent
+      PORT: 7103
+      # Point the agent at the bind-mounted CLI binary.
+      NOTEBOOKLM_BIN: /opt/notebooklm/bin/notebooklm
+    ports:
+      - "127.0.0.1:7103:7103"
+    volumes:
+      # Host install of the notebooklm CLI (read-only) — keeps a single source
+      # of truth for the binary + its venv.
+      - /root/.notebooklm-venv:/opt/notebooklm:ro
+      # Persistent CLI state (auth/cookies/context). Mounted rw so the agent
+      # can refresh tokens.
+      - /root/.notebooklm:/root/.notebooklm
+
+  crawl4ai:
+    container_name: pa-crawl4ai
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.crawl4ai
+    image: pydantic-agents/crawl4ai:latest
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: crawl4ai_agent.agent
+      PORT: 7105
+    restart: unless-stopped
+    networks:
+      - agents
+    ports:
+      - "127.0.0.1:7105:7105"
+    # Chromium needs more shm than the docker default 64M.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -m 3 http://127.0.0.1:7105/mcp || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  image-agent:
+    <<: *base
+    container_name: pa-image-agent
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: image_agent.agent
+      PORT: 7106
+      # Persist generated images to a named volume mounted inside the container.
+      IMAGE_AGENT_OUTPUT_DIR: /data/outputs
+    ports:
+      - "127.0.0.1:7106:7106"
+    volumes:
+      - image-agent-outputs:/data/outputs
+
+  chatgpt-image-agent:
+    <<: *base
+    container_name: pa-chatgpt-image-agent
+    # Build from the dedicated Dockerfile (bakes Playwright Chromium + OS deps).
+    # The shared base image has no browser, which left this agent unable to
+    # launch Chromium ("Executable doesn't exist" / missing libglib).
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.chatgpt-image-agent
+    image: pydantic-agents/chatgpt-image-agent:latest
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: chatgpt_image_agent.agent
+      PORT: 7110
+      CHATGPT_IMAGE_OUTPUT_DIR: /data/outputs
+    ports:
+      - "127.0.0.1:7110:7110"
+    volumes:
+      - chatgpt-image-agent-outputs:/data/outputs
+      # AI Cookie Sync extension writes the live chatgpt.com session here;
+      # chatgpt_load_storage_state reads it (mirrors grok-web's ~/.grok mount).
+      - ~/.chatgpt:/root/.chatgpt:ro
+    shm_size: "1gb"
+
+  grok-image-agent:
+    <<: *base
+    container_name: pa-grok-image-agent
+    environment:
+      HOST: 0.0.0.0
+      AGENT_MODULE: grok_image_agent.agent
+      PORT: 7112
+      GROK_IMAGE_OUTPUT_DIR: /data/outputs
+    ports:
+      - "127.0.0.1:7112:7112"
+    volumes:
+      - grok-image-agent-outputs:/data/outputs
+      - ~/.hermes:/root/.hermes:ro
+
+  gemini-web-agent:
+    container_name: pa-gemini-web-agent
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gemini-web-agent
+    image: pydantic-agents/gemini-web-agent:latest
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      GEMINI_WEB_AGENT_PORT: 7111
+      GEMINI_HEADLESS: "true"
+      GEMINI_PROFILE_DIR: /data/profile
+      GEMINI_IMAGE_OUTPUT_DIR: /data/outputs/images
+      GEMINI_AUDIO_OUTPUT_DIR: /data/outputs/audio
+    restart: unless-stopped
+    networks:
+      - agents
+    ports:
+      - "127.0.0.1:7111:7111"
+    volumes:
+      - gemini-web-profile:/data/profile
+      - gemini-web-outputs:/data/outputs
+      # AI Cookie Sync extension writes the live gemini.google.com session here;
+      # gemini_load_storage_state reads it (mirrors grok-web's ~/.grok mount).
+      - ~/.gemini:/root/.gemini:ro
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -m 3 http://127.0.0.1:7111/mcp || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  grok-web-agent:
+    container_name: pa-grok-web-agent
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.grok-web-agent
+    image: pydantic-agents/grok-web-agent:latest
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      GROK_WEB_AGENT_PORT: 7113
+      GROK_WEB_HEADLESS: "true"
+      GROK_WEB_PROFILE_DIR: /data/profile
+      GROK_WEB_OUTPUT_DIR: /data/outputs
+    restart: unless-stopped
+    networks:
+      - agents
+    ports:
+      - "127.0.0.1:7113:7113"
+    volumes:
+      - grok-web-profile:/data/profile
+      - grok-web-outputs:/data/outputs
+      - /root/.grok:/root/.grok:ro
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -m 3 http://127.0.0.1:7113/mcp || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  agents:
+    driver: bridge
+
+volumes:
+  chatgpt-image-agent-outputs:
+    name: pa-chatgpt-image-agent-outputs
+  image-agent-outputs:
+    name: pa-image-agent-outputs
+  grok-image-agent-outputs:
+    name: pa-grok-image-agent-outputs
+  gemini-web-profile:
+    name: pa-gemini-web-profile
+  gemini-web-outputs:
+    name: pa-gemini-web-outputs
+  grok-web-profile:
+    name: pa-grok-web-profile
+  grok-web-outputs:
+    name: pa-grok-web-outputs
