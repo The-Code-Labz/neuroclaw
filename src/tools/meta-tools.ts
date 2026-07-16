@@ -17,6 +17,7 @@ import { getMcpRegistryTools, findMcpRegistryTool, type SynthesizedMcpTool } fro
 import { dispatchComposioTool, getCachedComposioToolSummaries } from './adapters/composio';
 import type { ToolContext } from './context';
 import { logToolCall } from '../system/hive-mind';
+import { maybeCompressToolResult } from './tool-middleware';
 
 // ── schemas ────────────────────────────────────────────────────────────────
 
@@ -257,7 +258,11 @@ export async function handleCallTool(
     if (!v.success) {
       return { error: `Invalid args for ${name}: ${v.error.message}${paramHint(name, staticTool.schema)}` };
     }
-    return await staticTool.handler(v.data, ctx);
+    // Output compression w/ retrieval exemption — the single boundary, applied
+    // here for the call_tool path (trace already emitted above). Dynamic classes
+    // (agent__*, mcp__*, COMPOSIO_*) below are exempt-by-default, so only the
+    // static-registry path needs the wrap.
+    return maybeCompressToolResult(name, staticTool.category, await staticTool.handler(v.data, ctx), ctx);
   }
 
   // 2. MCP-backed agents (agent__<name> tools)

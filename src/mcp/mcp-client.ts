@@ -27,7 +27,7 @@ const connections = new Map<string, Promise<CachedConnection>>();
 //   - {"error":{"message":"Session not found"}}   (explicit)
 //   - JSON-RPC error -32602 "Invalid request parameters"  (FastMCP's actual
 //     response when the SSE transport sends a session_id the server doesn't
-//     recognize — confirmed against docuflow-mcp.your-domain.com after
+//     recognize — confirmed against docuflow-mcp.neurolearninglabs.com after
 //     the Python service restarts)
 //
 // Both indicate the same root cause: the cached Transport is referencing a
@@ -114,6 +114,22 @@ async function evictAndReconnect(
   }
   logger.info('MCP: evicting stale session, reconnecting', { serverUrl });
   return connect(serverUrl, headers, transport);
+}
+
+/** Proactively evict + close a cached connection for a specific (url, headers,
+ *  transport) key. OAuth-Bearer callers (OpenArt) must call this after a token
+ *  rotation: connectionKey() includes the header signature, so a rotated Bearer
+ *  opens a NEW cached entry while the old one lingers holding a live SSE/HTTP
+ *  socket — isStaleSession() never matches a 401, so nothing else evicts it.
+ *  Without this the connections Map (and its sockets) grows unbounded. */
+export function evictConnection(serverUrl: string, headers?: Record<string, string>, transport?: McpTransport): void {
+  const key = connectionKey(serverUrl, headers, transport);
+  const stale = connections.get(key);
+  if (!stale) return;
+  connections.delete(key);
+  stale.then(({ transport: t }) => {
+    try { (t as { close?: () => Promise<void> }).close?.(); } catch { /* ignore */ }
+  }).catch(() => { /* connect had failed — nothing to close */ });
 }
 
 export async function listTools(serverUrl: string, headers?: Record<string, string>, transport?: McpTransport): Promise<McpToolDefinition[]> {

@@ -33,7 +33,7 @@ const AvatarDisplay = ({ agent, size = 56 }) => {
   }
   const svg = BG_AVATARS[agent.key] ?? BG_AVATARS.sentinel;
   return (
-    <div style={{ width: size, height: size, borderRadius: '50%', border: '2px solid var(--line)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,183,255,0.06)', color: 'var(--accent)', padding: 10 }}
+    <div style={{ width: size, height: size, borderRadius: '50%', border: '2px solid var(--line)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'color-mix(in srgb, var(--accent) 6%, transparent)', color: 'var(--accent)', padding: 10 }}
          dangerouslySetInnerHTML={{ __html: svg }} />
   );
 };
@@ -79,7 +79,7 @@ const AvatarEditor = ({ agentKey, onSaved }) => {
   if (!open) return <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px' }} onClick={() => setOpen(true)}>Edit Avatar</button>;
 
   return (
-    <div style={{ marginTop: 8, padding: 10, background: 'rgba(0,183,255,0.06)', borderRadius: 6, border: '1px solid var(--line-soft)' }}>
+    <div style={{ marginTop: 8, padding: 10, background: 'color-mix(in srgb, var(--accent) 6%, transparent)', borderRadius: 6, border: '1px solid var(--line-soft)' }}>
       <div style={{ marginBottom: 6, fontSize: 11, color: 'var(--accent)' }}>Set avatar</div>
       <input
         className="nc-input"
@@ -234,7 +234,7 @@ const StephanieAlerts = () => {
           <div className="mono muted" style={{ padding: '14px 16px', fontSize: 11 }}>// all clear — no open alerts</div>
         ) : (
           unread.map((a, i) => (
-            <div key={a.id} style={{ padding: '12px 14px', borderBottom: i < unread.length - 1 ? '1px dashed rgba(0,183,255,0.06)' : 'none' }}>
+            <div key={a.id} style={{ padding: '12px 14px', borderBottom: i < unread.length - 1 ? '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' : 'none' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span className={`dot ${sevColor(a.severity)} pulse`} />
                 <span className={`tag ${sevColor(a.severity)}`} style={{ fontSize: 9 }}>{a.type}</span>
@@ -367,7 +367,7 @@ const Sentinel = () => {
             </thead>
             <tbody>
               {escalations.map((e, i) => (
-                <tr key={e.taskId} style={{ borderBottom: '1px dashed rgba(0,183,255,0.06)' }}>
+                <tr key={e.taskId} style={{ borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' }}>
                   <td className="mono" style={{ padding: '6px 8px', color: 'var(--text)' }}>{e.taskTitle}</td>
                   <td style={{ padding: '6px 8px' }}>
                     <span className={`tag ${ESCALATION_TONES[e.escalationLevel] ?? 'muted'}`} style={{ fontSize: 9 }}>

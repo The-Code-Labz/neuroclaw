@@ -25,12 +25,15 @@ import {
 } from '../db';
 import { listManagedSessions, capturePane, isAlive as tmuxIsAlive } from '../system/claude-tmux';
 import { approvalEvents } from '../system/approval-events';
+import { checkForUpdate, runSelfUpdate, readMarker, issueNonce, consumeNonce } from '../system/self-update';
 import { notificationEvents } from '../system/notification-events';
 import { config } from '../config';
+import { getCompressionTelemetry } from '../tools/compression-telemetry';
 import { getAnalyticsSummary, getSystemHealthStats, getRecentErrors, getMessageSparkline, getTopTools, getActivityHeatmap, getHealthSummary, getDowntimeEvents, getUptimeTimeline } from '../system/analytics';
 import { getRecentLogs } from '../system/audit';
 import { logEvents, readRecentLogLines, readFilteredLogLines, logger, type ParsedLogLine } from '../utils/logger';
 import { translateClaudeError } from '../utils/claudeErrorLabel';
+import { escapeHtmlText } from '../skills/canvas/srcdoc';
 import { getMemories, saveMemory } from '../memory/memory-service';
 import { getMemoryStore } from '../memory/memory-store';
 import {
@@ -44,6 +47,7 @@ import { setRelayDispatch, clearRelayDispatch, createPending, resolvePending } f
 import { registerStream, clearStream, stopStream } from '../system/stream-control';
 import { startHeartbeat } from '../agent/heartbeat';
 import { agentBus, type AgentEvent } from '../system/event-bus';
+import { execRemoteWithSecrets, renderNodePing } from '../system/render-node-exec';
 import { markTurnDone, startTurn, clearTurn } from '../agent/turn-state';
 import { spawnAgent } from '../system/spawner';
 import { getHiveEvents, getHiveErrors, hiveEvents, logHive, type HiveEvent } from '../system/hive-mind';
@@ -60,7 +64,7 @@ import {
   listCatalog, refreshCatalog, setTierOverride, setPriceOverride,
   MODEL_PROVIDERS, type ModelTier, type ModelProvider,
 } from '../system/model-catalog';
-import { spendLastHourWithCost, spendByTierLastHour, spendByModelLastHour, spendByProvider, spendByProviderAndAgent } from '../system/model-spend';
+import { spendLastHourWithCost, spendByTierLastHour, spendByModelLastHour, spendByProvider, spendByProviderAndAgent, logSpend } from '../system/model-spend';
 import { getWikiTree, getWikiArticle } from './wiki-loader';
 import {
   listSkills, clearSkillCache, getSkill,
@@ -89,6 +93,40 @@ import {
   type CronJob,
 } from '../db';
 import { getSkillTelemetry } from '../db';
+import { listPendingConfirmations, resolvePendingConfirmation, getPendingConfirmation } from '../db';
+import {
+  listSshMachines, getSshMachine, createSshMachine, updateSshMachine, deleteSshMachine, querySshAudit,
+} from '../db';
+import { getGallery, archiveUploadedImage, archiveGeneratedImage, fetchStoredImage } from '../image/image-archive';
+import { registry } from '../tools/registry';
+import type { ToolContext } from '../tools/context';
+import { homedir, tmpdir } from 'os';
+import {
+  gateSpendBreaker,
+  releaseSpendBreaker,
+  estimateCost,
+  getQuota,
+  checkOrgSpendWarning,
+} from '../infra/spend-breaker';
+import {
+  docNotebooksEnabled, listNotebooks, createNotebook, deleteNotebook,
+  listNotebookSources, addNotebookSource, askNotebook,
+} from '../system/doc-notebooks';
+import {
+  listNotes as listAgentNotes, getNote as getAgentNote,
+  createNote as createAgentNote, updateNote as updateAgentNote, deleteNote as deleteAgentNote,
+} from '../system/notes-store';
+import {
+  mediaEnabled, listMedia, getMediaItem, presignDownload as presignMediaDownload,
+  setArchived as setMediaArchived, deleteMedia, registerMediaFromUrl, registerMediaFromBase64,
+  type MediaKind,
+} from '../system/media-store';
+import {
+  listSubAgentProviderStatus,
+  setFamilyEnabled as setSubAgentFamilyEnabled,
+  setFamilyModel as setSubAgentFamilyModel,
+  setFamilyBaseURL as setSubAgentFamilyBaseURL,
+} from '../system/subagent-providers-store';
 import cron from 'node-cron';
 import { syncJob, executeJobNow, cronEvents } from '../system/cron-scheduler';
 import {
@@ -364,6 +402,7 @@ function providerName(provider: string): string {
   if (provider === 'venice') return 'Venice';
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'abacus') return 'Abacus AI';
+  if (provider === 'omniroute') return 'OmniRoute';
   if (provider === 'mcp') return 'MCP-backed';
   return provider.split(/[-_]/).filter(Boolean).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ') || 'Provider';
 }
@@ -379,9 +418,18 @@ function providerBackend(provider: string): string {
   if (provider === 'venice') return 'openai-compatible';
   if (provider === 'ollama') return 'openai-compatible';
   if (provider === 'abacus') return 'openai-compatible';
+  if (provider === 'omniroute') return 'openai-compatible';
   if (provider === 'mcp') return 'mcp';
   return 'custom';
 }
+
+function normalizeImageMime(m: string): string {
+  const lower = (m || '').toLowerCase();
+  if (lower === 'image/jpg') return 'image/jpeg';
+  if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(lower)) return lower;
+  return 'image/png';
+}
+
 
 interface ProviderSummary {
   id: string;
@@ -505,6 +553,13 @@ async function buildProviderSummaries(): Promise<ProviderSummary[]> {
       model = config.abacus.model || model;
       status = configured ? 'online' : rows.length > 0 ? 'warn' : 'offline';
       detail = configured ? config.abacus.baseURL : 'ABACUS_API_KEY not set';
+    } else if (provider === 'omniroute') {
+      // Self-hosted local gateway (key optional) — like Ollama, treat as configured
+      // and let agent presence drive online/idle. A dead gateway surfaces at chat time.
+      configured = config.omniroute.enabled;
+      model = config.omniroute.model || model;
+      status = (agentCounts.get(provider) ?? 0) > 0 ? 'online' : 'idle';
+      detail = config.omniroute.baseURL;
     } else if (provider === 'mcp') {
       configured = (agentCounts.get(provider) ?? 0) > 0;
       status = configured ? 'online' : 'idle';
@@ -774,6 +829,14 @@ export function registerApiRoutes(app: Hono<any>): void {
   // (Infisical, etc.) can reach /webhooks/broker/* without a dashboard token.
   registerBrokerPublicRoutes(app);
 
+  // NOTE: the old GET /api/oauth/canva/callback (public-HTTPS server-side
+  // callback) was removed 2026-07-15 — Canva's /authorize rejects non-loopback
+  // redirect_uri hosts outright (HTTP 400), so that route could never be hit
+  // by a real redirect. Replaced by Path A: a fixed http://127.0.0.1/callback
+  // redirect_uri (nothing listens there) + the dashboard-token-gated
+  // POST /api/oauth/canva/exchange route below, which the operator submits
+  // manually after pasting the failed-redirect URL. See mcp/canva-oauth.ts.
+
   // ── Cookie Sync CORS — must be registered BEFORE the auth middleware ────
   // The Chrome extension origin (chrome-extension://<id>) must be allowed.
   // This middleware also handles OPTIONS preflight so the extension never hits
@@ -865,6 +928,64 @@ export function registerApiRoutes(app: Hono<any>): void {
   };
 
   app.get('/api/status', (c) => c.json(buildStatusPayload()));
+
+  // ── Version + update availability ─────────────────────────────────────────
+  // Surfaces the running version (from the VERSION file / package.json), the
+  // current commit, and — when ?remote=1 — the latest release tag available on
+  // the origin, so the dashboard can show an "update available" banner.
+  // Consumers apply updates with ./update.sh (see README › Updating).
+  const gitTry = (args: string[]): string | null => {
+    try { return execFileSync('git', args, { cwd: process.cwd(), timeout: 10_000 }).toString().trim() || null; }
+    catch { return null; }
+  };
+  app.get('/api/version', async (c) => {
+    let version = process.env.npm_package_version || '1.0.0';
+    try {
+      const vf = path.join(process.cwd(), 'VERSION');
+      if (fs.existsSync(vf)) version = fs.readFileSync(vf, 'utf-8').trim() || version;
+    } catch { /* fall back to package version */ }
+
+    const commit = gitTry(['rev-parse', '--short', 'HEAD']);
+    const describe = gitTry(['describe', '--tags', '--always']);
+    // Which stable tag this checkout is on, if any.
+    const currentTag = gitTry(['tag', '--points-at', 'HEAD']);
+
+    const payload: {
+      version: string;
+      commit: string | null;
+      describe: string | null;
+      currentTag: string | null;
+      latest: string | null;
+      updateAvailable: boolean | null;
+      channel: string;
+    } = {
+      version,
+      commit,
+      describe,
+      currentTag: currentTag ? currentTag.split('\n').find(t => /^v\d/.test(t)) || null : null,
+      latest: null,
+      updateAvailable: null,
+      channel: (process.env.CHANNEL || 'stable'),
+    };
+
+    // Optional remote check — network call, gated behind ?remote=1 so the
+    // default route stays fast and offline-safe.
+    if (c.req.query('remote') === '1') {
+      const remote = gitTry(['ls-remote', '--tags', '--refs', 'origin', 'v*']);
+      if (remote) {
+        const tags = remote.split('\n')
+          .map(l => l.split('/').pop() || '')
+          .filter(t => /^v\d+\.\d+\.\d+$/.test(t))
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const latest = tags[tags.length - 1] || null;
+        payload.latest = latest;
+        if (latest) {
+          payload.updateAvailable = latest !== payload.currentTag;
+        }
+      }
+    }
+    return c.json(payload);
+  });
 
   app.get('/api/core/status', async (c) => {
     try {
@@ -1048,6 +1169,99 @@ export function registerApiRoutes(app: Hono<any>): void {
     }
   });
 
+  app.get('/api/providers/grok/usage', async (c) => {
+    try {
+      // SuperGrok subscription weekly window from the Grok CLI's `/usage show`.
+      // No REST endpoint exists (ACP/gRPC gateway) and headless -p can't invoke
+      // slash commands, so we drive it in a tmux PTY. See src/infra/grok-usage.ts.
+      const { fetchGrokUsage } = await import('../infra/grok-usage');
+      return c.json(await fetchGrokUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'grok', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/openrouter/usage', async (c) => {
+    try {
+      // Prepaid credit balance via OpenRouter's REST /credits. Plain HTTP, no PTY.
+      // See src/infra/openrouter-usage.ts.
+      const { fetchOpenRouterUsage } = await import('../infra/openrouter-usage');
+      return c.json(await fetchOpenRouterUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'openrouter', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/voidai/usage', async (c) => {
+    try {
+      // Daily credit window via VoidAI's REST /credits. Plain HTTP, no PTY.
+      // See src/infra/voidai-usage.ts.
+      const { fetchVoidaiUsage } = await import('../infra/voidai-usage');
+      return c.json(await fetchVoidaiUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'voidai', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/kie/usage', async (c) => {
+    try {
+      // KIE AI prepaid credit balance via REST /chat/credit. Plain HTTP, no PTY.
+      // Capless balance → high-water-mark gauge. See src/infra/kie-usage.ts.
+      const { fetchKieUsage } = await import('../infra/kie-usage');
+      return c.json(await fetchKieUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'kie', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/fal/usage', async (c) => {
+    try {
+      // fal.ai account balance via REST /billing/user_details (ADMIN-key gated).
+      // Fail-softs with an actionable message until SHARED_FAL_ADMIN_KEY is added.
+      // See src/infra/fal-usage.ts.
+      const { fetchFalUsage } = await import('../infra/fal-usage');
+      return c.json(await fetchFalUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'fal', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/venice/usage', async (c) => {
+    try {
+      // Venice account balance + daily epoch reset via REST /api_keys/rate_limits.
+      // Plain Bearer auth (VENICE_API_KEY from broker). See src/infra/venice-usage.ts.
+      const { fetchVeniceUsage } = await import('../infra/venice-usage');
+      return c.json(await fetchVeniceUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'venice', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/abacus/usage', async (c) => {
+    try {
+      // Abacus has no usage API — this is a LOCAL compute-point meter summing the
+      // provider-reported points from instrumented abacus_image/abacus_speech
+      // calls over the monthly billing cycle. See src/infra/abacus-usage.ts.
+      const { fetchAbacusUsage } = await import('../infra/abacus-usage');
+      return c.json(await fetchAbacusUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'abacus', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/providers/openart/usage', async (c) => {
+    try {
+      // OpenArt subscription credit balance via the OAuth-gated MCP
+      // (openart_account_get → { plan, credits }). No REST key exists — the MCP
+      // is the only authenticated surface. Capless balance → high-water-mark
+      // gauge, same as KIE. See src/infra/openart-usage.ts.
+      const { fetchOpenArtUsage } = await import('../infra/openart-usage');
+      return c.json(await fetchOpenArtUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'openart', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
   // ── Provider health (WS2 cooldown layer) ──────────────────────────────────
   app.get('/api/providers/health', async (c) => {
     try {
@@ -1095,6 +1309,1474 @@ export function registerApiRoutes(app: Hono<any>): void {
   // ── Sessions / Messages ──────────────────────────────────────────────────
   app.get('/api/sessions', (c) => {
     return c.json(getSessionsWithPreviews(100));
+  });
+
+  // Agent-image gallery — metadata index (SQLite) joined with fresh Supabase
+  // signed URLs. Bytes live in the private 'agent-images' bucket; the service
+  // key never leaves the backend. Inherits the global /api/* auth guard.
+  app.get('/api/gallery', async (c) => {
+    const limitQ   = c.req.query('limit');
+    const offsetQ  = c.req.query('offset');
+    const limit    = limitQ  ? parseInt(limitQ, 10)  : undefined;
+    const offset   = offsetQ ? parseInt(offsetQ, 10) : undefined;
+    const agentId  = c.req.query('agent')?.trim()   || undefined;
+    const sessionId = c.req.query('session')?.trim() || undefined;
+    try {
+      const data = await getGallery({
+        limit:  Number.isFinite(limit  as number) ? limit  : undefined,
+        offset: Number.isFinite(offset as number) ? offset : undefined,
+        agentId, sessionId,
+      });
+      return c.json({ ok: true, ...data });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), total: 0, items: [] }, 500);
+    }
+  });
+
+  // ── Studio Gen — image generation with server-side spend breaker ──────────
+  // The breaker gates every outbound call. Per-user/session limits + an org-wide
+  // daily USD ceiling are enforced BEFORE any provider request is sent.
+
+  const ABACUS_IMAGE_MODELS = [
+    'flux_pro', 'flux_pro_ultra', 'flux2', 'flux2_pro', 'flux_kontext',
+    'flux_pro_canny', 'flux_pro_depth', 'gpt_image15', 'gpt_image2',
+    'imagen', 'nano_banana', 'nano_banana2', 'nano_banana_lite',
+    'nano_banana_pro', 'ideogram', 'ideogram_character', 'midjourney',
+    'seedream', 'recraft', 'recraft_svg', 'dreamina', 'hunyuan_image',
+    'imagine_art', 'grok_imagine_image', 'grok_imagine_image_quality',
+  ];
+  const STATIC_VENICE_IMAGE_MODELS = ['flux-2-pro', 'flux-2-dev', 'flux-dev', 'stable-diffusion-3-5'];
+  // KIE unified-jobs (createTask) generate models — live-verified 2026-07-14 by
+  // probing createTask (HTTP 422 = "model name not supported"; 200 = accepted).
+  // The prior list carried 7 names KIE rejects (nano-banana-2/-2-lite/-pro,
+  // seedream-v5/-v4.5, flux2/*, gpt/*, wan/2.7-image) — all 422. gpt-image & flux
+  // are NOT on KIE's unified job API (covered by voidai_gpt_image / fal instead).
+  const STATIC_KIE_IMAGE_MODELS = [
+    'google/nano-banana', 'google/imagen4', 'google/imagen4-fast', 'google/imagen4-ultra',
+    'bytedance/seedream', 'bytedance/seedream-v4-text-to-image',
+    'ideogram/v3-text-to-image', 'ideogram/character', 'qwen/text-to-image', 'qwen2/text-to-image',
+    'grok-imagine/text-to-image',
+  ];
+  // fal text-to-image models — real endpoint_ids from fal's v1/models catalog
+  // (live 2026-07-14). Prior list had stale names (fal-ai/seedream/v4,
+  // fal-ai/qwen-image, gpt-image-1) no longer served. The dynamic fetch above
+  // supersedes this when a fal key is present; this is the offline fallback.
+  const STATIC_FAL_IMAGE_MODELS = [
+    'fal-ai/flux/schnell', 'fal-ai/flux/dev', 'fal-ai/flux-pro/v1.1', 'fal-ai/flux-pro/v1.1-ultra',
+    'fal-ai/flux-2', 'fal-ai/flux-2-pro', 'fal-ai/nano-banana', 'fal-ai/nano-banana-2',
+    'fal-ai/nano-banana-pro', 'fal-ai/bytedance/seedream/v4/text-to-image',
+    'fal-ai/bytedance/seedream/v4.5/text-to-image', 'bytedance/seedream/v5/pro/text-to-image',
+    'fal-ai/ideogram/v3', 'fal-ai/recraft/v3/text-to-image', 'fal-ai/z-image/turbo',
+    'openai/gpt-image-2', 'xai/grok-imagine-image',
+  ];
+  const FAL_MODELS_TTL_MS = 60_000;
+  let falModelsCache: { at: number; models: string[] } | null = null;
+
+  // OpenArt models (MCP) — all seven support BOTH text2image and image2image, so
+  // the same list drives Generate and Edit. Default (first) = the verified,
+  // cheapest nano-banana-2-lite. Full set confirmed live via openart_model_list
+  // 2026-07-14 (7 image-capable of 14 total; the other 7 are video-only).
+  const STATIC_OPENART_IMAGE_MODELS = [
+    'nano-banana-2-lite', 'nano-banana-2', 'nano-banana-pro',
+    'gpt-image-2', 'byte-plus-seedream-4-5', 'byte-plus-seedream-5-lite',
+    'kling-3-omni',
+  ];
+
+  type StudioProviderMode = 'generate' | 'edit';
+  interface StudioProviderMeta {
+    id:              string;
+    label:           string;
+    tier:            number;
+    mode?:           StudioProviderMode;
+    modelsSource?:   'abacus' | 'venice' | 'fal';
+    models:          string[];
+    requiresSession: boolean;
+    degraded?:       boolean;
+    note?:           string;
+    argHint?:        string;
+    qualityMap?:     Record<string, 'standard' | 'hd'>;
+    // ── Capability metadata (drives which extra controls the UI shows) ──
+    resolutions?:    string[];   // resolution tiers this provider honors (generate)
+    supportsSafety?: boolean;    // fal-style content-filter tolerance (1..6)
+    supportsNegative?: boolean;  // negative prompt (Venice)
+    supportsCount?:  boolean;    // multi-image count (Abacus)
+  }
+
+  // Safety-tolerance choices exposed for fal.ai (strictest → most permissive).
+  const FAL_SAFETY_LEVELS = ['1', '2', '3', '4', '5', '6'];
+
+  const STUDIO_IMAGE_PROVIDERS: StudioProviderMeta[] = [
+    { id: 'abacus_image', label: 'Abacus AI', tier: 1, modelsSource: 'abacus', models: ABACUS_IMAGE_MODELS, requiresSession: false, argHint: 'up to 4 images', supportsCount: true, resolutions: ['1K', '2K', '4K'] },
+    { id: 'generate_image', label: 'xAI · Grok Imagine', tier: 1, models: ['grok-imagine-image', 'grok-imagine-image-quality'], requiresSession: false, argHint: '1 image per prompt', qualityMap: { 'grok-imagine-image': 'standard', 'grok-imagine-image-quality': 'hd' } },
+    { id: 'generate_image_venice', label: 'Venice', tier: 1, modelsSource: 'venice', models: STATIC_VENICE_IMAGE_MODELS, requiresSession: false, argHint: 'supports width/height/negative prompt', supportsNegative: true },
+    { id: 'voidai_image', label: 'VoidAI', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, degraded: true, note: 'VoidAI image is experiencing a temporary upstream outage — try again later.', argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'voidai_gpt_image', label: 'VoidAI · GPT Image', tier: 1, models: ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'], requiresSession: false, argHint: '1 image per prompt' },
+    { id: 'voidai_gemini_pro_image', label: 'VoidAI · Gemini Pro Image', tier: 1, models: ['gemini-3-pro-image'], requiresSession: false, argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'kie_image', label: 'KIE AI', tier: 1, models: STATIC_KIE_IMAGE_MODELS, requiresSession: false, argHint: 'premium catalog · 1 image per prompt' },
+    { id: 'fal_image', label: 'fal.ai', tier: 1, modelsSource: 'fal', models: STATIC_FAL_IMAGE_MODELS, requiresSession: false, argHint: 'fast FLUX / Nano-Banana · 1 image per prompt', supportsSafety: true },
+    { id: 'openart_image', label: 'OpenArt', tier: 1, models: STATIC_OPENART_IMAGE_MODELS, requiresSession: false, argHint: 'MCP · subscription credits · 1 image per prompt' },
+    { id: 'gpt_image_generate', label: 'ChatGPT · DALL·E (session)', tier: 2, models: ['dall-e-3'], requiresSession: true, note: 'Requires a provisioned ChatGPT browser session.' },
+    { id: 'gemini_image_generate', label: 'Gemini · Nano Banana (session)', tier: 2, models: ['gemini-generate'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
+    { id: 'gemini_web_generate_image', label: 'Gemini Web · Imagen (session)', tier: 2, models: ['imagen-3'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
+    { id: 'grok_image_edit', label: 'Grok · Aurora Edit (session)', tier: 2, mode: 'edit', models: ['grok-edit'], requiresSession: true, note: 'Edit-only via Grok web session. Generation is covered by xAI · Grok Imagine.' },
+    { id: 'grok_image_compose', label: 'Grok · Aurora Compose (session)', tier: 2, mode: 'edit', models: ['grok-compose'], requiresSession: true, note: 'Compose/blend via Grok web session. Generation is covered by xAI · Grok Imagine.' },
+  ];
+
+  const STUDIO_IMAGE_PROVIDER_IDS = new Set(STUDIO_IMAGE_PROVIDERS.map(p => p.id));
+
+  function getAbacusImageModels(): string[] {
+    try {
+      const rows = listCatalog({ provider: 'abacus', mediaType: 'image', includeUnavailable: false });
+      const ids = rows.map(r => r.model_id).filter(id => id && ABACUS_IMAGE_MODELS.includes(id));
+      const seen = new Set(ids);
+      return [...ids, ...ABACUS_IMAGE_MODELS.filter(m => !seen.has(m))];
+    } catch {
+      return ABACUS_IMAGE_MODELS;
+    }
+  }
+
+  let veniceModelsCache: { at: number; models: string[] } | null = null;
+  const VENICE_MODELS_TTL_MS = 60_000;
+  async function fetchVeniceImageModels(): Promise<string[]> {
+    if (!config.venice.apiKey) return STATIC_VENICE_IMAGE_MODELS;
+    if (veniceModelsCache && Date.now() - veniceModelsCache.at < VENICE_MODELS_TTL_MS) return veniceModelsCache.models;
+    try {
+      const resp = await fetch(`${config.venice.baseURL}/models?type=image`, {
+        headers: { Authorization: `Bearer ${config.venice.apiKey}` },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json() as { data?: Array<{ id: string }> };
+      const ids = (json.data ?? []).map(m => m.id).filter(Boolean);
+      const merged = ids.length ? [...ids, ...STATIC_VENICE_IMAGE_MODELS.filter(m => !ids.includes(m))] : STATIC_VENICE_IMAGE_MODELS;
+      veniceModelsCache = { at: Date.now(), models: merged };
+      return merged;
+    } catch (err) {
+      logger.warn('studio: venice model fetch failed — falling back to static list', { error: (err as Error).message, fallbackCount: STATIC_VENICE_IMAGE_MODELS.length });
+      return STATIC_VENICE_IMAGE_MODELS;
+    }
+  }
+
+  async function fetchFalImageModels(): Promise<string[]> {
+    if (!config.fal.apiKey) return STATIC_FAL_IMAGE_MODELS;
+    if (falModelsCache && Date.now() - falModelsCache.at < FAL_MODELS_TTL_MS) return falModelsCache.models;
+    try {
+      const resp = await fetch('https://api.fal.ai/v1/models?per_page=100', {
+        headers: { Authorization: `Key ${config.fal.apiKey}` },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // fal's v1/models returns { models: [{ endpoint_id, metadata:{category} }] }.
+      // The catalog key is `endpoint_id`, NOT `id` — reading `id` silently yields
+      // nothing and collapses the picker to the static fallback. Filter to
+      // text-to-image client-side (the Generate tab is generation-only).
+      const json = await resp.json() as { models?: Array<{ endpoint_id?: string; metadata?: { category?: string } }> };
+      const ids = (json.models ?? [])
+        .filter(m => (m.metadata?.category ?? '') === 'text-to-image')
+        .map(m => m.endpoint_id)
+        .filter((id): id is string => !!id);
+      const merged = ids.length ? [...ids, ...STATIC_FAL_IMAGE_MODELS.filter(m => !ids.includes(m))] : STATIC_FAL_IMAGE_MODELS;
+      falModelsCache = { at: Date.now(), models: merged };
+      return merged;
+    } catch (err) {
+      logger.warn('studio: fal image model fetch failed — falling back to static list', { error: (err as Error).message, fallbackCount: STATIC_FAL_IMAGE_MODELS.length });
+      return STATIC_FAL_IMAGE_MODELS;
+    }
+  }
+
+  // fal EDIT models — pulled from the image-to-image category, filtered to the
+  // prompt-editable models (exclude pure utilities: upscalers, background
+  // removal, segmentation). The Edit tab drives prompt-based editing, so an
+  // upscaler with no prompt would just confuse the picker.
+  const FAL_EDIT_EXCLUDE = /aura-sr|birefnet|background\/remove|clarity-upscaler|esrgan|rembg|sam-\d|seedvr\/upscale|topaz\/upscale/i;
+  let falEditModelsCache: { at: number; models: string[] } | null = null;
+  async function fetchFalEditModels(fallback: string[]): Promise<string[]> {
+    if (!config.fal.apiKey) return fallback;
+    if (falEditModelsCache && Date.now() - falEditModelsCache.at < FAL_MODELS_TTL_MS) return falEditModelsCache.models;
+    try {
+      const resp = await fetch('https://api.fal.ai/v1/models?per_page=200', {
+        headers: { Authorization: `Key ${config.fal.apiKey}` },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json() as { models?: Array<{ endpoint_id?: string; metadata?: { category?: string } }> };
+      const ids = (json.models ?? [])
+        .filter(m => (m.metadata?.category ?? '') === 'image-to-image')
+        .map(m => m.endpoint_id)
+        .filter((id): id is string => !!id && !FAL_EDIT_EXCLUDE.test(id));
+      const merged = ids.length ? [...ids, ...fallback.filter(m => !ids.includes(m))] : fallback;
+      falEditModelsCache = { at: Date.now(), models: merged };
+      return merged;
+    } catch (err) {
+      logger.warn('studio: fal edit model fetch failed — falling back to static list', { error: (err as Error).message, fallbackCount: fallback.length });
+      return fallback;
+    }
+  }
+
+  function inferImageMime(url: string): string {
+    const lower = url.split('?')[0].toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    return 'image/png';
+  }
+
+  function aspectRatioToDimensions(ratio: string): [number, number] {
+    const [w, h] = String(ratio || '1:1').split(':').map(Number);
+    if (!w || !h || !isFinite(w) || !isFinite(h)) return [1024, 1024];
+    const area = 1024 * 1024;
+    const scale = Math.sqrt(area / (w * h));
+    return [Math.round(w * scale), Math.round(h * scale)];
+  }
+
+  function isStudioProviderHealthy(meta: StudioProviderMeta, mcpServers: ReturnType<typeof listMcpServers>): boolean {
+    switch (meta.id) {
+      case 'abacus_image':
+        return config.abacus.enabled;
+      case 'generate_image':
+        return !!(process.env.XAI_API_KEY?.trim()) || fs.existsSync(path.join(homedir(), '.hermes', 'auth.json'));
+      case 'generate_image_venice':
+      case 'venice_image_edit':
+        return config.venice.enabled;
+      case 'voidai_image':
+      case 'voidai_gpt_image':
+      case 'voidai_gemini_pro_image':
+        return !!config.voidai.apiKey;
+      case 'kie_image':
+        return config.kie.enabled;
+      case 'fal_image':
+        return config.fal.enabled;
+      case 'openart_image':
+        return config.openart.enabled;
+      case 'gpt_image_generate':
+        return mcpServers.some(s => s.name === 'gpt_image' && s.enabled);
+      case 'gemini_image_generate':
+      case 'gemini_web_generate_image':
+        return mcpServers.some(s => s.name === 'gemini_web' && s.enabled);
+      case 'grok_image_edit':
+      case 'grok_image_compose':
+        return mcpServers.some(s => s.name === 'grok_image_edit' && s.enabled);
+      default:
+        return false;
+    }
+  }
+
+  app.get('/api/studio/image-providers', async (c) => {
+    try {
+      const mcpServers = listMcpServers(false);
+      const [veniceModels, abacusModels, falModels] = await Promise.all([
+        fetchVeniceImageModels(),
+        Promise.resolve(getAbacusImageModels()),
+        fetchFalImageModels(),
+      ]);
+      const providers = STUDIO_IMAGE_PROVIDERS.map(meta => {
+        const models = meta.modelsSource === 'abacus' ? abacusModels
+          : meta.modelsSource === 'venice' ? veniceModels
+          : meta.modelsSource === 'fal' ? falModels
+          : meta.models;
+        const healthy = isStudioProviderHealthy(meta, mcpServers);
+        const degraded = meta.degraded || (meta.requiresSession && !healthy);
+        const note = meta.note
+          || (meta.requiresSession ? 'Requires a provisioned browser/X session.'
+              : healthy ? meta.argHint ?? 'Ready.'
+              : 'Provider is not configured.');
+        return {
+          id: meta.id,
+          label: meta.label,
+          tier: meta.tier,
+          mode: meta.mode ?? 'generate',
+          models,
+          requiresSession: meta.requiresSession,
+          healthy,
+          degraded,
+          note,
+          resolutions: meta.resolutions ?? [],
+          supportsSafety: !!meta.supportsSafety,
+          supportsNegative: !!meta.supportsNegative,
+          supportsCount: !!meta.supportsCount,
+          safetyLevels: meta.supportsSafety ? FAL_SAFETY_LEVELS : [],
+        };
+      });
+      return c.json({ ok: true, providers, defaultProvider: 'abacus_image' });
+    } catch (err) {
+      logger.warn('studio/image-providers failed', { error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message, providers: [] }, 500);
+    }
+  });
+
+  app.post('/api/studio/gen', async (c) => {
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+
+    const prompt = String(body.prompt ?? '').trim();
+    if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+    let provider = String(body.provider ?? 'abacus_image').toLowerCase();
+    // Backwards compatibility for the previous voidai/abacus short names.
+    if (provider === 'abacus') provider = 'abacus_image';
+    if (provider === 'voidai') provider = 'voidai_image';
+
+    if (!STUDIO_IMAGE_PROVIDER_IDS.has(provider)) {
+      return c.json({ ok: false, error: `unsupported provider: ${provider}` }, 400);
+    }
+
+    const meta = STUDIO_IMAGE_PROVIDERS.find(p => p.id === provider)!;
+    if (meta.mode === 'edit') {
+      return c.json({ ok: false, error: `${provider} is an edit-only provider; use it from the Editor tab.` }, 400);
+    }
+    if (meta.degraded) {
+      return c.json({ ok: false, error: meta.note || 'This provider is temporarily unavailable.' }, 503);
+    }
+
+    const tool = registry.find(t => t.name === provider);
+    if (!tool) {
+      return c.json({ ok: false, error: `provider ${provider} is not registered` }, 502);
+    }
+
+    const sessionId = String(body.sessionId ?? '').trim() || 'default';
+    const model = String(body.model ?? '').trim() || undefined;
+    const aspectRatio = String(body.aspect_ratio ?? body.aspectRatio ?? '1:1').trim();
+    const resolution = String(body.resolution ?? '').trim() || undefined;
+    const negative = String(body.negative ?? '').trim() || undefined;
+    const rawQuality = String(body.quality ?? '').trim() as 'standard' | 'hd' | '';
+    const rawSize = String(body.size ?? '').trim() || undefined;
+    const rawStyle = String(body.style ?? 'auto').trim() as 'auto' | 'vivid' | 'natural';
+    const numImages = provider === 'abacus_image'
+      ? Math.min(4, Math.max(1, parseInt(String(body.num_images ?? body.numImages ?? 1), 10) || 1))
+      : 1;
+
+    const estUsd = estimateCost(provider, model) * numImages;
+
+    const gate = gateSpendBreaker({ userId: sessionId, tool: provider, model, operation: 'generate', estUsd });
+    if (!gate.ok) {
+      const quota = getQuota(sessionId);
+      const warning = checkOrgSpendWarning();
+      return c.json({
+        ...gate.body,
+        rateLimited: true,
+        quota: {
+          used: quota.usedCalls,
+          limit: quota.limitCalls,
+          usedUsd: quota.usedUsd,
+          limitUsd: quota.limitUsd,
+          orgUsedUsd: quota.orgUsedUsd,
+          orgLimitUsd: quota.orgLimitUsd,
+          resetAt: quota.resetAt,
+          warning: warning.warning,
+        },
+      }, gate.status);
+    }
+    const inFlightId = gate.inFlightId;
+
+    const released = { done: false };
+    const finish = (actualUsd?: number) => {
+      if (!released.done) {
+        released.done = true;
+        releaseSpendBreaker(inFlightId, actualUsd);
+      }
+    };
+
+    try {
+      // Build provider-specific tool arguments from the generic Studio form.
+      let toolArgs: Record<string, unknown> = { prompt };
+      if (provider === 'abacus_image') {
+        toolArgs = {
+          operation: 'generate',
+          model,
+          prompt,
+          num_images: numImages,
+          aspect_ratio: aspectRatio,
+          resolution,
+        };
+      } else if (provider === 'voidai_image') {
+        toolArgs = { operation: 'generate', model, prompt, aspect_ratio: aspectRatio, resolution };
+      } else if (provider === 'voidai_gemini_pro_image') {
+        toolArgs = { operation: 'generate', prompt, aspect_ratio: aspectRatio, resolution };
+      } else if (provider === 'voidai_gpt_image') {
+        const sizeMap: Record<string, string> = {
+          '1:1': '1024x1024', '9:16': '1024x1536', '16:9': '1536x1024',
+          '3:4': '1024x1536', '4:3': '1536x1024',
+        };
+        toolArgs = { operation: 'generate', model, prompt, size: rawSize || sizeMap[aspectRatio] || '1024x1024' };
+      } else if (provider === 'generate_image') {
+        const quality = meta.qualityMap?.[model || ''] ?? rawQuality ?? 'standard';
+        toolArgs = { prompt, quality };
+      } else if (provider === 'generate_image_venice') {
+        const [width, height] = aspectRatioToDimensions(aspectRatio);
+        toolArgs = { prompt, model, width, height, ...(negative ? { negative_prompt: negative } : {}) };
+      } else if (provider === 'gpt_image_generate') {
+        const styleMap: Record<string, 'auto' | 'vivid' | 'natural'> = { 'dall-e-3': 'auto', vivid: 'vivid', natural: 'natural' };
+        toolArgs = { prompt, style: styleMap[model || ''] ?? rawStyle };
+      } else if (provider === 'gemini_image_generate' || provider === 'gemini_web_generate_image') {
+        toolArgs = { prompt };
+      } else if (provider === 'kie_image') {
+        toolArgs = { prompt, model, aspect_ratio: aspectRatio, output_format: 'png' };
+      } else if (provider === 'openart_image') {
+        toolArgs = { operation: 'generate', model, prompt, aspect_ratio: aspectRatio };
+      } else if (provider === 'fal_image') {
+        const falSizeMap: Record<string, string> = {
+          '1:1': 'square_hd', '9:16': 'portrait_16_9', '16:9': 'landscape_16_9',
+          '3:4': 'portrait_4_3', '4:3': 'landscape_4_3',
+        };
+        const safety = String(body.safety_tolerance ?? '').trim();
+        toolArgs = {
+          prompt, model, image_size: falSizeMap[aspectRatio] || 'square_hd', num_images: 1,
+          ...(FAL_SAFETY_LEVELS.includes(safety) ? { safety_tolerance: safety } : {}),
+        };
+      }
+
+      const ctx: ToolContext = { sessionId, agentId: null, runId: null, spawnDepth: 0 };
+      if (tool.gate) {
+        const gateRes = tool.gate(ctx);
+        if (!gateRes.allowed) throw new Error(gateRes.reason || `${provider} is gated.`);
+      }
+
+      const rawResult = await tool.handler(toolArgs as never, ctx);
+      if (!rawResult || typeof rawResult !== 'object' || (rawResult as { ok?: boolean }).ok === false) {
+        throw new Error((rawResult as { error?: string }).error || `${provider} returned no image.`);
+      }
+
+      const result = rawResult as { url?: string; urls?: string[]; images?: Array<{ url?: string; mime?: string }>; result?: unknown };
+      const urls: string[] = [];
+      if (Array.isArray(result.urls)) {
+        urls.push(...result.urls);
+      } else if (typeof result.url === 'string') {
+        urls.push(result.url);
+      } else if (Array.isArray(result.images)) {
+        urls.push(...result.images.map(i => i.url).filter((u): u is string => typeof u === 'string'));
+      }
+      if (urls.length === 0) {
+        throw new Error(`${provider} returned a successful response but no image URLs.`);
+      }
+
+      const images = urls.map(u => ({ url: u, mime: inferImageMime(u) }));
+
+      // Meter in the shared model_spend ledger (non-token spend path).
+      try {
+        logSpend({
+          provider,
+          model_id: model || provider,
+          input_tokens: 0,
+          output_tokens: 0,
+          cost_usd: estUsd,
+          session_id: sessionId,
+        });
+      } catch (spendErr) {
+        logger.warn('studio/gen: model_spend logging failed', { error: (spendErr as Error).message, sessionId });
+      }
+
+      finish(estUsd); // actual cost unknown; keep estimate
+      const successQuota = getQuota(sessionId);
+      const successWarning = checkOrgSpendWarning();
+      return c.json({
+        ok: true,
+        images,
+        provider,
+        model: model || 'default',
+        prompt,
+        quota: {
+          used: successQuota.usedCalls,
+          limit: successQuota.limitCalls,
+          usedUsd: successQuota.usedUsd,
+          limitUsd: successQuota.limitUsd,
+          orgUsedUsd: successQuota.orgUsedUsd,
+          orgLimitUsd: successQuota.orgLimitUsd,
+          resetAt: successQuota.resetAt,
+          warning: successWarning.warning,
+        },
+      });
+    } catch (err) {
+      finish(0);
+      logger.warn('studio/gen failed', { provider, model, sessionId, error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message }, 502);
+    }
+  });
+
+  // ── Studio Edit — prompt-based image editing via provider edit APIs ─────────
+  // Reuses the same registered image tools as Generate, but dispatches with
+  // operation:'edit' + an input_image. The reliable path is the direct-API
+  // editors (VoidAI / Abacus / KIE / fal); Grok edit/compose are session-gated
+  // and stage the source image to a temp file before the MCP call.
+  interface StudioEditProviderMeta {
+    id:              string;   // registry tool name
+    label:           string;
+    tier:            number;
+    models:          string[]; // edit-capable model ids (offline fallback if modelsSource set)
+    modelsSource?:   'fal-edit'; // fetch the live catalog when a key is present
+    requiresSession: boolean;
+    supportsMask?:   boolean;  // gpt-image inpaint
+    supportsSafety?: boolean;  // fal content-filter tolerance
+    supportsCompose?: boolean; // Grok blend (2 images)
+    resolutions?:    string[];
+    note?:           string;
+  }
+
+  const STUDIO_EDIT_PROVIDERS: StudioEditProviderMeta[] = [
+    { id: 'voidai_image', label: 'VoidAI · Nano-Banana', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'voidai_gemini_pro_image', label: 'VoidAI · Gemini Pro', tier: 1, models: ['gemini-3-pro-image'], requiresSession: false, resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'voidai_gpt_image', label: 'VoidAI · GPT Image', tier: 1, models: ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'], requiresSession: false, supportsMask: true },
+    { id: 'abacus_image', label: 'Abacus AI', tier: 1, models: ['flux_kontext_edit', 'gpt_image_edit', 'gpt_image2_edit', 'qwen_image_edit'], requiresSession: false, resolutions: ['1K', '2K', '4K'] },
+    // Edit catalog live-verified 2026-07-14 (zero-credit probe: createTask with
+    // empty input → 422 "model name not supported" = invalid). The prior list
+    // carried 7 names KIE rejects (nano-banana-pro-image-to-image, flux2/*,
+    // gpt/*, seedream-v5-*) — flux2/gpt-image/seedream-v5 are NOT on KIE's
+    // unified jobs API. These 9 are the accepted image-to-image models.
+    { id: 'kie_image', label: 'KIE AI', tier: 1, models: ['google/nano-banana-edit', 'bytedance/seedream-v4-edit', 'grok-imagine/image-to-image', 'qwen/image-edit', 'qwen2/image-edit', 'ideogram/v3-edit', 'ideogram/v3-remix', 'ideogram/character-edit', 'ideogram/character-remix'], requiresSession: false },
+    // fal edit models are fetched live from the image-to-image catalog (see
+    // fetchFalEditModels) — the dynamic list supersedes this offline fallback.
+    // The prior static list carried invalid names (fal-ai/qwen-image-edit,
+    // fal-ai/gpt-image-1/edit-image) that fal no longer serves. This fallback is
+    // the live-verified prompt-editable subset (2026-07-14).
+    { id: 'fal_image', label: 'fal.ai', tier: 1, modelsSource: 'fal-edit', models: ['fal-ai/nano-banana/edit', 'fal-ai/nano-banana-2/edit', 'fal-ai/nano-banana-pro/edit', 'fal-ai/flux-pro/kontext', 'fal-ai/flux-pro/kontext/max', 'fal-ai/flux-2/edit', 'fal-ai/flux-2-pro/edit', 'fal-ai/bytedance/seedream/v4/edit', 'fal-ai/bytedance/seedream/v4.5/edit', 'bytedance/seedream/v5/pro/edit', 'openai/gpt-image-2/edit', 'fal-ai/gpt-image-1.5/edit', 'xai/grok-imagine-image/edit'], requiresSession: false, supportsSafety: true },
+    { id: 'openart_image', label: 'OpenArt', tier: 1, models: STATIC_OPENART_IMAGE_MODELS, requiresSession: false, note: 'MCP · image2image · subscription credits.' },
+    // Venice /image/edit — dedicated edit endpoint (peer of generate_image_venice).
+    // Model catalog mirrors veniceImageEditShape (schemas.ts). Omit model → Venice
+    // built-in default (qwen-edit). NOTE: the edit tool takes NO `operation` field.
+    { id: 'venice_image_edit', label: 'Venice · Edit', tier: 1, models: ['qwen-edit-uncensored', 'firered-image-edit', 'grok-imagine-edit', 'grok-imagine-quality-edit', 'qwen-image-2-edit', 'qwen-image-2-pro-edit', 'wan-2-7-pro-edit', 'flux-2-max-edit', 'gpt-image-2-edit', 'gpt-image-1-5-edit', 'nano-banana-2-edit', 'nano-banana-pro-edit', 'nano-banana-2-lite-edit', 'luma-uni-1-edit', 'luma-uni-1-max-edit', 'seedream-v5-lite-edit', 'seedream-v5-pro-edit', 'seedream-v4-edit'], requiresSession: false, resolutions: ['1K', '2K', '4K'] },
+    { id: 'grok_image_edit', label: 'Grok · Aurora Edit (session)', tier: 2, models: ['grok-edit'], requiresSession: true, note: 'Requires a provisioned Grok web session.' },
+    { id: 'grok_image_compose', label: 'Grok · Aurora Compose (session)', tier: 2, models: ['grok-compose'], requiresSession: true, supportsCompose: true, note: 'Blend two images — requires a provisioned Grok web session.' },
+  ];
+  const STUDIO_EDIT_PROVIDER_IDS = new Set(STUDIO_EDIT_PROVIDERS.map(p => p.id));
+
+  function studioProviderHealthyById(id: string, mcpServers: ReturnType<typeof listMcpServers>): boolean {
+    return isStudioProviderHealthy({ id } as StudioProviderMeta, mcpServers);
+  }
+
+  // Materialize an https URL or data: URI to a local temp PNG for MCP editors.
+  async function stageImageToTemp(src: string): Promise<string> {
+    const dest = path.join(tmpdir(), `nc-studio-edit-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+    if (src.startsWith('data:')) {
+      const b64 = src.split(',')[1] ?? '';
+      if (!b64) throw new Error('empty data URI');
+      fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
+    } else {
+      const resp = await fetch(src, { signal: AbortSignal.timeout(20_000) });
+      if (!resp.ok) throw new Error(`fetch source image failed: HTTP ${resp.status}`);
+      fs.writeFileSync(dest, Buffer.from(await resp.arrayBuffer()));
+    }
+    return dest;
+  }
+
+  app.get('/api/studio/edit-providers', async (c) => {
+    try {
+      const mcpServers = listMcpServers(false);
+      const falEditModels = await fetchFalEditModels(
+        STUDIO_EDIT_PROVIDERS.find(p => p.id === 'fal_image')?.models ?? [],
+      );
+      const providers = STUDIO_EDIT_PROVIDERS.map(meta => {
+        const healthy = studioProviderHealthyById(meta.id, mcpServers);
+        const degraded = meta.requiresSession && !healthy;
+        const note = meta.note
+          || (healthy ? 'Ready.' : 'Provider is not configured.');
+        const models = meta.modelsSource === 'fal-edit' ? falEditModels : meta.models;
+        return {
+          id: meta.id,
+          label: meta.label,
+          tier: meta.tier,
+          models,
+          requiresSession: meta.requiresSession,
+          healthy,
+          degraded,
+          note,
+          supportsMask: !!meta.supportsMask,
+          supportsSafety: !!meta.supportsSafety,
+          supportsCompose: !!meta.supportsCompose,
+          resolutions: meta.resolutions ?? [],
+          safetyLevels: meta.supportsSafety ? FAL_SAFETY_LEVELS : [],
+        };
+      });
+      return c.json({ ok: true, providers, defaultProvider: 'voidai_gpt_image' });
+    } catch (err) {
+      logger.warn('studio/edit-providers failed', { error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message, providers: [] }, 500);
+    }
+  });
+
+  app.post('/api/studio/edit', async (c) => {
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+
+    const prompt = String(body.prompt ?? '').trim();
+    if (!prompt) return c.json({ ok: false, error: 'edit prompt is required' }, 400);
+    const inputImage = String(body.input_image ?? body.imageUrl ?? body.image_url ?? '').trim();
+    if (!inputImage) return c.json({ ok: false, error: 'input_image is required' }, 400);
+
+    const provider = String(body.provider ?? '').toLowerCase();
+    const meta = STUDIO_EDIT_PROVIDERS.find(p => p.id === provider);
+    if (!meta || !STUDIO_EDIT_PROVIDER_IDS.has(provider)) {
+      return c.json({ ok: false, error: `unsupported edit provider: ${provider}` }, 400);
+    }
+
+    const tool = registry.find(t => t.name === provider);
+    if (!tool) return c.json({ ok: false, error: `provider ${provider} is not registered` }, 502);
+
+    const sessionId    = String(body.sessionId ?? '').trim() || 'default';
+    const model        = String(body.model ?? '').trim() || undefined;
+    const resolution   = String(body.resolution ?? '').trim() || undefined;
+    const aspectRatio  = String(body.aspect_ratio ?? body.aspectRatio ?? '1:1').trim();
+    const safety       = String(body.safety_tolerance ?? '').trim();
+    const mask         = String(body.mask ?? '').trim() || undefined;
+    const secondImage  = String(body.second_image ?? body.compose_image ?? '').trim();
+
+    const estUsd = estimateCost(provider, model);
+    const gate = gateSpendBreaker({ userId: sessionId, tool: provider, model, operation: 'edit', estUsd });
+    if (!gate.ok) {
+      const quota = getQuota(sessionId);
+      const warning = checkOrgSpendWarning();
+      return c.json({
+        ...gate.body,
+        rateLimited: true,
+        quota: {
+          used: quota.usedCalls, limit: quota.limitCalls,
+          usedUsd: quota.usedUsd, limitUsd: quota.limitUsd,
+          orgUsedUsd: quota.orgUsedUsd, orgLimitUsd: quota.orgLimitUsd,
+          resetAt: quota.resetAt, warning: warning.warning,
+        },
+      }, gate.status);
+    }
+    const inFlightId = gate.inFlightId;
+    const released = { done: false };
+    const finish = (actualUsd?: number) => { if (!released.done) { released.done = true; releaseSpendBreaker(inFlightId, actualUsd); } };
+    const tempFiles: string[] = [];
+
+    try {
+      let toolArgs: Record<string, unknown>;
+      if (provider === 'voidai_image' || provider === 'voidai_gemini_pro_image') {
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, ...(resolution ? { resolution } : {}) };
+      } else if (provider === 'voidai_gpt_image') {
+        const sizeMap: Record<string, string> = { '1:1': '1024x1024', '9:16': '1024x1536', '16:9': '1536x1024', '3:4': '1024x1536', '4:3': '1536x1024' };
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, size: sizeMap[aspectRatio] || '1024x1024', ...(mask ? { mask } : {}) };
+      } else if (provider === 'abacus_image') {
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, ...(resolution ? { resolution } : {}) };
+      } else if (provider === 'kie_image') {
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, aspect_ratio: aspectRatio, output_format: 'png' };
+      } else if (provider === 'fal_image') {
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, ...(FAL_SAFETY_LEVELS.includes(safety) ? { safety_tolerance: safety } : {}) };
+      } else if (provider === 'venice_image_edit') {
+        // Venice's edit tool is a dedicated endpoint — NO `operation` field.
+        toolArgs = { prompt, input_image: inputImage, model, aspect_ratio: aspectRatio, ...(resolution ? { resolution } : {}) };
+      } else if (provider === 'grok_image_edit') {
+        const p = await stageImageToTemp(inputImage); tempFiles.push(p);
+        toolArgs = { image_path: p, prompt };
+      } else if (provider === 'grok_image_compose') {
+        const p1 = await stageImageToTemp(inputImage); tempFiles.push(p1);
+        if (!secondImage) throw new Error('grok compose requires a second image (second_image).');
+        const p2 = await stageImageToTemp(secondImage); tempFiles.push(p2);
+        toolArgs = { image_paths: [p1, p2], prompt };
+      } else {
+        toolArgs = { operation: 'edit', prompt, input_image: inputImage, model };
+      }
+
+      const ctx: ToolContext = { sessionId, agentId: null, runId: null, spawnDepth: 0 };
+      if (tool.gate) {
+        const gateRes = tool.gate(ctx);
+        if (!gateRes.allowed) throw new Error(gateRes.reason || `${provider} is gated.`);
+      }
+
+      const rawResult = await tool.handler(toolArgs as never, ctx);
+      if (!rawResult || typeof rawResult !== 'object' || (rawResult as { ok?: boolean }).ok === false) {
+        throw new Error((rawResult as { error?: string })?.error || `${provider} returned no image.`);
+      }
+      const result = rawResult as { url?: string; urls?: string[]; images?: Array<{ url?: string }>; path?: string };
+      const urls: string[] = [];
+      if (Array.isArray(result.urls)) urls.push(...result.urls);
+      else if (typeof result.url === 'string') urls.push(result.url);
+      else if (Array.isArray(result.images)) urls.push(...result.images.map(i => i.url).filter((u): u is string => typeof u === 'string'));
+      else if (typeof result.path === 'string') urls.push(result.path);
+      if (urls.length === 0) throw new Error(`${provider} returned a successful response but no image URLs.`);
+
+      const images = urls.map(u => ({ url: u, mime: inferImageMime(u) }));
+      try {
+        logSpend({ provider, model_id: model || provider, input_tokens: 0, output_tokens: 0, cost_usd: estUsd, session_id: sessionId });
+      } catch (spendErr) {
+        logger.warn('studio/edit: model_spend logging failed', { error: (spendErr as Error).message, sessionId });
+      }
+      finish(estUsd);
+      const q = getQuota(sessionId);
+      const w = checkOrgSpendWarning();
+      return c.json({
+        ok: true, images, provider, model: model || 'default', prompt,
+        quota: {
+          used: q.usedCalls, limit: q.limitCalls, usedUsd: q.usedUsd, limitUsd: q.limitUsd,
+          orgUsedUsd: q.orgUsedUsd, orgLimitUsd: q.orgLimitUsd, resetAt: q.resetAt, warning: w.warning,
+        },
+      });
+    } catch (err) {
+      finish(0);
+      logger.warn('studio/edit failed', { provider, model, sessionId, error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message }, 502);
+    } finally {
+      for (const f of tempFiles) { try { fs.unlinkSync(f); } catch { /* best-effort cleanup */ } }
+    }
+  });
+
+  app.get('/api/studio/gen/history', async (c) => {
+    const sessionId = c.req.query('sessionId')?.trim();
+    const limit = intQuery(c.req.query('limit'), 24, 100);
+    try {
+      const data = await getGallery({ sessionId: sessionId || 'default', limit, expiresIn: 3600 });
+      return c.json({ ok: true, images: data.items });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), images: [] }, 500);
+    }
+  });
+
+  app.get('/api/studio/quota', async (c) => {
+    const sessionId = c.req.query('sessionId')?.trim() || 'default';
+    try {
+      const quota = getQuota(sessionId);
+      const warning = checkOrgSpendWarning();
+      if (warning.warning) {
+        logger.warn('studio: org-wide spend warning threshold crossed', {
+          orgUsedUsd: warning.orgUsedUsd,
+          orgWarnUsd: warning.orgWarnUsd,
+        });
+      }
+      return c.json({
+        ok: true,
+        quota: {
+          used: quota.usedCalls,
+          limit: quota.limitCalls,
+          usedUsd: quota.usedUsd,
+          limitUsd: quota.limitUsd,
+          orgUsedUsd: quota.orgUsedUsd,
+          orgLimitUsd: quota.orgLimitUsd,
+          resetAt: quota.resetAt,
+          warning: warning.warning,
+        },
+      });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // ── OpenMontage Backlot — glass wall over the render-node pipeline ──────────
+  // Reads the project JSON checkpoints the pipeline writes on the render node
+  // (pull-over-SSH on poll — spec open-decision #4). Read-only + a human-gate
+  // action. Never mutates state except through the pipeline's own checkpoint API.
+  const OM_REMOTE_DIR = 'openmontage';
+  const isSafeOmId = (s: string) => /^[A-Za-z0-9._-]+$/.test(s) && !s.includes('..');
+  // Model/voice ids carry a namespace slash (e.g. 'google/nano-banana-pro') that
+  // isSafeOmId rejects. Allow '/' here; still no traversal, no shell metachars.
+  const isSafeOmModel = (s: string) => /^[A-Za-z0-9._/-]+$/.test(s) && !s.includes('..');
+
+  // Python readers run via the vendored venv on the node. base64-wrapped so no
+  // shell-quoting can corrupt them; validated argv appended for the project id.
+  const OM_LIST_PY = `
+import sys, os, json, glob
+sys.path.insert(0, '.')
+try:
+    from lib.paths import PROJECTS_DIR
+    PD = str(PROJECTS_DIR)
+except Exception:
+    PD = os.path.join(os.getcwd(), 'projects')
+out = []
+if os.path.isdir(PD):
+    for p in sorted(glob.glob(os.path.join(PD, '*'))):
+        pj = os.path.join(p, 'project.json')
+        if not os.path.isfile(pj):
+            continue
+        try: d = json.load(open(pj))
+        except Exception: d = {}
+        stages = {}
+        for cf in glob.glob(os.path.join(p, 'checkpoint_*.json')):
+            try:
+                cd = json.load(open(cf)); stages[os.path.basename(cf)[11:-5]] = cd.get('status')
+            except Exception: pass
+        try: mt = os.path.getmtime(pj)
+        except Exception: mt = 0
+        out.append({'id': os.path.basename(p), 'project': d, 'stages': stages,
+                    'has_render': os.path.isfile(os.path.join(p, 'renders', 'final.mp4')), 'mtime': mt})
+print(json.dumps({'projects_dir': PD, 'projects': out}))
+`;
+
+  const OM_DETAIL_PY = `
+import sys, os, json, glob
+sys.path.insert(0, '.')
+try:
+    from lib.paths import PROJECTS_DIR
+    PD = str(PROJECTS_DIR)
+except Exception:
+    PD = os.path.join(os.getcwd(), 'projects')
+pid = sys.argv[1] if len(sys.argv) > 1 else ''
+base = os.path.join(PD, pid)
+if not pid or not os.path.isdir(base):
+    print(json.dumps({'error': 'not_found'})); sys.exit(0)
+def rd(f):
+    try: return json.load(open(f))
+    except Exception: return None
+proj = rd(os.path.join(base, 'project.json')) or {}
+checkpoints = {}
+for cf in sorted(glob.glob(os.path.join(base, 'checkpoint_*.json'))):
+    checkpoints[os.path.basename(cf)[11:-5]] = rd(cf)
+decisions = rd(os.path.join(base, 'decision_log.json'))
+events = []
+ef = os.path.join(base, 'events.jsonl')
+if os.path.isfile(ef):
+    try:
+        for ln in open(ef).read().splitlines()[-60:]:
+            try: events.append(json.loads(ln))
+            except Exception: pass
+    except Exception: pass
+renders = []
+rdir = os.path.join(base, 'renders')
+if os.path.isdir(rdir):
+    renders = [os.path.basename(x) for x in sorted(glob.glob(os.path.join(rdir, '*')))]
+print(json.dumps({'id': pid, 'project': proj, 'checkpoints': checkpoints,
+                  'decisions': decisions, 'events': events, 'renders': renders}))
+`;
+
+  const OM_GATE_PY = `
+import sys, os, json
+sys.path.insert(0, '.')
+from lib.paths import PROJECTS_DIR
+from lib import checkpoint as cp
+pid, stage, action = sys.argv[1], sys.argv[2], sys.argv[3]
+reason = sys.argv[4] if len(sys.argv) > 4 else ''
+cf = os.path.join(str(PROJECTS_DIR), pid, 'checkpoint_%s.json' % stage)
+if not os.path.isfile(cf):
+    print(json.dumps({'ok': False, 'error': 'checkpoint not found'})); sys.exit(0)
+data = json.load(open(cf))
+if data.get('status') != 'awaiting_human':
+    print(json.dumps({'ok': False, 'error': 'stage not awaiting approval (status=%s)' % data.get('status')})); sys.exit(0)
+artifacts = data.get('artifacts') or {}
+ptype = data.get('pipeline_type')
+try:
+    if action == 'approve':
+        cp.write_checkpoint(PROJECTS_DIR, pid, stage, 'completed', artifacts,
+                            pipeline_type=ptype, human_approval_required=True, human_approved=True)
+        print(json.dumps({'ok': True, 'status': 'completed'}))
+    else:
+        cp.write_checkpoint(PROJECTS_DIR, pid, stage, 'awaiting_human', artifacts,
+                            pipeline_type=ptype, human_approval_required=True, human_approved=False,
+                            metadata={'rejected': True, 'rejection_reason': reason})
+        print(json.dumps({'ok': True, 'status': 'rejected'}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'error': str(e)}))
+`;
+
+  const OM_RENDER_PY = `
+import sys, os, json, base64
+sys.path.insert(0, '.')
+try:
+    from lib.paths import PROJECTS_DIR
+    PD = str(PROJECTS_DIR)
+except Exception:
+    PD = os.path.join(os.getcwd(), 'projects')
+pid = sys.argv[1] if len(sys.argv) > 1 else ''
+f = os.path.join(PD, pid, 'renders', 'final.mp4')
+if not pid or not os.path.isfile(f):
+    print(json.dumps({'ok': False, 'error': 'render not found'})); sys.exit(0)
+sz = os.path.getsize(f)
+if sz > 25 * 1024 * 1024:
+    print(json.dumps({'ok': False, 'error': 'render too large to preview (%d MB)' % (sz // 1048576)})); sys.exit(0)
+print(json.dumps({'ok': True, 'mime': 'video/mp4', 'bytes': sz,
+                  'base64': base64.b64encode(open(f, 'rb').read()).decode()}))
+`;
+
+  const OM_OVERRIDE_PY = `
+import sys, json
+sys.path.insert(0, '.')
+from lib import checkpoint as cp
+pid = sys.argv[1]
+overrides = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+try:
+    result = cp.set_project_overrides(pid, overrides)
+    print(json.dumps({'ok': True, 'overrides': result}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'error': str(e)}))
+`;
+
+  async function runNodePython(py: string, args: string[] = [], timeoutMs = 30_000) {
+    const b64 = Buffer.from(py, 'utf8').toString('base64');
+    const argStr = args.map(a => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
+    // $HOME expands remotely (double quotes); cd inlined because the exec helper
+    // single-quotes its cwd option (which would break $HOME expansion).
+    const command =
+      `cd "$HOME/${OM_REMOTE_DIR}" && ` +
+      `.venv/bin/python -c "import base64;exec(base64.b64decode('${b64}').decode())" ${argStr}`;
+    return execRemoteWithSecrets({
+      command, agentName: 'operator', sessionId: 'backlot',
+      concurrencyGroup: 'openmontage', timeoutMs,
+    });
+  }
+
+  function parseLastJson(stdout: string): Record<string, unknown> {
+    const line = stdout.trim().split('\n').pop() || '{}';
+    try { return JSON.parse(line); } catch { return {}; }
+  }
+
+  app.get('/api/openmontage/projects', async (c) => {
+    try {
+      const r = await runNodePython(OM_LIST_PY, [], 30_000);
+      if (!r.ok) {
+        const ping = await renderNodePing('operator');
+        return c.json({ ok: false, node: ping.detail || r.error || 'render node exec failed', projects: [] });
+      }
+      const parsed = parseLastJson(r.stdout);
+      return c.json({ ok: true, node: 'render-node', projects: parsed.projects || [], projectsDir: parsed.projects_dir });
+    } catch (err) {
+      return c.json({ ok: false, node: (err as Error).message, projects: [] });
+    }
+  });
+
+  app.get('/api/openmontage/projects/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!isSafeOmId(id)) return c.json({ ok: false, error: 'invalid project id' }, 400);
+    try {
+      const r = await runNodePython(OM_DETAIL_PY, [id], 30_000);
+      if (!r.ok) return c.json({ ok: false, error: r.error || 'render node exec failed' });
+      const parsed = parseLastJson(r.stdout);
+      if (parsed.error) return c.json({ ok: false, error: String(parsed.error) });
+      return c.json({ ok: true, ...parsed });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/openmontage/projects/:id/gate', async (c) => {
+    const id = c.req.param('id');
+    if (!isSafeOmId(id)) return c.json({ ok: false, error: 'invalid project id' }, 400);
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const stage = String(body.stage ?? '').trim();
+    const action = String(body.action ?? '').trim();
+    const reason = String(body.reason ?? '').slice(0, 500);
+    if (!isSafeOmId(stage)) return c.json({ ok: false, error: 'invalid stage' }, 400);
+    if (action !== 'approve' && action !== 'reject') return c.json({ ok: false, error: 'action must be approve|reject' }, 400);
+    try {
+      const r = await runNodePython(OM_GATE_PY, [id, stage, action, reason], 40_000);
+      if (!r.ok) return c.json({ ok: false, error: r.error || 'gate exec failed' });
+      return c.json(parseLastJson(r.stdout));
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/openmontage/projects/:id/overrides', async (c) => {
+    const id = c.req.param('id');
+    if (!isSafeOmId(id)) return c.json({ ok: false, error: 'invalid project id' }, 400);
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    // provider-like fields validate as ids; model/voice fields may carry '/'.
+    const providerFields = ['image_provider', 'tts_provider'] as const;
+    const modelFields = ['image_model', 'tts_model', 'tts_voice'] as const;
+    const ov: Record<string, string | null> = {};
+    for (const key of [...providerFields, ...modelFields]) {
+      if (!(key in body)) continue;                 // absent = leave untouched
+      const raw = body[key];
+      if (raw === null || raw === '' || raw === undefined) { ov[key] = null; continue; } // clear → default
+      const val = String(raw).trim();
+      const valid = (providerFields as readonly string[]).includes(key) ? isSafeOmId(val) : isSafeOmModel(val);
+      if (!valid) return c.json({ ok: false, error: `invalid value for ${key}` }, 400);
+      ov[key] = val;
+    }
+    if (Object.keys(ov).length === 0) return c.json({ ok: false, error: 'no recognized override fields' }, 400);
+    try {
+      const r = await runNodePython(OM_OVERRIDE_PY, [id, JSON.stringify(ov)], 30_000);
+      if (!r.ok) return c.json({ ok: false, error: r.error || 'overrides exec failed' });
+      return c.json(parseLastJson(r.stdout));
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/openmontage/projects/:id/render', async (c) => {
+    const id = c.req.param('id');
+    if (!isSafeOmId(id)) return c.json({ ok: false, error: 'invalid project id' }, 400);
+    try {
+      const r = await runNodePython(OM_RENDER_PY, [id], 60_000);
+      if (!r.ok) return c.json({ ok: false, error: r.error || 'render fetch failed' });
+      return c.json(parseLastJson(r.stdout));
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  // ── Pending human confirmations (SSH critical-run + TOFU host-key pin) ──────
+  // The block-until-human primitive (§4.3). The dashboard lists open requests
+  // here and approves/denies them; the waiting turn polls the row. Inherits the
+  // /api/* auth guard — only an authenticated operator can resolve.
+  app.get('/api/ssh/confirmations', (c) => {
+    try {
+      return c.json({ ok: true, items: listPendingConfirmations() });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), items: [] }, 500);
+    }
+  });
+
+  app.post('/api/ssh/confirmations/:id', async (c) => {
+    const id = c.req.param('id');
+    let body: { decision?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty body ok */ }
+    const decision = (body.decision ?? '').toLowerCase();
+    if (decision !== 'approve' && decision !== 'deny') {
+      return c.json({ ok: false, error: 'decision must be "approve" or "deny"' }, 400);
+    }
+    const row = getPendingConfirmation(id);
+    if (!row) return c.json({ ok: false, error: 'confirmation not found' }, 404);
+    const status = decision === 'approve' ? 'approved' : 'denied';
+    const res = resolvePendingConfirmation(id, status, 'dashboard:operator');
+    // race-safe: ok:false means it was already resolved/expired — surface that.
+    if (!res.ok) return c.json({ ok: false, error: `already ${getPendingConfirmation(id)?.status ?? 'resolved'}` }, 409);
+    return c.json({ ok: true, id, status });
+  });
+
+  // ── SSH Machines (Connect → Machines tab, spec deliverable #6) ─────────────
+  // All routes inherit the dashboard-token guard. Credentials never touch these
+  // routes — machines hold only the broker secret NAME. Reject secret-shaped
+  // notes/tags (§9.2 — someone WILL paste a password into "notes").
+  const SECRET_SHAPE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\b(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+/i;
+
+  app.get('/api/ssh/machines', (c) => {
+    try {
+      // Never surface fingerprint bytes beyond a short display prefix; no secrets exist here anyway.
+      return c.json({ ok: true, items: listSshMachines() });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), items: [] }, 500);
+    }
+  });
+
+  app.post('/api/ssh/machines', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const name = String(b.name ?? '').trim();
+    const host = String(b.host ?? '').trim();
+    const username = String(b.username ?? '').trim();
+    const secret_name = String(b.secret_name ?? '').trim();
+    if (!name || !host || !username || !secret_name) {
+      return c.json({ ok: false, error: 'name, host, username and secret_name are required' }, 400);
+    }
+    if (SECRET_SHAPE.test(String(b.notes ?? '')) || (Array.isArray(b.tags) && b.tags.some((t) => SECRET_SHAPE.test(String(t))))) {
+      return c.json({ ok: false, error: 'notes/tags look like they contain a credential — store keys/passwords in the broker, not here' }, 400);
+    }
+    try {
+      const row = createSshMachine({
+        name, host, username, secret_name,
+        port: b.port ? Number(b.port) : 22,
+        auth_method: b.auth_method === 'password' ? 'password' : 'key',
+        passphrase_secret_name: b.passphrase_secret_name ? String(b.passphrase_secret_name).trim() : null,
+        sensitivity: ['low', 'high', 'critical'].includes(String(b.sensitivity)) ? String(b.sensitivity) : 'low',
+        allowed_agents: Array.isArray(b.allowed_agents) ? b.allowed_agents.map(String) : [],
+        legacy_algos: b.legacy_algos === true,
+        tags: Array.isArray(b.tags) ? b.tags.map(String) : [],
+        notes: b.notes ? String(b.notes) : null,
+      });
+      return c.json({ ok: true, machine: row });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.patch('/api/ssh/machines/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!getSshMachine(id)) return c.json({ ok: false, error: 'machine not found' }, 404);
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    if (SECRET_SHAPE.test(String(b.notes ?? '')) || (Array.isArray(b.tags) && b.tags.some((t) => SECRET_SHAPE.test(String(t))))) {
+      return c.json({ ok: false, error: 'notes/tags look like they contain a credential' }, 400);
+    }
+    const fields: Record<string, unknown> = {};
+    for (const k of ['name', 'host', 'username', 'auth_method', 'secret_name', 'passphrase_secret_name', 'sensitivity', 'notes', 'jump_host'] as const) {
+      if (b[k] !== undefined) fields[k] = b[k];
+    }
+    if (b.port !== undefined) fields.port = Number(b.port);
+    if (b.allowed_agents !== undefined) fields.allowed_agents = Array.isArray(b.allowed_agents) ? b.allowed_agents.map(String) : [];
+    if (b.tags !== undefined) fields.tags = Array.isArray(b.tags) ? b.tags.map(String) : [];
+    if (b.disabled !== undefined) fields.disabled = b.disabled === true;
+    if (b.legacy_algos !== undefined) fields.legacy_algos = b.legacy_algos === true;
+    // Security: if the endpoint (host/port) changed, the pinned TOFU host key is
+    // now stale — re-arm verification so the next connect re-captures it instead
+    // of false-tripping the mismatch → auto-quarantine path on a legitimate move.
+    const cur = getSshMachine(id);
+    const hostChanged = fields.host !== undefined && String(fields.host) !== String(cur?.host ?? '');
+    const portChanged = fields.port !== undefined && Number(fields.port) !== Number(cur?.port ?? 22);
+    if (hostChanged || portChanged) {
+      fields.host_fingerprint = null;
+      fields.fingerprint_status = 'pending_verification';
+    }
+    try {
+      updateSshMachine(id, fields);
+      return c.json({ ok: true, machine: getSshMachine(id), reverified: hostChanged || portChanged });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.delete('/api/ssh/machines/:id', (c) => {
+    return c.json(deleteSshMachine(c.req.param('id')));
+  });
+
+  // Operator "Test Connection" — bypasses the per-agent grant (operator:true).
+  // First-seen triggers the TOFU pin-confirm flow; surfaces the captured fingerprint.
+  app.post('/api/ssh/machines/:id/test', async (c) => {
+    const id = c.req.param('id');
+    const m = getSshMachine(id);
+    if (!m) return c.json({ ok: false, error: 'machine not found' }, 404);
+    try {
+      const { sshTestConnection } = await import('../system/ssh-connect');
+      const res = await sshTestConnection({ machineRef: id });
+      const after = getSshMachine(id);
+      return c.json({
+        ok: res.ok, result: res,
+        fingerprint: after?.host_fingerprint ?? null,
+        fingerprint_status: after?.fingerprint_status ?? null,
+      });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Operator confirms a captured (pending) host key → mark verified (§10).
+  app.post('/api/ssh/machines/:id/verify-fingerprint', (c) => {
+    const id = c.req.param('id');
+    const m = getSshMachine(id);
+    if (!m) return c.json({ ok: false, error: 'machine not found' }, 404);
+    if (!m.host_fingerprint) return c.json({ ok: false, error: 'no fingerprint captured yet — run Test Connection first' }, 400);
+    updateSshMachine(id, { fingerprint_status: 'verified' });
+    return c.json({ ok: true, machine: getSshMachine(id) });
+  });
+
+  app.get('/api/ssh/audit', (c) => {
+    const machineId = c.req.query('machine') || undefined;
+    const limit = Number(c.req.query('limit') || 100);
+    try {
+      return c.json({ ok: true, items: querySshAudit({ machineId, limit }) });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), items: [] }, 500);
+    }
+  });
+
+  // ── Notebooks (Memory → Notebooks tab, native NotebookLM replacement) ───────
+  // Global collections of parsed+embedded docs. Flag-gated (DOC_NOTEBOOKS_ENABLED);
+  // when off, GET returns enabled:false so the tab shows the enable hint. All
+  // routes inherit the dashboard-token guard. Operator context → sessionId is the
+  // stable dashboard session (keeps attachment-ownership self-consistent).
+  const NB_SESSION = 'dashboard-notebooks';
+
+  app.get('/api/notebooks', async (c) => {
+    if (!docNotebooksEnabled()) return c.json({ ok: true, enabled: false, items: [] });
+    const r = await listNotebooks();
+    return c.json({ ok: r.ok, enabled: true, items: r.data ?? [], error: r.error });
+  });
+
+  app.post('/api/notebooks', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const r = await createNotebook({
+      sessionId: NB_SESSION,
+      title: String(b.title ?? '').trim(),
+      description: b.description ? String(b.description) : undefined,
+    });
+    return c.json(r.ok ? { ok: true, notebook: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  app.delete('/api/notebooks/:id', async (c) => {
+    const r = await deleteNotebook(c.req.param('id'));
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  app.get('/api/notebooks/:id/sources', async (c) => {
+    const r = await listNotebookSources(c.req.param('id'));
+    return c.json({ ok: r.ok, items: r.data ?? [], error: r.error });
+  });
+
+  // Add a source by attachment_id OR URL (mirrors the notebook_add_source tool).
+  app.post('/api/notebooks/:id/sources', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const source = String(b.source ?? '').trim();
+    if (!source) return c.json({ ok: false, error: 'source (attachment_id or URL) required' }, 400);
+    const r = await addNotebookSource({ notebookId: c.req.param('id'), source, sessionId: NB_SESSION });
+    return c.json(r.ok ? { ok: true, source: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  // Upload one or more document files directly into a notebook (the core
+  // NotebookLM interaction): register each as an attachment → add as a source
+  // (parse via DocuFlow /parse/url → embed → membership). Multipart "file" fields.
+  app.post('/api/notebooks/:id/upload', async (c) => {
+    const id = c.req.param('id');
+    if (!docNotebooksEnabled()) return c.json({ ok: false, error: 'notebooks disabled' }, 400);
+    const ct = c.req.header('content-type') || '';
+    if (!ct.includes('multipart/form-data')) {
+      return c.json({ ok: false, error: 'expected multipart/form-data with one or more "file" fields' }, 400);
+    }
+    let form: FormData;
+    try { form = await c.req.formData(); } catch { return c.json({ ok: false, error: 'invalid form data' }, 400); }
+    const files = form.getAll('file').filter((f): f is File => f instanceof File);
+    if (files.length === 0) return c.json({ ok: false, error: 'no files provided' }, 400);
+    if (files.length > 25) return c.json({ ok: false, error: 'too many files in one request (max 25)' }, 400);
+
+    const { registerAttachment } = await import('../system/attachment-registry');
+    let added = 0, failed = 0;
+    const results: Array<{ name: string; ok: boolean; error?: string }> = [];
+    for (const file of files) {
+      const name = file.name || 'document';
+      try {
+        const buf = Buffer.from(await file.arrayBuffer());
+        const reg = registerAttachment({
+          sessionId: NB_SESSION, name,
+          data: buf.toString('base64'),
+          mime: file.type || 'application/octet-stream',
+        });
+        if (!reg.ok) { failed++; results.push({ name, ok: false, error: reg.error }); continue; }
+        const r = await addNotebookSource({ notebookId: id, source: reg.descriptor.id, sessionId: NB_SESSION });
+        if (r.ok) { added++; results.push({ name, ok: true }); }
+        else      { failed++; results.push({ name, ok: false, error: r.error }); }
+      } catch (err) {
+        failed++; results.push({ name, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return c.json({ ok: failed === 0, added, failed, results });
+  });
+
+  app.post('/api/notebooks/:id/ask', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const question = String(b.question ?? '').trim();
+    if (!question) return c.json({ ok: false, error: 'question required' }, 400);
+    const r = await askNotebook({
+      notebookId: c.req.param('id'), question,
+      topK: b.top_k ? Number(b.top_k) : undefined,
+    });
+    return c.json(r);
+  });
+
+  // ── Shared Notepad (agent_notes) ──────────────────────────────────────────
+  // Long-form Markdown notes any agent can write/append; the human reads and
+  // copies them here (escapes the Discord message-length limit). Always on.
+  app.get('/api/notes', (c) => {
+    const includeArchived = c.req.query('archived') === '1' || c.req.query('archived') === 'true';
+    return c.json({ ok: true, items: listAgentNotes({ includeArchived }) });
+  });
+
+  app.get('/api/notes/:id', (c) => {
+    const note = getAgentNote(c.req.param('id'));
+    return note ? c.json({ ok: true, note }) : c.json({ ok: false, error: 'not found' }, 404);
+  });
+
+  app.post('/api/notes', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const note = createAgentNote({
+      title:   typeof b.title === 'string' ? b.title : undefined,
+      content: typeof b.content === 'string' ? b.content : '',
+      author:  typeof b.author === 'string' && b.author.trim() ? b.author : 'User',
+      pinned:  b.pinned === true,
+    });
+    return c.json({ ok: true, note });
+  });
+
+  app.patch('/api/notes/:id', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const note = updateAgentNote(c.req.param('id'), {
+      title:    typeof b.title === 'string' ? b.title : undefined,
+      content:  typeof b.content === 'string' ? b.content : undefined,
+      pinned:   typeof b.pinned === 'boolean' ? b.pinned : undefined,
+      archived: typeof b.archived === 'boolean' ? b.archived : undefined,
+    });
+    return note ? c.json({ ok: true, note }) : c.json({ ok: false, error: 'not found' }, 404);
+  });
+
+  app.delete('/api/notes/:id', (c) => {
+    const removed = deleteAgentNote(c.req.param('id'));
+    return c.json(removed ? { ok: true } : { ok: false, error: 'not found' }, removed ? 200 : 404);
+  });
+
+  // ── Media gallery (agent_media) ───────────────────────────────────────────
+  // Generated images/video/audio stored in R2; the human watches/hears them in
+  // Studio › Media. Playback via short-lived presigned URLs (bucket stays
+  // private). Gated on R2 creds being present (broker-injected at boot).
+  const VALID_KINDS = new Set(['image', 'video', 'audio']);
+
+  app.get('/api/media', async (c) => {
+    if (!mediaEnabled()) return c.json({ ok: false, error: 'media storage not configured', items: [] }, 200);
+    const kindQ = c.req.query('kind');
+    const kind = kindQ && VALID_KINDS.has(kindQ) ? (kindQ as MediaKind) : undefined;
+    const includeArchived = c.req.query('archived') === '1' || c.req.query('archived') === 'true';
+    try {
+      return c.json({ ok: true, items: await listMedia({ kind, includeArchived }) });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message, items: [] }, 500);
+    }
+  });
+
+  app.get('/api/media/:id', async (c) => {
+    const item = await getMediaItem(c.req.param('id'));
+    return item ? c.json({ ok: true, item }) : c.json({ ok: false, error: 'not found' }, 404);
+  });
+
+  // Redirect to a presigned download URL (forces attachment).
+  app.get('/api/media/:id/download', async (c) => {
+    if (!mediaEnabled()) return c.json({ ok: false, error: 'media storage not configured' }, 503);
+    const url = await presignMediaDownload(c.req.param('id'));
+    return url ? c.redirect(url, 302) : c.json({ ok: false, error: 'not found' }, 404);
+  });
+
+  // Register media from a remote URL or base64 payload (manual/HTTP ingest).
+  app.post('/api/media', async (c) => {
+    if (!mediaEnabled()) return c.json({ ok: false, error: 'media storage not configured' }, 503);
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    const common = {
+      kind: typeof b.kind === 'string' && VALID_KINDS.has(b.kind) ? (b.kind as MediaKind) : undefined,
+      title: typeof b.title === 'string' ? b.title : undefined,
+      prompt: typeof b.prompt === 'string' ? b.prompt : undefined,
+      mimeType: typeof b.mimeType === 'string' ? b.mimeType : undefined,
+      sourceTool: typeof b.sourceTool === 'string' ? b.sourceTool : 'dashboard',
+      author: typeof b.author === 'string' && b.author.trim() ? b.author : 'User',
+    };
+    try {
+      let item;
+      if (typeof b.url === 'string' && b.url.trim()) item = await registerMediaFromUrl(b.url.trim(), common);
+      else if (typeof b.base64 === 'string' && b.base64.trim()) item = await registerMediaFromBase64(b.base64, common);
+      else return c.json({ ok: false, error: 'provide a url or base64 payload' }, 400);
+      return c.json({ ok: true, item });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message }, 500);
+    }
+  });
+
+  app.patch('/api/media/:id', async (c) => {
+    let b: Record<string, unknown> = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+    if (typeof b.archived !== 'boolean') return c.json({ ok: false, error: 'nothing to update' }, 400);
+    const item = await setMediaArchived(c.req.param('id'), b.archived);
+    return item ? c.json({ ok: true, item }) : c.json({ ok: false, error: 'not found' }, 404);
+  });
+
+  app.delete('/api/media/:id', async (c) => {
+    const r = await deleteMedia(c.req.param('id'));
+    return c.json(r, r.ok ? 200 : (r.error === 'not found' ? 404 : 500));
+  });
+
+  // ── Sub-agent provider selection (Settings › Sub-Agents) ────────────────
+  // Live enable/disable per provider family (kimi/minimax). Backed by the
+  // subagent_providers store; toggles take effect on the next sub-agent task
+  // with no restart. Never returns the API key, only whether one is present.
+  app.get('/api/subagent-providers', (c) => {
+    return c.json({ ok: true, providers: listSubAgentProviderStatus() });
+  });
+
+  // Accepts any combination of { enabled?: boolean, model?: string|null,
+  // baseURL?: string|null }. model/baseURL of '' or null CLEARS that override
+  // (falls back to the env default). The API key is never accepted here — keys
+  // live in the Live .env tab / the broker.
+  app.patch('/api/subagent-providers/:family', async (c) => {
+    const family = c.req.param('family');
+    let body: any = {};
+    try { body = await c.req.json(); } catch { /* empty body ⇒ 400 below */ }
+
+    const hasEnabled = typeof body?.enabled === 'boolean';
+    const hasModel   = 'model' in (body ?? {});
+    const hasBaseURL = 'baseURL' in (body ?? {}) || 'base_url' in (body ?? {});
+    if (!hasEnabled && !hasModel && !hasBaseURL) {
+      return c.json({ ok: false, error: 'body must include at least one of { enabled: boolean, model: string|null, baseURL: string|null }' }, 400);
+    }
+
+    try {
+      if (hasEnabled) setSubAgentFamilyEnabled(family, body.enabled);
+      if (hasModel)   setSubAgentFamilyModel(family, body.model ?? null);
+      if (hasBaseURL) setSubAgentFamilyBaseURL(family, (body.baseURL ?? body.base_url) ?? null);
+      return c.json({ ok: true, providers: listSubAgentProviderStatus() });
+    } catch (e: any) {
+      // Unknown family / enable-without-key / invalid URL → client error, not 500.
+      return c.json({ ok: false, error: String(e?.message ?? e) }, 400);
+    }
+  });
+
+  // Upload one image or a batch (folder) into the gallery. Accepts multipart
+  // with one or more "file" fields, an optional shared "note" (description),
+  // and an optional "session". Each file is pushed to the private Supabase
+  // bucket + indexed; returns per-file results. Inherits /api/* auth guard.
+  app.post('/api/gallery/upload', async (c) => {
+    const ct = c.req.header('content-type') || '';
+    if (!ct.includes('multipart/form-data')) {
+      return c.json({ ok: false, error: 'expected multipart/form-data with one or more "file" fields' }, 400);
+    }
+    let form: FormData;
+    try { form = await c.req.formData(); } catch { return c.json({ ok: false, error: 'invalid form data' }, 400); }
+
+    const files = form.getAll('file').filter((f): f is File => f instanceof File);
+    if (files.length === 0) return c.json({ ok: false, error: 'no files provided' }, 400);
+    const MAX_FILES = 50;
+    if (files.length > MAX_FILES) {
+      return c.json({ ok: false, error: `too many files in one request (max ${MAX_FILES}) — send in smaller batches` }, 400);
+    }
+
+    const note      = ((form.get('note') as string | null) ?? '').trim();
+    const sessionId = ((form.get('session') as string | null) ?? '').trim() || null;
+
+    // Accept by MIME when the browser provides it, else fall back to the file
+    // extension — folder uploads / some OS-browser combos leave file.type empty.
+    const IMAGE_EXT = /\.(png|jpe?g|jfif|gif|webp|bmp|svg|avif|heic|heif|tiff?|ico)$/i;
+    const mimeForName = (n: string): string => {
+      const ext = (n.match(/\.([^.]+)$/)?.[1] || '').toLowerCase();
+      switch (ext) {
+        case 'jpg': case 'jpeg': case 'jfif': return 'image/jpeg';
+        case 'png':  return 'image/png';
+        case 'gif':  return 'image/gif';
+        case 'webp': return 'image/webp';
+        case 'bmp':  return 'image/bmp';
+        case 'svg':  return 'image/svg+xml';
+        case 'avif': return 'image/avif';
+        case 'heic': return 'image/heic';
+        case 'heif': return 'image/heif';
+        case 'tif': case 'tiff': return 'image/tiff';
+        case 'ico':  return 'image/x-icon';
+        default:     return 'image/png';
+      }
+    };
+
+    let uploaded = 0, failed = 0;
+    const results: Array<{ name: string; ok: boolean; id?: string; error?: string }> = [];
+    for (const file of files) {
+      const name = file.name || 'image';
+      const isImage = file.type.startsWith('image/') || IMAGE_EXT.test(name);
+      if (!isImage) {
+        failed++; results.push({ name, ok: false, error: 'not an image' }); continue;
+      }
+      try {
+        const buf  = Buffer.from(await file.arrayBuffer());
+        const base = (name.split('/').pop() || name).replace(/\.[^.]+$/, '');
+        const r = await archiveUploadedImage({
+          buf, mime: file.type || mimeForName(name), filename: name,
+          prompt: note || base, agentName: 'upload', sessionId,
+        });
+        if (r.ok) { uploaded++; results.push({ name, ok: true, id: r.id }); }
+        else      { failed++;   results.push({ name, ok: false, error: r.error }); }
+      } catch (err) {
+        failed++; results.push({ name, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return c.json({ ok: failed === 0, uploaded, failed, results });
+  });
+
+  // Force-download a gallery image by id. Streams the bytes from the private
+  // Supabase bucket through the backend with Content-Disposition: attachment,
+  // so the browser saves the file instead of navigating — reliable even though
+  // the grid uses cross-origin signed URLs (where the HTML download attr is
+  // ignored). Inherits the global /api/* auth guard.
+  app.get('/api/gallery/:id/download', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const img = await fetchStoredImage(id);
+      if (!img) return c.json({ ok: false, error: 'image not found' }, 404);
+      const safe = (img.filename || 'image').replace(/[^\w.\-]+/g, '_') || 'image';
+      return new Response(new Uint8Array(img.buf), {
+        status: 200,
+        headers: {
+          'Content-Type':        img.mime || 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${safe}"`,
+          'Content-Length':      String(img.buf.length),
+          'Cache-Control':       'private, no-store',
+        },
+      });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.get('/api/sessions/search', (c) => {
@@ -1214,7 +2896,7 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.get('/api/agents', (c) => c.json(getAllAgents()));
 
   app.post('/api/agents', async (c) => {
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string; exec_enabled?: boolean; chat_mode?: boolean; model_tier?: string; skills?: string[]; mcp_server_id?: string; mcp_tool_name?: string; mcp_input_field?: string };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; provider?: string; exec_enabled?: boolean; chat_mode?: boolean; model_tier?: string; skills?: string[]; mcp_server_id?: string; mcp_tool_name?: string; mcp_input_field?: string; optimize_terse?: boolean; optimize_lean_code?: boolean; compress_lite?: boolean | null; compress_headroom?: boolean | null; compress_rtk?: boolean | null };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const name = (body.name ?? '').trim();
@@ -1255,6 +2937,11 @@ export function registerApiRoutes(app: Hono<any>): void {
       mcp_server_id:   body.mcp_server_id ?? null,
       mcp_tool_name:   body.mcp_tool_name ?? null,
       mcp_input_field: body.mcp_input_field ?? null,
+      optimize_terse:     body.optimize_terse,
+      optimize_lean_code: body.optimize_lean_code,
+      compress_lite:      body.compress_lite,
+      compress_headroom:  body.compress_headroom,
+      compress_rtk:       body.compress_rtk,
     });
     broadcastIntroduction(agent);
     return c.json(agent, 201);
@@ -1265,7 +2952,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     const agent = getAgentById(id);
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
 
-    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; chat_mode?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; vision_provider?: string | null; extra_core_tools?: string[] | null; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null; mcp_server_id?: string | null; mcp_tool_name?: string | null; mcp_input_field?: string | null; spawn_exempt?: boolean; avatar_url?: string | null };
+    let body: { name?: string; description?: string; system_prompt?: string; model?: string; role?: string; capabilities?: string[]; status?: string; provider?: string; exec_enabled?: boolean; ssh_enabled?: boolean; chat_mode?: boolean; model_tier?: string; skills?: string[]; vision_mode?: string; vision_provider?: string | null; extra_core_tools?: string[] | null; composio_enabled?: boolean; composio_user_id?: string | null; composio_toolkits?: string[] | null; tts_enabled?: boolean; tts_provider?: string; tts_voice?: string | null; mcp_server_id?: string | null; mcp_tool_name?: string | null; mcp_input_field?: string | null; spawn_exempt?: boolean; avatar_url?: string | null; optimize_terse?: boolean; optimize_lean_code?: boolean; compress_lite?: boolean | null; compress_headroom?: boolean | null; compress_rtk?: boolean | null };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     if (agent.name === 'Alfred' && body.name && body.name.trim() !== 'Alfred') {
@@ -1291,6 +2978,7 @@ export function registerApiRoutes(app: Hono<any>): void {
       status:        body.status,
       provider:      body.provider,
       exec_enabled:  body.exec_enabled,
+      ssh_enabled:   body.ssh_enabled,
       chat_mode:     body.chat_mode,
       model_tier:    body.model_tier,
       skills:        Array.isArray(body.skills) ? body.skills : undefined,
@@ -1310,6 +2998,11 @@ export function registerApiRoutes(app: Hono<any>): void {
       mcp_input_field: body.mcp_input_field,
       spawn_exempt:    body.spawn_exempt,
       avatar_url:      body.avatar_url !== undefined ? body.avatar_url : undefined,
+      optimize_terse:     body.optimize_terse,
+      optimize_lean_code: body.optimize_lean_code,
+      compress_lite:      body.compress_lite,
+      compress_headroom:  body.compress_headroom,
+      compress_rtk:       body.compress_rtk,
     });
     return c.json(getAgentById(id));
   });
@@ -1365,6 +3058,9 @@ export function registerApiRoutes(app: Hono<any>): void {
     return c.json({ ok: true });
   });
 
+  // ── Compression telemetry (Phase 1) ────────────────────────────────────────
+  app.get('/api/compression/telemetry', (c) => c.json(getCompressionTelemetry()));
+
   // ── Spawn config (runtime-mutable gating settings) ───────────────────────
   app.get('/api/spawn/config', (c) => c.json(getSpawnConfig()));
 
@@ -1413,14 +3109,22 @@ export function registerApiRoutes(app: Hono<any>): void {
   });
 
   app.post('/api/tasks', async (c) => {
-    let body: { title?: string; description?: string; agent_id?: string; priority?: number; session_id?: string };
+    let body: { title?: string; description?: string; agent_id?: string; priority?: number; session_id?: string; assignee?: string };
     try { body = await c.req.json() as typeof body; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const title = (body.title ?? '').trim();
     if (!title) return c.json({ error: 'title is required' }, 400);
 
-    // createTask is now async (may call classifier for auto-assign)
-    const task = await createTask(title, body.description?.trim(), body.session_id, body.agent_id, body.priority);
+    // createTask is now async (may call classifier for auto-assign). Use the options
+    // form so an explicit assignee from the New Task modal actually sticks (the old
+    // positional call dropped it — the modal field never worked).
+    const task = await createTask(title, {
+      description: body.description?.trim(),
+      sessionId:   body.session_id,
+      agentId:     body.agent_id,
+      priority:    body.priority,
+      assignee:    body.assignee?.trim() || undefined,
+    });
     return c.json(task, 201);
   });
 
@@ -1820,7 +3524,8 @@ export function registerApiRoutes(app: Hono<any>): void {
     const provider = c.req.query('provider');
     const tier = c.req.query('tier') as ModelTier | undefined;
     const includeUnavailable = c.req.query('includeUnavailable') === '1';
-    return c.json(listCatalog({ provider, tier, includeUnavailable }));
+    const mediaType = c.req.query('media_type') as 'image' | 'video' | 'audio' | undefined;
+    return c.json(listCatalog({ provider, tier, includeUnavailable, mediaType }));
   });
 
   app.post('/api/models/refresh', async (c) => {
@@ -3429,6 +5134,106 @@ export function registerApiRoutes(app: Hono<any>): void {
       server:  row,
       tools:   row ? parseMcpToolsCache(row.tools_cached) : [],
     });
+  });
+
+  // ── Canva OAuth (dashboard-token gated — only an authenticated operator
+  // can kick off a consent flow). See mcp/canva-oauth.ts for the full flow. ─
+  app.get('/api/oauth/canva/status', async (c) => {
+    // Additive read-only enrichment for the Settings "Connect Canva" button —
+    // surfaces the registered tool count once the mcp_servers row exists.
+    // register-dcr now injects CANVA_CLIENT_ID/SECRET into process.env the
+    // moment it persists them to the broker (see mcp/canva-oauth.ts), so
+    // config.canva.configured flips true immediately and pendingRestart
+    // should stay false on that path. It's kept as a fallback ONLY for
+    // creds landed out-of-band (e.g. pasted directly into the Live .env /
+    // Secrets tab, which does not hot-inject process.env) — env is otherwise
+    // only re-hydrated from the broker at boot (broker/bootstrap.ts
+    // resolveAllSecretsFromBroker). Does not touch OAuth/PKCE/token exchange
+    // logic — read-only.
+    const { getMcpServerByName, parseMcpToolsCache } = await import('../db');
+    const { getStorage } = await import('../broker/storage');
+    const row = getMcpServerByName('canva');
+    let brokerConfigured = false;
+    if (!config.canva.configured) {
+      try {
+        const storage = getStorage();
+        const [id, secret] = await Promise.all([
+          storage.getValue('CANVA_CLIENT_ID'),
+          storage.getValue('CANVA_CLIENT_SECRET'),
+        ]);
+        brokerConfigured = !!(id?.trim() && secret?.trim());
+      } catch { /* broker unreachable — treat as not configured */ }
+    }
+    return c.json({
+      ok: true,
+      configured:    config.canva.configured, // DCR client_id/secret present in process.env
+      hasToken:      config.canva.hasToken,    // a user has completed consent
+      pendingRestart: brokerConfigured && !config.canva.configured, // saved to broker, awaiting boot re-hydrate
+      serverStatus:  row?.status ?? null,
+      toolsCount:    row ? parseMcpToolsCache(row.tools_cached).length : 0,
+    });
+  });
+
+  app.post('/api/oauth/canva/register-dcr', async (c) => {
+    // One-time convenience: self-register a DCR client against Canva's own
+    // /register endpoint using the fixed loopback redirect_uri (Path A — see
+    // mcp/canva-oauth.ts module header; Canva's /authorize rejects any
+    // non-loopback host with HTTP 400, so this can never point at our public
+    // domain). registerDcrClient persists the returned client_id/secret to
+    // the broker AND live process.env itself (single authoritative write
+    // path) so config.canva.configured flips true before this response even
+    // returns; no separate frontend persist step, no restart.
+    const { registerDcrClient, CANVA_LOOPBACK_REDIRECT_URI } = await import('../mcp/canva-oauth');
+    const redirectUri = CANVA_LOOPBACK_REDIRECT_URI;
+    // This route (dashboard-token gated) returns a fresh client_secret in the
+    // response body — refuse to do that over a non-loopback plaintext origin
+    // for the *dashboard's own* connection to the operator's browser (this is
+    // independent of Canva's redirect_uri, which is loopback unconditionally).
+    const isLoopback = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(config.dashboard.publicUrl);
+    if (!config.dashboard.publicUrl.startsWith('https://') && !isLoopback) {
+      logger.warn('Canva DCR registration refused: publicUrl is not https and not loopback', { publicUrl: config.dashboard.publicUrl });
+      return c.json({ ok: false, error: 'insecure_public_url — DASHBOARD_PUBLIC_URL must be https:// in production before registering a DCR client (client_secret would transit in the clear)' }, 400);
+    }
+    const result = await registerDcrClient(redirectUri);
+    if (!result) return c.json({ ok: false, error: 'dcr_registration_failed' }, 502);
+    return c.json({ ok: true, redirectUri, ...result });
+  });
+
+  app.get('/api/oauth/canva/start', async (c) => {
+    const { startAuthorize } = await import('../mcp/canva-oauth');
+    const start = startAuthorize();
+    if (!start) return c.json({ ok: false, error: 'canva_oauth_not_configured — set CANVA_CLIENT_ID/CANVA_CLIENT_SECRET via the broker first' }, 400);
+    return c.redirect(start.url, 302);
+  });
+
+  // ── Path A code exchange (dashboard-token gated) ────────────────────────
+  // Canva's redirect after consent lands on our loopback redirect_uri, which
+  // nothing listens on — the operator's browser shows a "can't connect" page
+  // but the address bar still carries ?code=&state=. The operator pastes that
+  // URL (or its bare query string) here; we parse it ourselves rather than
+  // trusting the client to pre-split it, since it's untrusted input either
+  // way. `pasted` is never logged and never echoed back in the response.
+  app.post('/api/oauth/canva/exchange', async (c) => {
+    const { completeAuthorize } = await import('../mcp/canva-oauth');
+    let body: unknown;
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid_json_body' }, 400); }
+    const pasted = typeof (body as any)?.pasted === 'string' ? (body as any).pasted.trim() : '';
+    if (!pasted) return c.json({ ok: false, error: 'missing_pasted_value' }, 400);
+
+    // Accept either a full redirected URL or a bare `code=...&state=...`
+    // query string. Never interpolated into HTML — only parsed as data.
+    const qIdx = pasted.indexOf('?');
+    const qs = qIdx >= 0 ? pasted.slice(qIdx + 1) : pasted;
+    const params = new URLSearchParams(qs);
+    const code  = params.get('code')?.trim()  || '';
+    const state = params.get('state')?.trim() || '';
+    if (!code || !state) {
+      return c.json({ ok: false, error: 'could_not_parse_code_and_state — paste the full URL from your browser address bar (the one that failed to load), or its code=...&state=... query string' }, 400);
+    }
+
+    const result = await completeAuthorize(code, state);
+    if (!result.ok) return c.json({ ok: false, error: result.error }, 400);
+    return c.json({ ok: true });
   });
 
   app.get('/api/mcp/servers/:id/tools', async (c) => {
@@ -5682,5 +7487,45 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
     logger.info('dashboard: restart requested via dashboard');
     setTimeout(() => process.exit(0), 300);
     return c.json({ ok: true });
+  });
+
+  // --- GitHub self-update (spec 2026-07-15) ------------------------------
+  // GET /api/system/update/check — fetch + report the gap. Issues a single-use
+  // nonce that /update must echo (C7 — binds a check to its apply, blocks blind POSTs).
+  app.get('/api/system/update/check', async (c) => {
+    const chk = await checkForUpdate();
+    const nonce = chk.ok && !chk.upToDate ? issueNonce() : undefined;
+    return c.json({ ...chk, nonce });
+  });
+
+  // GET /api/system/update/status — last/in-flight marker (survives the restart).
+  app.get('/api/system/update/status', (c) => c.json({ ok: true, marker: readMarker() }));
+
+  // POST /api/system/update — apply + restart. Streams phase progress over SSE.
+  app.post('/api/system/update', async (c) => {
+    if (!config.update.enabled) return c.json({ ok: false, error: 'self-update disabled (UPDATE_ENABLED=false)' }, 403);
+    let body: any = {};
+    try { body = await c.req.json(); } catch { /* empty body */ }
+    if (!consumeNonce(String(body?.nonce ?? ''))) {
+      return c.json({ ok: false, error: 'missing/expired nonce — call /api/system/update/check first' }, 409);
+    }
+    const stash = body?.stash === true;
+    logger.info('dashboard: self-update requested', { remote: config.update.remote, branch: config.update.branch, stash });
+    return streamSSE(c, async (stream) => {
+      const send = (phase: string, message: string, data?: any) =>
+        stream.writeSSE({ event: 'progress', data: JSON.stringify({ phase, message, ...(data ? { data } : {}) }) });
+      let result;
+      try {
+        result = await runSelfUpdate({ stash }, (phase, message, data) => { void send(phase, message, data); });
+      } catch (e: any) {
+        await stream.writeSSE({ event: 'error', data: JSON.stringify({ message: String(e?.message ?? e) }) });
+        return;
+      }
+      await stream.writeSSE({ event: 'result', data: JSON.stringify(result) });
+      if (result.status === 'ready_to_restart') {
+        await stream.writeSSE({ event: 'restarting', data: JSON.stringify({ toSha: result.toSha }) });
+        setTimeout(() => process.exit(0), 500);
+      }
+    });
   });
 }

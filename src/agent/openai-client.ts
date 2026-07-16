@@ -4,7 +4,6 @@ import { config } from '../config';
 let client:              OpenAI | null = null;
 let bgClient:            OpenAI | null = null;
 let bgOpenRouterClient:  OpenAI | null = null;
-let bgVoidaiClient:      OpenAI | null = null;
 let skillForgeClient:    OpenAI | null = null;
 
 // ── VoidAI outage detection ────────────────────────────────────────────────
@@ -65,20 +64,6 @@ function getOpenRouterBgClient(): OpenAI {
 }
 
 // Dedicated VoidAI background client (the VoidAI-first primary tier).
-// Bounded timeout so VoidAI's high-variance gemini routing can't hang a turn —
-// a timeout throws and bgChatCompletion() degrades to OpenRouter.
-function getVoidaiBgClient(): OpenAI {
-  if (!bgVoidaiClient) {
-    bgVoidaiClient = new OpenAI({
-      apiKey:     config.voidai.bgApiKey,
-      baseURL:    config.voidai.baseURL,
-      timeout:    config.background.voidaiTimeoutMs,
-      maxRetries: 0,
-    });
-  }
-  return bgVoidaiClient;
-}
-
 // Background tasks (decomposer, dream-cycle, etc.)
 // Routes to OpenRouter when BG_PROVIDER=openrouter (default), VoidAI otherwise.
 // NOTE: prefer bgChatCompletion() for chat calls — it adds the VoidAI-first
@@ -93,74 +78,69 @@ export function getBgClient(): OpenAI {
   return bgClient;
 }
 
+// Dedicated VoidAI background client for the default bg chat lane (gpt-4.1-nano).
+// Distinct from getBgClient() which flips on BG_PROVIDER — this one is always
+// VoidAI, since bgChatCompletion routes providers itself.
+function getVoidaiBgClient(): OpenAI {
+  if (!bgClient) {
+    bgClient = new OpenAI({
+      apiKey:     config.voidai.bgApiKey,
+      baseURL:    config.voidai.baseURL,
+      timeout:    envInt('LLM_TIMEOUT_MS', 120000),
+      maxRetries: envInt('LLM_MAX_RETRIES', 1),
+    });
+  }
+  return bgClient;
+}
+
 export interface BgChatOpts {
-  /** Model to use on the VoidAI attempt. Defaults to BG_VOIDAI_MODEL. */
-  voidaiModel?: string;
-  /** Model for the OpenRouter backup. Defaults to config.background.model (BG_MODEL, gemini-3.5-flash). */
-  openrouterModel?: string;
   /**
-   * Force OpenRouter-primary (skip the VoidAI attempt) for latency-critical
-   * callers like the per-message router classifier. Defaults to the global
-   * config.background.voidaiFirst toggle.
+   * Route this call to OpenRouter google/gemini-2.5-flash-lite instead of the
+   * default VoidAI gpt-4.1-nano. Set true ONLY for nuanced-inference callers
+   * (memory-extractor, user-profiler) where gemini's reasoning edge matters.
    */
-  voidaiFirst?: boolean;
-  /** Optional label for fallback logging. */
+  preferGemini?: boolean;
+  /** Override the OpenRouter/gemini model (only used on the preferGemini lane). */
+  openrouterModel?: string;
+  /** Override the default VoidAI model (defaults to config.background.voidaiModel, gpt-4.1-nano). */
+  voidaiModel?: string;
+  /** Optional label for logging. */
   label?: string;
 }
 
 /**
- * Background chat completion with VoidAI-first → OpenRouter fallback.
+ * Background chat completion — split-provider routing (per user 2026-07-07).
  *
- * Tries a fast VoidAI model first (claude-haiku-4-5 by default — ~1-2s), then
- * falls back to the OpenRouter background model on ANY error or timeout — VoidAI
- * is an aggregator with high-variance latency, so graceful degradation (not just
- * on 5xx) is the point. Network/5xx errors additionally trip the 60s circuit
- * breaker so subsequent calls skip VoidAI entirely.
+ *  - DEFAULT lane → VoidAI `gpt-4.1-nano`. Non-reasoning, cheap, on the flat
+ *    VoidAI plan; handles the 7 "wash" bg tasks (session-namer, decomposer,
+ *    dream-cycle, context-compactor, skill-forge, holdout-reviewer, doc-notebooks).
+ *  - GEMINI lane  → OpenRouter `google/gemini-2.5-flash-lite`, taken ONLY when the
+ *    caller passes { preferGemini: true } (memory-extractor, user-profiler) —
+ *    the two tasks where gemini's reasoning edge and memory-quality compounding
+ *    justify OpenRouter's per-token cost.
  *
- * Honors the global BG_VOIDAI_FIRST kill switch and the per-call voidaiFirst opt.
+ * No cross-provider fallback: each caller has exactly one lane. The caller's
+ * args.model is ignored; the lane's configured model always wins (override via
+ * opts.openrouterModel / opts.voidaiModel).
  */
 export async function bgChatCompletion(
   args: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   opts: BgChatOpts = {},
 ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
-  const voidaiFirst    = opts.voidaiFirst ?? config.background.voidaiFirst;
-  // OpenRouter backup model: the single configured background backup
-  // (config.background.model = gemini-3.5-flash) unless a caller overrides via
-  // opts.openrouterModel (e.g. holdout-reviewer pins claude-sonnet-4). The
-  // caller's args.model is NOT used for the backup tier — both tiers pick their
-  // own model, so the backup stays uniform across every background task.
-  const openrouterModel = opts.openrouterModel || config.background.model;
-
-  if (voidaiFirst && config.voidai.bgApiKey && !isVoidaiDown()) {
-    const voidaiModel = opts.voidaiModel || config.background.voidaiModel;
-    // VoidAI reasoning models (e.g. gemini) burn the token budget before
-    // answering, so floor max_tokens and cap reasoning so small-budget callers
-    // still get non-empty content. These adjustments apply ONLY to the VoidAI
-    // attempt (harmless no-ops for haiku); the OpenRouter fallback below uses the
-    // caller's original args verbatim.
-    const voidaiArgs: Record<string, unknown> = {
+  if (opts.preferGemini) {
+    const model = opts.openrouterModel || config.background.geminiModel;
+    return await getOpenRouterBgClient().chat.completions.create({
       ...args,
-      model: voidaiModel,
+      model,
       stream: false,
-      max_tokens: Math.max(args.max_tokens ?? 0, config.background.voidaiMinTokens),
-    };
-    if (config.background.voidaiReasoningEffort) {
-      voidaiArgs.reasoning_effort = config.background.voidaiReasoningEffort;
-    }
-    try {
-      return await getVoidaiBgClient().chat.completions.create(
-        voidaiArgs as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-      );
-    } catch (err) {
-      // Trip the circuit breaker only for infra failures so we don't hammer a
-      // genuinely-down VoidAI; but fall back to OpenRouter on ANY error.
-      if (isVoidaiError(err)) markVoidaiDown();
-      const reason = err instanceof Error ? err.message : String(err);
-      console.warn(`[bg] VoidAI ${voidaiModel} failed${opts.label ? ` (${opts.label})` : ''}, falling back to OpenRouter ${openrouterModel}: ${reason}`);
-    }
+    });
   }
-
-  return await getOpenRouterBgClient().chat.completions.create({ ...args, model: openrouterModel, stream: false });
+  const model = opts.voidaiModel || config.background.voidaiModel;
+  return await getVoidaiBgClient().chat.completions.create({
+    ...args,
+    model,
+    stream: false,
+  });
 }
 
 // Skill-forge — uses its own dedicated SKILL_FORGE_API_KEY from broker
@@ -177,7 +157,6 @@ export function resetClient(): void {
   client             = null;
   bgClient           = null;
   bgOpenRouterClient = null;
-  bgVoidaiClient     = null;
   skillForgeClient   = null;
 }
 

@@ -84,10 +84,10 @@ const CommRow = ({ c, i }) => (
       gridTemplateColumns: '72px auto 1fr 80px 70px',
       gap: 10,
       padding: '11px 16px',
-      borderBottom: '1px dashed rgba(0,183,255,0.07)',
+      borderBottom: '1px dashed color-mix(in srgb, var(--accent) 7%, transparent)',
       fontSize: 11,
       alignItems: 'start',
-      background: i % 2 === 0 ? 'transparent' : 'rgba(0,183,255,0.018)',
+      background: i % 2 === 0 ? 'transparent' : 'color-mix(in srgb, var(--accent) 1.8%, transparent)',
     }}
   >
     {/* Timestamp */}
@@ -243,7 +243,7 @@ const NoteItem = ({ note, onDelete, onTogglePin, onToggleVisibility }) => {
       className="mono"
       style={{
         padding: '8px 10px',
-        borderBottom: '1px dashed rgba(0,183,255,0.07)',
+        borderBottom: '1px dashed color-mix(in srgb, var(--accent) 7%, transparent)',
         fontSize: 11,
         background: note.pinned ? 'rgba(250, 204, 21, 0.05)' : 'transparent',
       }}
@@ -430,9 +430,9 @@ const NotificationItem = ({ notif, onRead, onDismiss }) => {
       className="mono"
       style={{
         padding: '10px 12px',
-        borderBottom: '1px dashed rgba(0,183,255,0.07)',
+        borderBottom: '1px dashed color-mix(in srgb, var(--accent) 7%, transparent)',
         fontSize: 11,
-        background: isUnread ? 'rgba(0,183,255,0.04)' : 'transparent',
+        background: isUnread ? 'color-mix(in srgb, var(--accent) 4%, transparent)' : 'transparent',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
@@ -638,10 +638,10 @@ const Comms = () => {
               padding: '10px 14px',
               borderRight: i < 4 ? '1px solid var(--line-soft)' : 'none',
               cursor: 'pointer',
-              background: s.active ? 'rgba(0,183,255,0.07)' : 'transparent',
+              background: s.active ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
               transition: 'background .15s ease',
             }}
-            onMouseOver={e => { if (!s.active) e.currentTarget.style.background = 'rgba(0,183,255,0.04)'; }}
+            onMouseOver={e => { if (!s.active) e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 4%, transparent)'; }}
             onMouseOut={e => { if (!s.active) e.currentTarget.style.background = 'transparent'; }}
           >
             <div className="mono muted" style={{ fontSize: 9, letterSpacing: '0.14em' }}>{s.label}</div>
@@ -705,7 +705,7 @@ const Comms = () => {
             fontSize: 9,
             color: 'var(--muted)',
             letterSpacing: '0.14em',
-            background: 'rgba(0,183,255,0.03)',
+            background: 'color-mix(in srgb, var(--accent) 3%, transparent)',
           }}>
             <span>TIME</span><span>DIR · ROUTE</span><span>MESSAGE / RESPONSE</span><span>STATUS</span><span></span>
           </div>
@@ -729,7 +729,7 @@ const Comms = () => {
                 borderRadius: '6px 0 0 6px',
                 padding: '6px 14px',
                 fontSize: 11,
-                background: rightTab === 'notifications' ? 'rgba(0,183,255,0.1)' : 'transparent',
+                background: rightTab === 'notifications' ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
                 borderRight: 'none',
                 position: 'relative',
               }}
@@ -753,7 +753,7 @@ const Comms = () => {
                 borderRadius: '0 6px 6px 0',
                 padding: '6px 14px',
                 fontSize: 11,
-                background: rightTab === 'notes' ? 'rgba(0,183,255,0.1)' : 'transparent',
+                background: rightTab === 'notes' ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
               }}
               onClick={() => setRightTab('notes')}
             >

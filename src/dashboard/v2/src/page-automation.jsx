@@ -134,7 +134,7 @@ function JobModal({ job, agents, onSave, onClose }) {
     }
   }
 
-  const inputStyle = { fontFamily: 'var(--mono)', fontSize: 12, background: 'rgba(0,183,255,0.04)', border: '1px solid rgba(0,183,255,0.2)', borderRadius: 4, padding: '6px 10px', color: '#fff', width: '100%', boxSizing: 'border-box' };
+  const inputStyle = { fontFamily: 'var(--mono)', fontSize: 12, background: 'color-mix(in srgb, var(--accent) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)', borderRadius: 4, padding: '6px 10px', color: 'var(--text)', width: '100%', boxSizing: 'border-box' };
   const labelStyle = { fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 4 };
   const rowStyle   = { marginBottom: 14 };
 
@@ -430,7 +430,7 @@ function Automation() {
         <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid var(--line-soft)', flexWrap: 'wrap' }}>
           {[{ id: 'all', label: 'All' }, ...JOB_TYPES.map(t => ({ id: t.id, label: t.label }))].map(f => (
             <button key={f.id} onClick={() => setFilter(f.id)}
-              style={{ fontSize: 9, fontFamily: 'var(--mono)', padding: '2px 7px', borderRadius: 3, border: `1px solid ${filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: filter === f.id ? 'rgba(0,183,255,0.12)' : 'transparent', color: filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 1 }}>
+              style={{ fontSize: 9, fontFamily: 'var(--mono)', padding: '2px 7px', borderRadius: 3, border: `1px solid ${filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: filter === f.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', color: filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 1 }}>
               {f.label}
             </button>
           ))}
@@ -446,13 +446,13 @@ function Automation() {
             const isRunning  = runningJobId === job.id;
             return (
               <div key={job.id} onClick={() => setSelectedJobId(job.id)}
-                style={{ padding: '10px 14px', cursor: 'pointer', borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`, background: isSelected ? 'rgba(0,183,255,0.06)' : 'transparent', position: 'relative' }}
+                style={{ padding: '10px 14px', cursor: 'pointer', borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`, background: isSelected ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'transparent', position: 'relative' }}
                 onMouseOver={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
                 onMouseOut={e =>  { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
                   <span style={{ width: 7, height: 7, borderRadius: '50%', background: isRunning ? '#f59e0b' : job.enabled ? 'var(--accent-2)' : 'rgba(255,255,255,0.2)', flexShrink: 0, boxShadow: isRunning ? '0 0 5px #f59e0b' : job.enabled ? '0 0 4px var(--accent-2)' : 'none' }} />
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: '#fff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.name}</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.name}</span>
                   <TypeBadge type={job.job_type} />
                 </div>
 
@@ -499,7 +499,7 @@ function Automation() {
           <>
             {/* Job header */}
             <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: '#fff', fontWeight: 600 }}>{selectedJob.name}</span>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: 'var(--text)', fontWeight: 600 }}>{selectedJob.name}</span>
               <TypeBadge type={selectedJob.job_type} />
               {runs.length > 0 && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--mono)' }}>{runs.length} run{runs.length !== 1 ? 's' : ''}</span>}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -526,7 +526,7 @@ function Automation() {
               <div style={{ display: 'flex', gap: 4, padding: '8px 18px', borderBottom: '1px solid var(--line-soft)', overflowX: 'auto', flexShrink: 0 }}>
                 {runs.map((run, i) => (
                   <button key={run.id} onClick={() => setSelectedRunId(run.id)}
-                    style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '3px 9px', borderRadius: 3, border: `1px solid ${selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: selectedRunId === run.id ? 'rgba(0,183,255,0.1)' : 'transparent', color: selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '3px 9px', borderRadius: 3, border: `1px solid ${selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: selectedRunId === run.id ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent', color: selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
                     <RunStatusIcon status={run.status} />
                     #{runs.length - i}
                   </button>

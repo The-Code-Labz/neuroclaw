@@ -19,6 +19,7 @@ import { syncSkillExports } from '../skills/exporters';
 import { startDiscordNotifier } from '../system/discord-notifier';
 import { startDiscordBotManager } from '../integrations/discord-bot';
 import { startConfigWatcher } from '../system/config-watcher';
+import { markBootHealthy, isBootUnproven } from '../system/self-update';
 import { startCleanupScheduler } from '../system/cleanup';
 import { startSessionCleanupScheduler, startAnalyticsRetentionCleanup } from '../system/session-cleanup';
 import { startBackupScheduler } from '../system/db-backup';
@@ -39,10 +40,13 @@ import { assertKbEmbeddingHealthy, assertMemoryEmbeddingHealthy } from '../kb/kb
 import { startTaskWatchdog } from '../system/task-watchdog';
 import { startStephanieScheduler } from '../system/stephanie';
 import { startTaskArchivist } from '../system/task-archivist';
+import { startHandoffRecoverySweep } from '../system/handoff-recovery';
+import { startHandoffArchivist } from '../system/handoff-archivist';
 import { startCurator } from '../system/curator';
 import { probeAll as probeMcpServers } from '../mcp/mcp-registry';
 import { validateRegistryShapes } from '../tools/registry';
 import { startProviderHealthPolling } from '../infra/provider-health';
+import { startGrokUsageWarmer } from '../infra/grok-usage';
 import { initAntigravityModel } from '../providers/antigravity';
 import { attachTerminalWs } from './terminal-ws';
 import { initBrokerStorage, resolveAllSecretsFromBroker } from '../broker/bootstrap';
@@ -135,6 +139,15 @@ process.on('SIGTERM', () => {
 process.on('uncaughtException', (err) => {
   logger.error('dashboard: uncaughtException — server kept alive', { message: err.message, stack: err.stack?.slice(0, 800) });
   try { logAnalytics('server_error', { type: 'uncaughtException', message: err.message, stack: err.stack?.slice(0, 500) }); } catch { /* ignore */ }
+  // Self-update canary Layer B: while a post-update boot is unproven, a startup
+  // throw must actually CRASH (not limp along half-initialized) so the CJS
+  // ExecStartPre pre-check can count the failed attempt and auto-revert.
+  try {
+    if (isBootUnproven()) {
+      logger.error('dashboard: uncaughtException during unproven post-update boot — exiting to trigger canary revert');
+      process.exit(1);
+    }
+  } catch { /* never let the guard itself keep us from the normal keep-alive */ }
 });
 process.on('unhandledRejection', (reason) => {
   logger.error('dashboard: unhandledRejection — server kept alive', { reason: String(reason).slice(0, 400) });
@@ -229,15 +242,43 @@ app.get('/icon.svg', (c) => {
   return c.body(NEUROCLAW_SVG);
 });
 
+// Service-worker cache version, derived ONCE at boot from the built entry-chunk hashes
+// of BOTH dashboard v2 and v4 (dist/index.html → index-<hash>.js). Because that hash
+// changes on every frontend rebuild, the SW cache name changes too — so `activate`
+// purges every stale chunk on the next load after ANY deploy. This is the permanent fix
+// for "PWA keeps running old code": a byte-identical sw.js never re-activated, so
+// cache-first JS chunks lingered forever. Falls back to a boot timestamp if the built
+// HTML can't be read (dev / no-build).
+function hashFromDashboardDist(distDir: string): string | null {
+  try {
+    const html = fs.readFileSync(
+      path.resolve(process.cwd(), `src/dashboard/${distDir}/dist/index.html`),
+      'utf-8',
+    );
+    const m = html.match(/index-([A-Za-z0-9_-]+)\.js/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+const SW_CACHE_VERSION: string = (() => {
+  const v2Hash = hashFromDashboardDist('v2') ?? 'none';
+  const v4Hash = hashFromDashboardDist('v4') ?? 'none';
+  // Combine both hashes so a v4-only rebuild still busts the cache.
+  if (v2Hash !== 'none' || v4Hash !== 'none') return `${v2Hash}-${v4Hash}`;
+  return 'boot-' + Date.now();
+})();
+
 app.get('/sw.js', (c) => {
   c.header('Content-Type', 'application/javascript; charset=utf-8');
   c.header('Cache-Control', 'no-cache');
-  // Cache name bump (v3->v4) so 'activate' purges every old cache — including the
-  // previously-cached '/chat-mode' HTML that was served stale forever (see fetch below).
-  // SHELL holds ONLY static assets. '/chat-mode' is intentionally NOT precached: it is a
-  // navigation document whose HTML is generated per-request (the server injects the auth
-  // token into it), so caching it cache-first served a stale, broken shell after deploys.
-  return c.body(`const CACHE='neuroclaw-v4-dash';const SHELL=['/manifest.json','/chat-mode-manifest.json','/icon.svg','/favicon.svg'];
+  // Cache name is tied to the built entry hash (SW_CACHE_VERSION) so 'activate' purges
+  // every old cache on each deploy automatically. SHELL holds ONLY static assets.
+  // '/chat-mode' is intentionally NOT precached: it is a navigation document whose HTML
+  // is generated per-request (the server injects the auth token into it), so caching it
+  // cache-first served a stale, broken shell after deploys.
+  return c.body(`const CACHE='neuroclaw-${SW_CACHE_VERSION}-dash';const SHELL=['/manifest.json','/chat-mode-manifest.json','/icon.svg','/favicon.svg'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)));self.skipWaiting();});
 self.addEventListener('activate',e=>{e.waitUntil(Promise.all([clients.claim(),caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k))))]));});
 self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(e.request.method!=='GET'||u.origin!==location.origin||u.pathname.startsWith('/api/')||u.pathname.endsWith('.jsx'))return;
@@ -450,11 +491,47 @@ app.use('/dashboard/*', serveStatic({
   },
 }));
 
+// Built dashboard v4 assets — served with immutable caching, no auth required.
+const V4_ROOT = path.resolve(process.cwd(), 'src/dashboard/v4');
+const V4_DIST = path.join(V4_ROOT, 'dist');
+app.use('/dashboard-v4/assets/*', serveStatic({
+  root: V4_DIST,
+  rewriteRequestPath: (p) => p.replace(/^\/dashboard-v4/, ''),
+  onFound: (_fp, c) => {
+    c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+}));
+
 // Legacy /dashboard-v2 redirect for any old bookmarks
 app.get('/dashboard-v2', (c) => c.redirect(`/dashboard?token=${c.req.query('token') || ''}`));
 app.get('/dashboard-v2/*', (c) => {
   const subpath = c.req.path.replace('/dashboard-v2', '/dashboard');
   return c.redirect(subpath);
+});
+
+// Token guard for /dashboard-v4 — accepts ?token query OR persistent cookie
+app.use('/dashboard-v4', async (c, next) => {
+  const cookie = c.req.header('cookie') ?? '';
+  const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
+  const token = c.req.query('token') ?? cookieToken ?? '';
+  if (!tokenMatches(token, config.dashboard.token)) {
+    return c.redirect('/login?next=' + encodeURIComponent('/dashboard-v4'));
+  }
+  await next();
+});
+
+// Main Dashboard v4 (React + Vite build)
+app.get('/dashboard-v4', (c) => {
+  try {
+    const distHtml = path.join(V4_DIST, 'index.html');
+    if (!fs.existsSync(distHtml)) {
+      return c.text('Dashboard v4 has not been built. Run npm run build:dashboard:v4', 500);
+    }
+    setAuthCookie(c);
+    return c.html(fs.readFileSync(distHtml, 'utf-8'));
+  } catch (err) {
+    return c.text(`Dashboard v4 not found: ${(err as Error).message}`, 500);
+  }
 });
 
 // Serve uploaded agent avatars + agent-sent chat images
@@ -563,7 +640,12 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
     platform: process.platform,
     pid: process.pid,
   });
-  
+
+  // Self-update canary: HTTP is listening AND migrations have run (via the
+  // getDb() in logAnalytics above) — this boot is healthy. Clear any pending
+  // update marker so the next boot won't auto-revert. Best-effort, non-gating.
+  try { markBootHealthy(); } catch { /* ignore */ }
+
   attachTerminalWs(httpServer as unknown as import('http').Server);
   logger.info(`dashboard: MCP HTTP  → http://localhost:${info.port}/mcp`);
   // Resolve broker-managed API keys (background VoidAI key, Venice key) BEFORE
@@ -579,6 +661,10 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
       // process.env. The Inngest client snapshotted env at construction (before
       // this resolved), so re-sync it now — otherwise inngest.send() has no key.
       void import('../system/inngest-client').then(({ refreshInngestEnv }) => refreshInngestEnv());
+      // OpenArt: prime the "configured" flag from the LIVE broker RT presence
+      // (never snapshotted into process.env — the RT rotates). config.openart.enabled
+      // and the Studio health check delegate to openartConfigured().
+      void import('../infra/openart-auth').then(({ primeOpenArtConfigured }) => primeOpenArtConfigured());
     })
     .catch((err: unknown) => logger.warn('broker: startup key resolution failed', { err: (err as Error).message }))
     .finally(() => startCatalogRefresh());
@@ -587,6 +673,7 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
   assertMemoryEmbeddingHealthy(); // fail loud if MEMORY_BACKEND=supabase && embeddings off/mismatched (no-op on sqlite)
   validateRegistryShapes(); // warn on schema/shape drift (tools validating differently per plane)
   startProviderHealthPolling(); // WS2: usage-window → soft cooldown bridge
+  startGrokUsageWarmer(); // keep Grok CLI usage cache hot (cold PTY drive > panel's 10s fetch timeout)
   startConfigWatcher();
   startCleanupScheduler();
   startSessionCleanupScheduler();
@@ -610,11 +697,14 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
   startStephanieScheduler();
   startCronScheduler();
   startTaskArchivist();
+  startHandoffArchivist();
   startCurator();
   const stuck = recoverStuckDoingTasks();
   if (stuck > 0) logger.info(`startup: reset ${stuck} task(s) stuck in 'doing' back to 'todo'`);
   const orphans = recoverOrphanAgentTasks();
   if (orphans > 0) logger.info(`startup: re-enqueued ${orphans} orphaned agent task(s)`);
+  const handoffs = startHandoffRecoverySweep();
+  if (handoffs > 0) logger.info(`startup: recovered ${handoffs} stale synchronous hand-off(s)`);
   // Tasks stranded in 'review' — the holdout verdict fires via a non-durable
   // setImmediate, so a restart mid-review leaves them with nothing to advance
   // them. At boot every review task is stranded (minAge=0); re-fire the verdict.
@@ -646,7 +736,16 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
   probeMcpServers(true).catch((err: unknown) => logger.warn('dashboard: mcp registry initial probe failed', { err: (err as Error).message }));
     if (!mcpProbeTimer) {
       mcpProbeTimer = setInterval(() => {
-        probeMcpServers(false).catch((err: unknown) => logger.warn('dashboard: mcp registry probe tick failed', { err: (err as Error).message }));
+        // Refresh Canva's OAuth token before the tools/list probe — a stale
+        // bearer would otherwise flip the row to status='error' every ~1h
+        // (Canva's typical access-token lifetime) until someone notices.
+        // No-op when unconfigured or the token is still fresh (5min skew).
+        import('../mcp/canva-oauth')
+          .then((m) => m.ensureFreshCanvaToken())
+          .catch((err: unknown) => logger.warn('dashboard: canva token refresh tick failed', { err: (err as Error).message }))
+          .finally(() => {
+            probeMcpServers(false).catch((err: unknown) => logger.warn('dashboard: mcp registry probe tick failed', { err: (err as Error).message }));
+          });
       }, 60_000);
     }
   });

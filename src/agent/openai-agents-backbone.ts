@@ -14,6 +14,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { classifyProviderError } from './provider-error';
 import { reportProviderSuccess, reportProviderFailure, extractRetryAfterMs } from '../infra/provider-health';
+import { recordGiveUp } from '../system/give-up-telemetry';
 
 // Without this the SDK tries to export OpenAI tracing spans and warns/errors
 // when no OPENAI_API_KEY is set — true for every non-OpenAI provider here.
@@ -37,6 +38,11 @@ export interface RunBackboneOpts {
   providerData?: Record<string, any>;
   onChunk:      (chunk: string) => void | Promise<void>;
   onMeta?:      (e: MetaEvent) => void | Promise<void>;
+  // External abort handle (Wave-2 Item C). When an outside actor (Sentinel's
+  // runaway pass, an interactive stop) aborts this signal, it chains into the
+  // internal `abort` controller and the turn unwinds through the existing
+  // bailReportBack path with an `extAborted` note. Absent for normal turns.
+  signal?:      AbortSignal;
 }
 
 export interface RunBackboneResult {
@@ -61,8 +67,19 @@ export async function runOpenAiAgentsBackbone(opts: RunBackboneOpts): Promise<Ru
   // never throw — failure means the result JSON carries a truthy `error` or
   // `ok: false`, both of which only the dispatch error envelopes emit.
   const abort = new AbortController();
+  // External abort (Wave-2 Item C): an outside actor (Sentinel runaway pass /
+  // interactive stop) can abort opts.signal to interrupt this live turn. Chain
+  // it into the internal controller so it reuses ALL existing terminal handling
+  // — an external abort simply looks like one more reason `abort` fired. Guard
+  // the already-aborted case at entry so we don't start an SDK run we must kill.
+  let extAborted = false;
+  if (opts.signal) {
+    if (opts.signal.aborted) { extAborted = true; abort.abort(); }
+    else opts.signal.addEventListener('abort', () => { extAborted = true; abort.abort(); }, { once: true });
+  }
   let gaveUp = false;
-  let failedToolCalls = 0;
+  let failedToolCalls = 0;                 // CUMULATIVE (reporting only)
+  let failStreak = 0;                      // CONSECUTIVE failure streak — resets on any clean result; drives the bail
   let lastFailedTool = '';
   let lastFailure = '';
   // Inactivity watchdog: a provider that stalls mid-generation otherwise leaves
@@ -101,16 +118,20 @@ export async function runOpenAiAgentsBackbone(opts: RunBackboneOpts): Promise<Ru
   const clearAbsolute = () => { if (absTimer) { clearTimeout(absTimer); absTimer = undefined; } };
   const onToolResult = (name: string, result: string) => {
     let parsed: unknown;
-    try { parsed = JSON.parse(result); } catch { return; }
-    if (!parsed || typeof parsed !== 'object') return;
+    // Non-JSON result = a tool that ran and returned plain text → progress, wipe streak.
+    try { parsed = JSON.parse(result); } catch { failStreak = 0; return; }
+    if (!parsed || typeof parsed !== 'object') { failStreak = 0; return; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = parsed as any;
-    if (!p.error && p.ok !== false) return;
-    failedToolCalls++;
+    // Clean result (no error envelope) = real progress → reset the streak. The
+    // give-up means "it KEEPS failing" — a CONSECUTIVE notion, not a running total.
+    if (!p.error && p.ok !== false) { failStreak = 0; return; }
+    failedToolCalls++;                       // cumulative (reporting)
+    failStreak++;                            // consecutive (drives bail)
     lastFailedTool = name;
     lastFailure = String(p.error ?? '').slice(0, 600);
     const cap = config.openaiAgents.maxFailedToolCalls;
-    if (!gaveUp && cap > 0 && failedToolCalls >= cap) {
+    if (!gaveUp && cap > 0 && failStreak >= cap) {
       gaveUp = true;
       abort.abort();
     }
@@ -127,12 +148,30 @@ export async function runOpenAiAgentsBackbone(opts: RunBackboneOpts): Promise<Ru
       logger.warn('openai-agents-backbone: gave up early after failed tool calls', {
         agent: opts.agentName, failedToolCalls, lastFailedTool, toolCalls,
       });
+      // Structured telemetry → async give-up pattern detector (fail-safe).
+      recordGiveUp({
+        plane:      'backbone',
+        kind:       'failures',
+        agentName:  opts.agentName ?? null,
+        model:      opts.model,
+        cmd:        lastFailedTool || null,
+        count:      failedToolCalls,
+        failStreak,
+        output:     lastFailure,
+      });
       note = `\n\n---\n🛑 **Stopping early to report back.**\n\n` +
         `A step kept failing — ${failedToolCalls} failed tool calls this turn` +
         (lastFailedTool ? `, most recently \`${lastFailedTool}\`` : '') +
         `. This looks like a blocker I can't clear by retrying.\n\n` +
         (lastFailure ? `**Last failure:**\n\`\`\`\n${lastFailure}\n\`\`\`\n\n` : '') +
         `Let's sort out the blocker, then tell me to continue.`;
+    } else if (extAborted) {
+      logger.warn('openai-agents-backbone: aborted by external signal (runaway/stop)', {
+        agent: opts.agentName, chars: acc.length, toolCalls,
+      });
+      note = `\n\n---\n🛑 **Stopped — this task exceeded its runtime budget and was interrupted.**\n\n` +
+        (acc.length > 0 ? `Here's what I had so far above. ` : ``) +
+        `The run was cut by the runtime watchdog rather than left to hang — reply to have me continue from here.`;
     } else if (absAborted) {
       const maxMin = Math.round(absMaxMs / 60000);
       logger.warn('openai-agents-backbone: aborted on absolute ceiling', {
@@ -220,7 +259,7 @@ export async function runOpenAiAgentsBackbone(opts: RunBackboneOpts): Promise<Ru
 
     // Our deliberate aborts can land here instead of the catch — the SDK often
     // ends a signal-aborted streamed run gracefully rather than throwing.
-    if (gaveUp || idleAborted || absAborted) return bailReportBack();
+    if (gaveUp || idleAborted || absAborted || extAborted) return bailReportBack();
 
     // Prefer the SDK's finalOutput, but fall back to the streamed accumulation
     // if it's absent or empty (defensive — never return '' when text streamed).
@@ -274,7 +313,7 @@ export async function runOpenAiAgentsBackbone(opts: RunBackboneOpts): Promise<Ru
     const message = (err as Error).message ?? String(err);
     // Deliberate-abort paths (give-up after repeated tool failures, or the idle
     // watchdog). Report back as a normal completion — never an error turn.
-    if (gaveUp || idleAborted || absAborted) return bailReportBack();
+    if (gaveUp || idleAborted || absAborted || extAborted) return bailReportBack();
     // MaxTurnsExceeded backstop: the model did real (non-failing) work but blew
     // through the turn cap. Also a report-back completion, not an error — the
     // partial progress is real and the user can say "continue".

@@ -15,5 +15,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/dashboard/v2/vite.config.ts"]
+  "exclude": ["node_modules", "dist", "src/dashboard/v2/vite.config.ts", "src/dashboard/v4/vite.config.ts"]
 }

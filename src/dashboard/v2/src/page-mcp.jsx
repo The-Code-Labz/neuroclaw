@@ -232,7 +232,7 @@ const McpToolRow = ({ serverId, tool }) => {
   };
 
   return (
-    <div style={{ marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed rgba(0,183,255,0.06)' }}>
+    <div style={{ marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <code className="neonc" style={{ fontSize: 11 }}>{tool.name}</code>
         <button className="nc-btn ghost" style={{ fontSize: 10, marginLeft: 'auto' }} onClick={showSchema}>{open ? 'hide schema' : 'schema'}</button>

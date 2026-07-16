@@ -181,7 +181,7 @@ const BriefPanel = ({ form, setForm, onSubmit, busy }) => (
       disabled={busy || !form.brief?.trim()}
       style={{
         marginTop: 14, width: '100%', padding: '10px',
-        background: busy ? 'rgba(0,183,255,0.2)' : 'var(--accent)',
+        background: busy ? 'color-mix(in srgb, var(--accent) 20%, transparent)' : 'var(--accent)',
         color: '#000', border: 0, borderRadius: 3,
         fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12,
         letterSpacing: '0.08em', cursor: busy ? 'wait' : 'pointer',
@@ -201,7 +201,7 @@ const DirectionPicker = ({ directions, active, onPick }) => (
           style={{
             textAlign: 'left',
             padding: '8px 10px',
-            background: active === d.id ? 'rgba(0,183,255,0.12)' : 'rgba(2,6,23,0.55)',
+            background: active === d.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'rgba(2,6,23,0.55)',
             border: '1px solid ' + (active === d.id ? 'var(--accent)' : 'var(--line)'),
             borderRadius: 3, cursor: 'pointer', color: 'var(--text)',
           }}>
@@ -252,7 +252,7 @@ const ArtifactPreview = ({ artifact, expanded, onExpand }) => {
     return (
       <div className="nc-panel" style={{
         flex: 1, minHeight: 720, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'repeating-linear-gradient(45deg, rgba(0,183,255,0.04), rgba(0,183,255,0.04) 10px, transparent 10px, transparent 20px)',
+        background: 'repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent) 4%, transparent), color-mix(in srgb, var(--accent) 4%, transparent) 10px, transparent 10px, transparent 20px)',
         border: '1px dashed var(--line)',
       }}>
         <div className="mono muted" style={{ textAlign: 'center', fontSize: 12 }}>
@@ -375,14 +375,14 @@ const CritiqueRadar = ({ critique }) => {
         {[2, 4, 6, 8, 10].map(g => (
           <polygon key={g}
             points={dims.map((_, i) => pt(i, g).join(',')).join(' ')}
-            fill="none" stroke="rgba(0,183,255,0.12)" strokeWidth="1"
+            fill="none" stroke="color-mix(in srgb, var(--accent) 12%, transparent)" strokeWidth="1"
           />
         ))}
         {dims.map((d, i) => {
           const [x, y] = pt(i, 10);
-          return <line key={d} x1={cx} y1={cy} x2={x} y2={y} stroke="rgba(0,183,255,0.18)" strokeWidth="1" />;
+          return <line key={d} x1={cx} y1={cy} x2={x} y2={y} stroke="color-mix(in srgb, var(--accent) 18%, transparent)" strokeWidth="1" />;
         })}
-        <polygon points={poly} fill="rgba(0,245,212,0.18)" stroke="var(--accent-2)" strokeWidth="1.5" />
+        <polygon points={poly} fill="color-mix(in srgb, var(--accent-2) 18%, transparent)" stroke="var(--accent-2)" strokeWidth="1.5" />
         {dims.map((d, i) => {
           const [x, y] = pt(i, 11);
           return <text key={d} x={x} y={y} fontSize="9" fill="var(--text-soft)" fontFamily="var(--mono)" textAnchor="middle">{labels[d]}</text>;
@@ -415,7 +415,7 @@ const IterateChat = ({ artifact, onIterate, busy, messages }) => {
         {messages.map((m, i) => (
           <div key={i} className="mono" style={{
             fontSize: 10, padding: '4px 8px', borderRadius: 3,
-            background: m.role === 'user' ? 'rgba(0,183,255,0.08)' : 'rgba(139,92,246,0.08)',
+            background: m.role === 'user' ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'rgba(139,92,246,0.08)',
             color: m.role === 'user' ? 'var(--text)' : 'var(--text-soft)',
             borderLeft: `2px solid ${m.role === 'user' ? 'var(--accent)' : 'var(--violet)'}`,
           }}>
@@ -488,7 +488,7 @@ const ProjectHistory = ({ projects, activeId, onPick, onDelete }) => (
       {projects.slice(0, 12).map(p => (
         <div key={p.id} style={{
           display: 'flex', alignItems: 'center', gap: 6,
-          background: activeId === p.id ? 'rgba(0,183,255,0.10)' : 'transparent',
+          background: activeId === p.id ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
           border: '1px solid ' + (activeId === p.id ? 'var(--line-hard)' : 'var(--line-soft)'),
           borderRadius: 3, padding: '4px 6px',
         }}>
@@ -558,7 +558,7 @@ const StreamMeter = ({ stream, chars }) => {
   return (
     <div className="nc-panel glow" style={{
       padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10,
-      border: '1px solid var(--accent)', background: 'rgba(0,183,255,0.06)',
+      border: '1px solid var(--accent)', background: 'color-mix(in srgb, var(--accent) 6%, transparent)',
     }}>
       <span className="mono nc-spin" style={{ color: 'var(--accent)', fontSize: 13 }}>◐</span>
       <span className="mono" style={{ fontSize: 11, color: 'var(--accent)' }}>{stream.name}</span>
@@ -788,6 +788,27 @@ const Canvas = () => {
       loadProjects();
     } catch { /* noop */ }
   }, [project, loadProjects]);
+
+  React.useEffect(() => {
+    const onSend = (e) => {
+      const { imageUrl, prompt: imgPrompt, provider: imgProvider } = e.detail || {};
+      if (!imageUrl) return;
+      setChatLog(l => [...l, {
+        role: 'asia',
+        text: `Reference image received from Generate · ${imgProvider || 'studio'}${imgPrompt ? ' · "' + imgPrompt.slice(0, 60) + (imgPrompt.length > 60 ? '…"' : '"') : ''}`,
+      }]);
+      // Also surface the image in the brief as a visual anchor.
+      setForm(f => ({ ...f, brief: (f.brief ? f.brief + '\n\n' : '') + `[Reference image] ${imageUrl}` }));
+    };
+    window.addEventListener('nc-studio-send-to-editor', onSend);
+    // If the user sent an image while Canvas was not mounted, pick it up now.
+    const pending = window.__ncStudioEditorImage;
+    if (pending?.url) {
+      onSend({ detail: pending });
+      window.__ncStudioEditorImage = null;
+    }
+    return () => window.removeEventListener('nc-studio-send-to-editor', onSend);
+  }, []);
 
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>

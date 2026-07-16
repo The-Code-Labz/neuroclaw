@@ -54,6 +54,13 @@ export const config = {
       model:         process.env.ROUTER_MODEL?.trim() || undefined,
     };
   },
+  // spec: ssh-machine-connections — agent SSH capability kill-switch.
+  // Fail-closed: absent env → disabled. Per-agent ssh_enabled is the second gate.
+  get ssh() {
+    return {
+      enabled: process.env.SSH_TOOLS_ENABLED === 'true',
+    };
+  },
   get spawning() {
     return {
       enabled:            process.env.SPAWN_AGENTS_ENABLED === 'true',
@@ -107,36 +114,23 @@ export const config = {
   },
   get background() {
     return {
-      // The OpenRouter *backup* tier for the VoidAI-first path below (and the
-      // client getBgClient() returns). `model` is the single OpenRouter backup
-      // model for every gemini-tier background task — gemini-3.5-flash per user
-      // (was flash-lite). bgChatCompletion() falls back to this when the VoidAI
-      // haiku attempt errors/times out. NOTE: OpenRouter account is currently
-      // out of credits (402), so this backup only works once it's funded.
-      provider: process.env.BG_PROVIDER?.trim() || 'openrouter',
-      model:    process.env.BG_MODEL?.trim()    || 'google/gemini-3.5-flash',
-      // ── VoidAI-first background routing ──────────────────────────────────
-      // When enabled, bgChatCompletion() tries a VoidAI model first and falls
-      // back to the OpenRouter `model` above on any error/timeout.
-      // Default model is claude-haiku-4-5: benchmarked at ~1-2s and rock-solid
-      // on VoidAI. (Every VoidAI *gemini* is far worse — 2.5-flash reasons for
-      // ~8-40s, 3.5-flash ~55s, flash-lite ~21s; the OpenAI minis were 9-30s or
-      // flaky.) Kill switch: BG_VOIDAI_FIRST=false reverts every background call
-      // to OpenRouter-primary with no VoidAI attempt.
-      voidaiFirst:  (process.env.BG_VOIDAI_FIRST ?? 'true').toLowerCase() !== 'false',
-      voidaiModel:  process.env.BG_VOIDAI_MODEL?.trim() || 'claude-haiku-4-5-20251001',
-      // For reasoning models (e.g. if BG_VOIDAI_MODEL is switched to a gemini),
-      // VoidAI spends the token budget thinking before answering, so a small
-      // max_tokens returns empty content. Cap reasoning low and floor the budget
-      // so the VoidAI attempt always has room for actual content. Harmless for
-      // non-reasoning models like haiku (param ignored). '' disables the param.
-      voidaiReasoningEffort: (process.env.BG_VOIDAI_REASONING_EFFORT ?? 'low').trim(),
-      voidaiMinTokens:       parseInt(process.env.BG_VOIDAI_MIN_TOKENS ?? '512', 10),
-      // Per-attempt timeout (ms) on the VoidAI try. Set generously (90s) because
-      // the OpenRouter fallback is only a real safety net when that account has
-      // credit — when it doesn't, cutting VoidAI off early just hard-fails the
-      // call. haiku normally returns in ~2s, so this is just a hang ceiling.
-      voidaiTimeoutMs: parseInt(process.env.BG_VOIDAI_TIMEOUT_MS ?? '90000', 10),
+      // Split-provider background routing (per user 2026-07-07):
+      //  - Default tier  = VoidAI gpt-4.1-nano. Non-reasoning, cheap, on the flat
+      //    VoidAI plan we already pay for, accepts temperature:0. Handles the 7
+      //    "wash" bg tasks (session-namer, decomposer, dream-cycle,
+      //    context-compactor, skill-forge, holdout-reviewer, doc-notebooks).
+      //  - Gemini tier   = OpenRouter google/gemini-2.5-flash-lite. Used ONLY by
+      //    the nuanced-inference callers that pass { preferGemini: true }
+      //    (memory-extractor, user-profiler) where gemini's reasoning edge and
+      //    memory-quality compounding actually matter.
+      // No cross-provider fallback: each caller has one lane. `provider`/`model`
+      // are kept for getBgClient()/embeddings compatibility.
+      provider:    process.env.BG_PROVIDER?.trim()      || 'openrouter',
+      model:       process.env.BG_MODEL?.trim()         || 'google/gemini-2.5-flash-lite',
+      // Default VoidAI model for the "rest" of the background tasks.
+      voidaiModel: process.env.BG_VOIDAI_MODEL?.trim()  || 'gpt-4.1-nano',
+      // Gemini model for preferGemini callers (extractor, profiler).
+      geminiModel: process.env.BG_GEMINI_MODEL?.trim()  || 'google/gemini-2.5-flash-lite',
     };
   },
   get skillForge() {
@@ -184,6 +178,19 @@ export const config = {
       enabled: (process.env.AGENT_INBOX_ENABLED ?? 'true').toLowerCase() !== 'false',
     };
   },
+  get optimize() {
+    return {
+      // Phase 1 per-agent compression engines. Default OFF so operators opt in
+      // after validation; per-agent toggles override these globals.
+      engines: {
+        lite:     process.env.TOKEN_OPT_LITE_ENABLED     === 'true',
+        headroom: process.env.TOKEN_OPT_HEADROOM_ENABLED === 'true',
+        // rtk reuses the existing global kill-switch in tokenOpt.toolCompression.
+      },
+      // Roll-up telemetry TTL. Buckets older than this many hours are pruned.
+      telemetryTtlHours: Math.max(1, parseInt(process.env.TOKEN_OPT_TELEMETRY_TTL_HOURS ?? '168', 10)),
+    };
+  },
   get autonomous() {
     return {
       // Autonomous Mission Control loop (src/system/autonomous-loop.ts).
@@ -218,10 +225,70 @@ export const config = {
     };
   },
   get review() {
+    const parseList = (v: string | undefined, def: string[]): string[] =>
+      (v?.trim() ? v.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) : def);
     return {
+      // Legacy merge-loop (dormant; kept for the flagged consumer / holdout path).
       loopEnabled:   (process.env.REVIEW_LOOP_ENABLED ?? 'false').toLowerCase() === 'true',
       councilUrl:    process.env.REVIEWER_COUNCIL_URL?.trim() || 'http://127.0.0.1:7102/mcp',
       maxIterations: parseInt(process.env.REVIEW_LOOP_MAX_ITERATIONS ?? '3', 10),
+
+      // In-process tiered review service (pre-gate → Tier-1 → Tier-2).
+      enabled:            (process.env.REVIEW_ENABLED ?? 'true').toLowerCase() !== 'false',
+      tier1CodeModel:     process.env.REVIEW_T1_CODE_MODEL?.trim()  || 'gpt-4.1-mini',
+      tier1NonCodeModel:  process.env.REVIEW_T1_PROSE_MODEL?.trim() || 'gpt-4.1-nano',
+      // Primary rides the OpenRouter lane (preferGemini) → needs the provider-prefixed
+      // slug (bare 'claude-sonnet-4-6' 400s there). Fallback rides the VoidAI lane →
+      // needs a VoidAI-valid id ('kimi-for-coding' 404s there). Both are Sonnet 4.6 on
+      // uncorrelated windows (OpenRouter vs VoidAI flat plan); neither is a reasoning
+      // model, so temperature:0.1 is accepted.
+      tier2Model:         process.env.REVIEW_T2_MODEL?.trim()       || 'anthropic/claude-sonnet-4.6',
+      tier2Fallback:      process.env.REVIEW_T2_FALLBACK?.trim()    || 'claude-sonnet-4-6',
+      tier2MaxConcurrent: parseInt(process.env.REVIEW_T2_MAX_CONCURRENT ?? '2', 10),
+      tier1MaxDiffLines:  parseInt(process.env.REVIEW_T1_MAX_DIFF_LINES ?? '400', 10),
+      tierTimeoutMs:      parseInt(process.env.REVIEW_TIER_TIMEOUT_MS ?? '45000', 10),
+      riskyGlobs:         parseList(process.env.REVIEW_RISKY_GLOBS,
+        ['auth', 'payment', 'migration', 'config.ts', 'registry.ts', 'routes.ts', '.sql', '.env']),
+      trivialTaskTypes:   parseList(process.env.REVIEW_TRIVIAL_TYPES,
+        ['session_name', 'tagging', 'naming']),
+    };
+  },
+  get selfHeal() {
+    // Master shadow / panic switch. When true it forces BOTH action mechanisms
+    // inert, preserving the observe/learn-only posture. When false, two
+    // independent sub-gates control the action surface.
+    const shadow = (process.env.SELF_HEAL_SHADOW ?? 'true').toLowerCase() !== 'false';
+    return {
+      // Master switch. When false, no failure observation, no learning, no repair.
+      enabled:      (process.env.SELF_HEAL_ENABLED ?? 'true').toLowerCase() !== 'false',
+      // SHADOW-MODE default ON: observe + build failure-memory + LOG would-repair
+      // decisions, but never actually inject a stored fix or trip a live repair.
+      shadowMode:   shadow,
+      // Learn stage (Verify-gated). Off ⇒ observe-only, never persists verified fixes.
+      learnEnabled: (process.env.SELF_HEAL_LEARN ?? 'true').toLowerCase() !== 'false',
+      // Run-level signature-storm breaker: same signature this many times in one
+      // autonomous run ⇒ stop repairing it, escalate once, suppress the rest.
+      // Default ON when out of shadow; flip SELF_HEAL_STORM_BREAKER=false to disable.
+      stormBreakerActive: shadow
+        ? false
+        : (process.env.SELF_HEAL_STORM_BREAKER ?? 'true').toLowerCase() !== 'false',
+      // Verified-fix injection: folds a trusted stored fix into the critique fed
+      // back to the agent. Default OFF even out of shadow; must be explicitly
+      // armed with SELF_HEAL_FIX_INJECTION=true after human review of candidates.
+      fixInjectionActive: shadow
+        ? false
+        : (process.env.SELF_HEAL_FIX_INJECTION ?? 'false').toLowerCase() === 'true',
+      // Per-task bounded repair attempts before escalate. Matches task max_retries intent.
+      maxRepairAttempts: parseInt(process.env.SELF_HEAL_MAX_REPAIR ?? '2', 10),
+      stormThreshold:    parseInt(process.env.SELF_HEAL_STORM_THRESHOLD ?? '3', 10),
+      // Confidence gate: a stored fix is blind-trusted only at/above this hit-count
+      // with a clean verify record AND with verify passes from at least this many
+      // distinct sessions. Below the bar the fix is fed as a PRIOR, not injected.
+      trustHitCount:     parseInt(process.env.SELF_HEAL_TRUST_HITS ?? '2', 10),
+      // Phases permanently excluded from Learn (noise / footgun automation).
+      // vcs = git-state artifacts; infra = host/liveness timing coincidences.
+      neverLearnPhases:  (process.env.SELF_HEAL_NEVER_LEARN ?? 'vcs')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     };
   },
   get compaction() {
@@ -270,7 +337,7 @@ export const config = {
   get heartbeatOllama() {
     return {
       apiKey:  process.env.HEARTBEAT_OLLAMA_API_KEY?.trim() ?? '',
-      baseURL: process.env.HEARTBEAT_OLLAMA_BASE_URL?.trim() || 'https://ollama.internal.your-domain.com/v1',
+      baseURL: process.env.HEARTBEAT_OLLAMA_BASE_URL?.trim() || 'https://ollama.internal.neurolearninglabs.com/v1',
       model:   process.env.HEARTBEAT_OLLAMA_MODEL?.trim()   || 'llama3.2',
       enabled: (process.env.HEARTBEAT_USE_OLLAMA_PROVIDER ?? 'false').toLowerCase() === 'true',
     };
@@ -370,6 +437,56 @@ export const config = {
       enabled: !!(process.env.ABACUS_API_KEY?.trim()),
     };
   },
+  // KIE AI — async media job API (Surface B). Key resolved from the broker
+  // (SHARED_KIE_API_KEY → KIE_API_KEY) at boot; never written to .env.
+  get kie() {
+    return {
+      apiKey:      process.env.KIE_API_KEY?.trim() ?? '',
+      baseURL:     process.env.KIE_BASE_URL?.trim() || 'https://api.kie.ai/api/v1',
+      imageModel:  process.env.KIE_IMAGE_MODEL?.trim() || 'google/nano-banana',
+      enabled:     !!(process.env.KIE_API_KEY?.trim()),
+    };
+  },
+  // fal — async media queue (queue.fal.run). Auth is `Key <k>`, not Bearer.
+  // Key resolved from the broker (SHARED_FAL_API_KEY → FAL_API_KEY) at boot.
+  get fal() {
+    return {
+      apiKey:      process.env.FAL_API_KEY?.trim() ?? '',
+      baseURL:     process.env.FAL_BASE_URL?.trim() || 'https://queue.fal.run',
+      imageModel:  process.env.FAL_IMAGE_MODEL?.trim() || 'fal-ai/flux/schnell',
+      enabled:     !!(process.env.FAL_API_KEY?.trim()),
+    };
+  },
+  // OpenArt — MCP-only media provider (generate + edit), OAuth 2.1 Bearer.
+  // ⚠️ Auth is a ROTATING refresh token read LIVE from the broker by the token
+  // manager (src/infra/openart-auth.ts) — it MUST NOT be snapshotted into
+  // process.env or added to SECRET_REGISTRY, or a stale RT would nuke the token
+  // family. `enabled` delegates to openartConfigured() (single source of truth,
+  // primed async at boot via primeOpenArtConfigured()).
+  get openart() {
+    // Lazy import avoids a config↔auth module cycle at load time.
+    let enabled = false;
+    try { enabled = require('./infra/openart-auth').openartConfigured(); } catch { enabled = false; }
+    return {
+      clientId: process.env.OPENART_CLIENT_ID?.trim() || '5wUuGDLn4m9MMNwh4FJU',
+      mcpUrl:   process.env.OPENART_MCP_URL?.trim()   || 'https://mcp.openart.ai/mcp',
+      imageModel: process.env.OPENART_IMAGE_MODEL?.trim() || 'nano-banana-2-lite',
+      enabled,
+    };
+  },
+  get omniroute() {
+    // Self-hosted OpenAI-compatible gateway (200+ upstream providers, auto-fallback,
+    // RTK/Caveman compression). Local service like Ollama: key is OPTIONAL (the
+    // gateway's REQUIRE_API_KEY defaults false), so `enabled` is not key-gated —
+    // an offline gateway simply fails at chat time. Disable explicitly with
+    // OMNIROUTE_ENABLED=false.
+    return {
+      apiKey:  process.env.OMNIROUTE_API_KEY?.trim() ?? '',
+      baseURL: process.env.OMNIROUTE_BASE_URL?.trim() || 'http://127.0.0.1:20128/v1',
+      model:   process.env.OMNIROUTE_MODEL?.trim()    || 'auto/best-coding',
+      enabled: process.env.OMNIROUTE_ENABLED?.trim() !== 'false',
+    };
+  },
   get pollinations() {
     return {
       apiKey:  process.env.POLLINATIONS_API_KEY?.trim() || undefined,
@@ -386,6 +503,22 @@ export const config = {
     return {
       mcpUrl:  process.env.VENICE_IMAGE_MCP_URL?.trim() || 'http://127.0.0.1:7206/mcp',
       enabled: !!(process.env.VENICE_SESSION_TOKEN?.trim()),
+    };
+  },
+  get canva() {
+    const clientId     = process.env.CANVA_CLIENT_ID?.trim()     || '';
+    const clientSecret = process.env.CANVA_CLIENT_SECRET?.trim() || '';
+    return {
+      // Official Canva MCP (remote, Streamable HTTP) — see canva.dev/docs/mcp.
+      // Not env-overridable: Canva publishes exactly one production endpoint.
+      mcpUrl: 'https://mcp.canva.com/mcp',
+      clientId,
+      clientSecret,
+      // A client_id/client_secret pair means the operator ran DCR registration
+      // (or the OAuth /start flow) at least once. It does NOT mean a user has
+      // completed consent yet — that's accessToken presence, checked separately.
+      configured: !!(clientId && clientSecret),
+      hasToken: !!(process.env.CANVA_ACCESS_TOKEN?.trim()),
     };
   },
   get sonarSmart() {
@@ -446,9 +579,20 @@ export const config = {
       // claude plane's timeoutMs. The streamIdleMs watchdog above only catches
       // SILENCE — a runaway loop that keeps streaming tokens or firing fast tools
       // never goes idle and (with maxTurns high) could run unbounded. This fires
-      // REGARDLESS of activity at a generous wall-clock ceiling, so it never cuts
-      // legit long work — only a genuinely immortal turn. 0 disables.
-      absoluteMaxMs: parseInt(process.env.OPENAI_AGENTS_ABSOLUTE_MAX_MS ?? '2700000', 10),
+      // REGARDLESS of activity at a wall-clock ceiling, so it never cuts legit
+      // long work — only a genuinely immortal turn. 0 disables.
+      //
+      // Wave-2 Item C (ASAGI FATAL): the old default was 45 min (2700000), which
+      // sat ABOVE job-worker's 25-min WEDGED_JOB_CAP_MS — so this graceful ceiling
+      // was DEAD CODE for any 25–45 min run (the blunt force-fail always won
+      // first). Re-derived so the ordering is now correct end-to-end:
+      //   absoluteMaxMs (25m) < RUNAWAY_BUDGET_MS (30m) < WEDGED_JOB_CAP_MS (35m)
+      // i.e. the backbone's own graceful bail gets first crack, THEN Sentinel's
+      // targeted runaway interrupt, THEN the blunt job-worker backstop last.
+      // 25m is ASAGI-verified against 746 real backbone turns: the sole legit
+      // near-miss was an 18.5m Rossweisse run (33 tool calls / 1.3M input tokens);
+      // 25m gives 6.5m headroom while still killing the 88m Akeno-class wedge.
+      absoluteMaxMs: parseInt(process.env.OPENAI_AGENTS_ABSOLUTE_MAX_MS ?? '1500000', 10),
     };
   },
   get queue() {
@@ -515,18 +659,30 @@ export const config = {
         apiKey:    process.env.KIMI_ANTHROPIC_KEY?.trim()       || '',
         model:     process.env.SUBAGENT_KIMI_MODEL?.trim()      || 'kimi-for-coding',
         userAgent: process.env.SUBAGENT_KIMI_USER_AGENT?.trim() || 'claude-code/1.0.0',
+        // Whether this family may be used for sub-agent routing. Explicit env
+        // wins; otherwise defaults to enabled only when a key is present, so a
+        // fresh install without a Kimi key simply skips this family instead of
+        // 401-failing every code-routed sub-agent. Set SUBAGENT_KIMI_ENABLED=false
+        // to disable even with a valid key (e.g. cost/quota control).
+        enabled:   process.env.SUBAGENT_KIMI_ENABLED !== undefined
+                     ? process.env.SUBAGENT_KIMI_ENABLED === 'true'
+                     : !!(process.env.KIMI_ANTHROPIC_KEY?.trim()),
       },
       // Native prose/general sub-agent route — MiniMax direct, OpenAI-compatible.
       minimax: {
         baseURL: process.env.SUBAGENT_MINIMAX_BASE_URL?.trim() || 'https://api.minimax.io/v1',
         apiKey:  process.env.MINIMAX_ANTHROPIC_KEY?.trim()     || '',
         model:   process.env.SUBAGENT_MINIMAX_MODEL?.trim()    || process.env.MINIMAX_ANTHROPIC_MODEL?.trim() || 'MiniMax-M3',
+        // See kimi.enabled above — same semantics for the MiniMax family.
+        enabled: process.env.SUBAGENT_MINIMAX_ENABLED !== undefined
+                   ? process.env.SUBAGENT_MINIMAX_ENABLED === 'true'
+                   : !!(process.env.MINIMAX_ANTHROPIC_KEY?.trim()),
       },
       // Comma-separated tools blocked for sub-agents (spawnDepth >= 1).
       // fs_read/fs_list are read-only and allowed — sub-agents need them to inspect cloned repos etc.
       // See specs/sub-agent-tool-lockdown.md Fix 1.
       blockedTools: (process.env.SUB_AGENT_BLOCKED_TOOLS ?? [
-        'fs_write', 'fs_search',
+        'fs_write', 'fs_edit', 'fs_search',
         'bash_run',
         'write_vault_note', 'save_session_summary',
         'manage_task', 'manage_project',
@@ -535,6 +691,28 @@ export const config = {
         'schedule_job', 'delete_job', 'update_job',
         'spawn_agent', 'assign_task_to_agent',
       ].join(',')).split(',').map((s: string) => s.trim()).filter(Boolean),
+    };
+  },
+  // Universal token-optimization layer (spec 2026-07-10). Two independent
+  // components; both default-safe.
+  //  - Component A (verbosity directives) is per-agent opt-in via the agents
+  //    table, not env — no global flag here.
+  //  - Component B (tool-output compression) is a global middleware with a
+  //    kill switch + byte cap. Retrieval results are ALWAYS exempt regardless.
+  get tokenOpt() {
+    return {
+      // Compress noisy command/tool output before it re-enters model context.
+      // Default ON; flip TOKEN_OPT_TOOL_COMPRESSION=false to disable entirely.
+      toolCompression:  process.env.TOKEN_OPT_TOOL_COMPRESSION !== 'false',
+      // Per-result byte cap (final backstop; head+tail preserved). Only strings
+      // ABOVE this many bytes are ever touched; small results pass untouched.
+      compressionMaxBytes: parseInt(process.env.TOKEN_OPT_COMPRESSION_MAX_BYTES ?? '8000', 10),
+      // Minimum string length (bytes) before any compression rule engages. Keeps
+      // short results byte-identical and avoids churning tiny payloads.
+      compressionMinBytes: parseInt(process.env.TOKEN_OPT_COMPRESSION_MIN_BYTES ?? '2000', 10),
+      // Lines of context to protect on either side of an error/diagnostic line
+      // (stack-trace continuation guard).
+      keepVerbatimContext: parseInt(process.env.TOKEN_OPT_KEEP_VERBATIM_CONTEXT ?? '3', 10),
     };
   },
   get ollama() {
@@ -628,7 +806,7 @@ export const config = {
       // (default pipeline, universal describer); hermesModel = Grok via Hermes
       // (allowlist agents whose images Gemini refuses). Each provider resolves to
       // its OWN model so the hermes path never sends a gemini model string to xAI.
-      openrouterModel: process.env.VISION_OPENROUTER_MODEL?.trim() || 'google/gemini-3.1-flash',
+      openrouterModel: process.env.VISION_OPENROUTER_MODEL?.trim() || 'google/gemini-3.5-flash',
       hermesModel:     process.env.VISION_HERMES_MODEL?.trim() || 'grok-4',
       prompt:     process.env.VISION_PROMPT?.trim()
                   || 'Describe this image in detail, including text, objects, layout, and any notable visual elements. Be concise but complete — your description is the only context an LLM will see.',
@@ -719,7 +897,7 @@ export const config = {
       kokoro: {
         enabled:        !!(process.env.KOKORO_API_KEY?.trim()),
         apiKey:         process.env.KOKORO_API_KEY?.trim() ?? '',
-        baseURL:        process.env.KOKORO_BASE_URL?.trim()         || 'https://kokorotts.nb.your-domain.com/v1',
+        baseURL:        process.env.KOKORO_BASE_URL?.trim()         || 'https://kokorotts.nb.neurolearninglabs.com/v1',
         defaultVoiceId: process.env.KOKORO_DEFAULT_VOICE_ID?.trim() || 'af_heart',
         model:          process.env.KOKORO_MODEL?.trim()            || 'kokoro',
       },
@@ -732,13 +910,13 @@ export const config = {
       hermes: {
         ttsVoice: process.env.HERMES_TTS_VOICE?.trim() || 'default',
       },
-      // Chatterbox TTS — internal instance at chatterbox.internal.your-domain.com.
+      // Chatterbox TTS — internal instance at chatterbox.internal.neurolearninglabs.com.
       // No API key required for the internal deployment; CHATTERBOX_API_KEY is optional
       // for setups that add bearer auth in front of the service.
       // model_type: base | turbo | multilingual (default: base)
       chatterbox: {
         enabled:      (process.env.CHATTERBOX_ENABLED ?? 'true').toLowerCase() !== 'false',
-        baseURL:      process.env.CHATTERBOX_BASE_URL?.trim()       || 'https://chatterbox.internal.your-domain.com',
+        baseURL:      process.env.CHATTERBOX_BASE_URL?.trim()       || 'https://chatterbox.internal.neurolearninglabs.com',
         apiKey:       process.env.CHATTERBOX_API_KEY?.trim()        || '',
         defaultVoice: process.env.CHATTERBOX_DEFAULT_VOICE?.trim()  || '',
         modelType:    process.env.CHATTERBOX_MODEL_TYPE?.trim()     || 'base',
@@ -805,7 +983,7 @@ export const config = {
       // NeuroClaw SearXNG metasearch instance — backs the first-class web_search
       // tool. Defaults to the hosted instance; set SEARXNG_ENABLED=false to gate
       // the tool off entirely.
-      baseUrl:   process.env.SEARXNG_BASE_URL?.trim() || 'https://searxng.your-domain.com',
+      baseUrl:   process.env.SEARXNG_BASE_URL?.trim() || 'https://searxng.neurolearninglabs.com',
       enabled:   process.env.SEARXNG_ENABLED !== 'false',
       timeoutMs: parseInt(process.env.SEARXNG_TIMEOUT_MS ?? '20000', 10),
       // When a general-category search returns zero results (the default engine
@@ -944,10 +1122,10 @@ export const config = {
     return {
       enabled:    flag === 'true',
       dualWrite:  flag === 'dual' || flag === 'true',
-      baseUrl:    process.env.INNGEST_BASE_URL?.trim()    || 'https://inngest.your-domain.com',
+      baseUrl:    process.env.INNGEST_BASE_URL?.trim()    || 'https://inngest.neurolearninglabs.com',
       eventKey:   process.env.INNGEST_EVENT_KEY?.trim()   || '',
       signingKey: process.env.INNGEST_SIGNING_KEY?.trim() || '',
-      serveUrl:   process.env.INNGEST_SERVE_URL?.trim()   || 'https://neuroclaw.your-domain.com/api/inngest',
+      serveUrl:   process.env.INNGEST_SERVE_URL?.trim()   || 'https://neuroclaw.neurolearninglabs.com/api/inngest',
     };
   },
   get claudeInteractive() {
@@ -961,6 +1139,70 @@ export const config = {
       idleReapMin:    parseInt(process.env.CLAUDE_INTERACTIVE_IDLE_REAP_MIN    ?? '10',      10),
       turnTimeoutMs:  parseInt(process.env.CLAUDE_INTERACTIVE_TURN_TIMEOUT_MS  ?? '600000',  10),
       maxSessionMs:   parseInt(process.env.CLAUDE_INTERACTIVE_MAX_SESSION_MS   ?? '3600000', 10),
+    };
+  },
+  get update() {
+    // GitHub self-update (spec 2026-07-15-github-self-update). Ships DORMANT:
+    // UPDATE_ENABLED defaults false. remote/branch are trust-pinned from env —
+    // request bodies can never redirect the update at an arbitrary repo (C8).
+    return {
+      enabled:           process.env.UPDATE_ENABLED === 'true',
+      remote:            process.env.UPDATE_REMOTE?.trim() || 'origin',
+      branch:            process.env.UPDATE_BRANCH?.trim() || 'main',
+      canaryMaxAttempts: parseInt(process.env.UPDATE_CANARY_MAX_ATTEMPTS ?? '2', 10),
+      rollbackKeep:      parseInt(process.env.UPDATE_ROLLBACK_KEEP ?? '5', 10),
+    };
+  },
+  get studio() {
+    // Studio Gen tab cost estimation + server-side spend circuit breaker.
+    // Grayfia's thresholds (per-user burst 6 calls / 5 min, concurrency 2,
+    // daily $8 USD-equivalent, global daily $40 USD-equivalent).
+    const costMap: Record<string, number> = {
+      // VoidAI image models (per-image USD estimate).
+      'voidai_image':                        0.018,
+      'voidai_image/gemini-3.1-flash-image': 0.018,
+      'voidai_image/gemini-3-pro-image':     0.20,
+      'voidai_gpt_image':                    0.15,
+      'voidai_gpt_image/gpt-image-2':        0.15,
+      // Abacus image models (gated out of launch providers, but priced for cap math).
+      'abacus_image':                        0.03,
+      'abacus_image/flux_pro':               0.03,
+      'abacus_image/flux_pro_ultra':         0.06,
+      // Pollinations is free-tier / ad-supported; nominal cost for cap math.
+      'pollinations':                        0.00,
+      // OpenArt is subscription-credit (no per-call USD); rough flat estimate so
+      // the org/session USD ledger + call-count throttle still engage.
+      'openart_image':                       0.02,
+    };
+    // Allow operator overrides as JSON: STUDIO_COST_MAP='{"voidai_image":0.04}'
+    try {
+      const override = process.env.STUDIO_COST_MAP?.trim();
+      if (override) {
+        const parsed = JSON.parse(override);
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'number') costMap[k] = v;
+        }
+      }
+    } catch { /* ignore malformed env */ }
+    return {
+      costMap,
+      spendBreaker: {
+        enabled:        (process.env.STUDIO_BREAKER_ENABLED ?? 'true').toLowerCase() !== 'false',
+        // Grayfia: 5 minute rolling burst window.
+        burstWindowMs:  parseInt(process.env.STUDIO_BREAKER_BURST_WINDOW_MS ?? '300000', 10),
+        // Max concurrent in-flight image generations per user/session.
+        maxConcurrent:  parseInt(process.env.STUDIO_BREAKER_MAX_CONCURRENT ?? '2', 10),
+        // Grayfia: 6 calls per 5 minutes.
+        burstMaxCalls:  parseInt(process.env.STUDIO_BREAKER_BURST_MAX_CALLS ?? '6', 10),
+        // Secondary hard cap: max calls per calendar day per user/session.
+        dailyMaxCalls:  parseInt(process.env.STUDIO_BREAKER_DAILY_MAX_CALLS ?? '200', 10),
+        // Grayfia: $25 USD-equivalent per user per day.
+        dailyMaxUsd:    parseFloat(process.env.STUDIO_BREAKER_DAILY_MAX_USD ?? '25.00'),
+        // Grayfia: $20 USD-equivalent org-wide daily ceiling.
+        globalDailyMaxUsd: parseFloat(process.env.STUDIO_BREAKER_GLOBAL_DAILY_MAX_USD ?? '20.00'),
+        // Soft-warning threshold (internal alert) before org ceiling is hit.
+        orgWarnUsd:     parseFloat(process.env.STUDIO_BREAKER_ORG_WARN_USD ?? '32.00'),
+      },
     };
   },
 };

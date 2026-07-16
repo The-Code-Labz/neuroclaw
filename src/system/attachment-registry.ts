@@ -37,8 +37,21 @@ import {
   refreshChatAttachmentCreatedAt,
   pruneChatAttachments,
   deleteChatAttachmentsBySession,
+  updateChatAttachmentStorage,
+  touchChatAttachmentRawTtl,
+  listExpiredRawAttachments,
+  clearChatAttachmentRaw,
   type ChatAttachmentRow,
 } from '../db';
+import {
+  docArchiveEnabled,
+  uploadDocToBucket,
+  mintDocSignedUrl,
+  parseDocViaUrl,
+  deleteDocObject,
+  RAW_TTL_MS,
+} from './doc-store';
+import { docRagEnabled, chunkAndEmbedDocument, deleteDocChunks } from './doc-rag';
 
 // Optional disk persistence mirror. Off by default — the registry was
 // originally designed to be in-memory only. Set ATTACHMENT_DISK_MIRROR=1 in
@@ -64,8 +77,15 @@ const LARGE_FILE_THRESHOLD = parseInt(
   process.env.DOCUFLOW_LARGE_FILE_THRESHOLD_BYTES ?? String(1 * 1024 * 1024), 10,
 );
 
+// Parsed-markdown token ceiling for INLINE context. A pre-parsed doc estimated
+// above this is too big to dump whole — when doc RAG is on, the context block
+// steers the agent to search_document (chunk retrieval) instead. Tunable.
+const RAG_INLINE_TOKEN_THRESHOLD = parseInt(
+  process.env.DOC_RAG_INLINE_THRESHOLD ?? '6000', 10,
+);
+
 // Docuflow REST API URL — used in the system context block for large files.
-const DOCUFLOW_API_URL = process.env.DOCUFLOW_API_URL ?? 'https://docuflow-api.your-domain.com';
+const DOCUFLOW_API_URL = process.env.DOCUFLOW_API_URL ?? 'https://docuflow-api.neurolearninglabs.com';
 
 function safeFilename(name: string): string {
   // Strip path separators + control chars; keep dots, dashes, underscores.
@@ -121,6 +141,7 @@ export interface AttachmentDescriptor {
   isLarge:     boolean;    // true when size >= LARGE_FILE_THRESHOLD
   isParsed:    boolean;    // true when parsedContent is available on the record
   parseError?: string;     // set when parsing failed at upload time
+  parsedTokens?: number;   // rough token estimate of the parsed markdown (when isParsed)
 }
 
 const RETENTION_MS      = 30 * 60 * 1000;      // 30 minutes (in-memory hot cache)
@@ -171,6 +192,7 @@ function recordToDescriptor(rec: AttachmentRecord): AttachmentDescriptor {
     isLarge:    rec.size >= LARGE_FILE_THRESHOLD,
     isParsed:   !!rec.parsedContent,
     parseError: rec.parseError,
+    parsedTokens: rec.parsedContent ? Math.ceil(rec.parsedContent.markdown.length / 4) : undefined,
   };
 }
 
@@ -217,6 +239,9 @@ function maybePruneDurable(): void {
   if (now - lastDbPrune < DB_PRUNE_INTERVAL_MS) return;
   lastDbPrune = now;
   try { pruneChatAttachments(DURABLE_RETENTION_MS); } catch { /* non-fatal */ }
+  // When the bucket path is live, also sweep raw objects past their 24h TTL —
+  // deletes the bucket object + clears raw columns, leaving parse + embeddings.
+  if (docArchiveEnabled()) void sweepExpiredRawDocs();
 }
 
 function sessionBytes(sessionId: string): number {
@@ -333,6 +358,9 @@ export function registerAttachment(input: RegisterInput): RegisterResult | Regis
     if (prior) {
       prior.createdAt = Date.now();   // refresh TTL — keep it alive for the conversation
       try { refreshChatAttachmentCreatedAt(prior.id, prior.createdAt); } catch { /* non-fatal */ }
+      // Re-reference → touch-to-extend the raw-file TTL so the bucket object
+      // isn't swept while the conversation is still using it.
+      if (docArchiveEnabled()) { try { touchChatAttachmentRawTtl(prior.id, Date.now() + RAW_TTL_MS); } catch { /* non-fatal */ } }
       return { ok: true, descriptor: recordToDescriptor(prior) };
     }
     bySessionHash.delete(dedupKey(input.sessionId, contentHash));
@@ -348,6 +376,7 @@ export function registerAttachment(input: RegisterInput): RegisterResult | Regis
       rec.createdAt = Date.now();
       cacheRecord(rec);
       refreshChatAttachmentCreatedAt(rec.id, rec.createdAt);
+      if (docArchiveEnabled()) { try { touchChatAttachmentRawTtl(rec.id, Date.now() + RAW_TTL_MS); } catch { /* non-fatal */ } }
       return { ok: true, descriptor: recordToDescriptor(rec) };
     }
   } catch (err) {
@@ -408,6 +437,126 @@ export function registerAttachment(input: RegisterInput): RegisterResult | Regis
   return { ok: true, descriptor: recordToDescriptor(rec) };
 }
 
+/** Bucket + URL-based parse path (flag-gated by DOC_ARCHIVE_ENABLED).
+ *  Returns:
+ *    'ok'          — rec.parsedContent set (+ embed hook fired)
+ *    'error'       — parse failed after the capped budget (state persisted for a
+ *                    future background re-parse)
+ *    'fallthrough' — a storage-side prerequisite was missing (Supabase not
+ *                    configured, bucket upload failed, signed-URL mint failed) →
+ *                    caller degrades to the legacy multipart path.
+ */
+async function parseViaBucket(rec: AttachmentRecord): Promise<'ok' | 'error' | 'fallthrough'> {
+  const MAX_ERR_LEN = 200;
+  try {
+    // Reload the durable row to see whether the bytes are already in the bucket.
+    const row = getChatAttachmentById(rec.id);
+    let storageBucket = row?.storage_bucket ?? null;
+    let storagePath   = row?.storage_path ?? null;
+
+    if (!storageBucket || !storagePath) {
+      // First parse for this doc — push the raw bytes to the bucket.
+      const contentHash = rec.contentHash
+        ?? createHash('sha256').update(rec.base64.replace(/\s+/g, '')).digest('hex');
+      const buf = Buffer.from(rec.base64, 'base64');
+      const up = await uploadDocToBucket({ buf, mime: rec.mime, name: rec.name, contentHash, sessionId: rec.sessionId });
+      if (!up.ok || !up.bucket || !up.storagePath) {
+        logger.warn('attachment-registry: bucket upload failed — falling back to multipart', { id: rec.id, error: up.error });
+        return 'fallthrough';
+      }
+      storageBucket = up.bucket;
+      storagePath   = up.storagePath;
+      try {
+        updateChatAttachmentStorage(rec.id, {
+          storageBucket, storagePath, rawExpiresAt: Date.now() + RAW_TTL_MS, parseStatus: 'pending',
+        });
+      } catch { /* non-fatal */ }
+    } else {
+      // Re-parse of an already-bucketed doc → touch-to-extend the raw TTL so an
+      // actively-referenced file isn't swept mid-conversation.
+      try { touchChatAttachmentRawTtl(rec.id, Date.now() + RAW_TTL_MS); } catch { /* non-fatal */ }
+    }
+
+    const signed = await mintDocSignedUrl(storageBucket, storagePath, 3600);
+    if (!signed) {
+      logger.warn('attachment-registry: signed-URL mint failed — falling back to multipart', { id: rec.id });
+      return 'fallthrough';
+    }
+
+    const parsed = await parseDocViaUrl(signed, { title: rec.name });
+
+    if (parsed.ok) {
+      rec.parsedContent = {
+        title:    parsed.title    || rec.name,
+        markdown: parsed.markdown ?? '',
+        stats:    parsed.stats    ?? '',
+        parsedAt: Date.now(),
+      };
+      try {
+        updateChatAttachmentParse(rec.id, {
+          parsedTitle:    rec.parsedContent.title,
+          parsedMarkdown: rec.parsedContent.markdown,
+          parsedStats:    rec.parsedContent.stats,
+          parsedAt:       rec.parsedContent.parsedAt,
+          parseError:     null,
+        });
+        updateChatAttachmentStorage(rec.id, { parseStatus: 'done' });
+      } catch { /* non-fatal */ }
+
+      // Embed-once hook — fire-and-forget AFTER the parse result is committed, so
+      // it never blocks the stream-open budget. Idempotent + fail-soft internally.
+      if (docRagEnabled() && rec.parsedContent.markdown) {
+        void chunkAndEmbedDocument({
+          attachmentId: rec.id, sessionId: rec.sessionId, markdown: rec.parsedContent.markdown,
+        });
+      }
+
+      logger.debug('attachment-registry: parseViaBucket ok', { id: rec.id, name: rec.name, title: rec.parsedContent.title });
+      return 'ok';
+    }
+
+    // Parse failed. Persist state for a future background re-parse; a retryable
+    // failure (timeout/5xx) keeps 'failed' + bumps attempts, a 4xx is terminal.
+    rec.parseError = (parsed.error ?? 'parse failed').slice(0, MAX_ERR_LEN);
+    const attempts = (row?.parse_attempts ?? 0) + 1;
+    try {
+      updateChatAttachmentParse(rec.id, { parseError: rec.parseError });
+      updateChatAttachmentStorage(rec.id, { parseStatus: 'failed', parseAttempts: attempts });
+    } catch { /* non-fatal */ }
+    logger.warn('attachment-registry: parseViaBucket failed', {
+      id: rec.id, retryable: parsed.retryable, attempts, error: rec.parseError,
+    });
+    return 'error';
+  } catch (err) {
+    logger.warn('attachment-registry: parseViaBucket error — falling back to multipart', {
+      id: rec.id, error: (err as Error).message,
+    });
+    return 'fallthrough';
+  }
+}
+
+/** Sweep raw document objects whose 24h TTL has expired: delete the bucket
+ *  object, then clear ONLY the raw columns. Parsed markdown + doc_chunks
+ *  embeddings are preserved — the no-data-loss guarantee. Best-effort. */
+async function sweepExpiredRawDocs(): Promise<void> {
+  try {
+    const expired = listExpiredRawAttachments(Date.now(), 100);
+    if (!expired.length) return;
+    let cleared = 0;
+    for (const row of expired) {
+      if (row.storage_bucket && row.storage_path) {
+        const ok = await deleteDocObject(row.storage_bucket, row.storage_path);
+        if (!ok) continue;   // leave for the next sweep if the object delete failed
+      }
+      clearChatAttachmentRaw(row.id);
+      cleared++;
+    }
+    if (cleared) logger.debug('attachment-registry: swept expired raw docs', { cleared, seen: expired.length });
+  } catch (err) {
+    logger.warn('attachment-registry: raw-doc sweep failed (non-fatal)', { error: (err as Error).message });
+  }
+}
+
 /** Parse an already-registered attachment server-side via the docuflow REST API.
  *  Mutates the record in-place: sets rec.parsedContent on success, rec.parseError
  *  on failure. Never throws — all errors are captured into parseError.
@@ -430,6 +579,17 @@ export async function parseAttachment(id: string): Promise<'ok' | 'error' | 'not
 
   // Idempotent — if the record was already parsed successfully, don't overwrite it.
   if (rec.parsedContent) return 'ok';
+
+  // ── Bucket + URL-based parse (flag-gated) ──────────────────────────────────
+  // Uploads raw bytes to the private chat-docs bucket ONCE, mints a signed URL,
+  // and feeds DocuFlow POST /parse/url (verified: it fetches the URL directly —
+  // no base64, no small/large branch). Any storage-side miss returns
+  // 'fallthrough' so we degrade to the legacy multipart path below rather than
+  // breaking the upload. On success, fires the embed hook fire-and-forget.
+  if (docArchiveEnabled()) {
+    const viaUrl = await parseViaBucket(rec);
+    if (viaUrl !== 'fallthrough') return viaUrl;
+  }
 
   const MAX_ERR_LEN = 200;
   // Decode base64 back to raw bytes for the multipart POST.
@@ -537,6 +697,7 @@ export function listAttachments(sessionId: string): AttachmentDescriptor[] {
       isLarge:     rec.size >= LARGE_FILE_THRESHOLD,
       isParsed:    !!rec.parsedContent,
       parseError:  rec.parseError,
+      parsedTokens: rec.parsedContent ? Math.ceil(rec.parsedContent.markdown.length / 4) : undefined,
     });
   }
   return out;
@@ -544,14 +705,23 @@ export function listAttachments(sessionId: string): AttachmentDescriptor[] {
 
 /** Drop all attachments for a session (e.g. when the session is deleted). */
 export function clearSessionAttachments(sessionId: string): void {
+  // Collect every attachment id for this session (hot cache + durable rows) so we
+  // can also drop its doc_chunks embeddings — the in-memory set may be cold after
+  // a restart, so we union it with the durable rows.
+  const ids = new Set<string>();
   const set = bySession.get(sessionId);
   if (set) {
     for (const id of set) {
+      ids.add(id);
       const rec = store.get(id);
       if (rec?.contentHash) bySessionHash.delete(dedupKey(sessionId, rec.contentHash));
       store.delete(id);
     }
     bySession.delete(sessionId);
+  }
+  if (docRagEnabled()) {
+    try { for (const r of listChatAttachmentsBySession(sessionId, 0)) ids.add(r.id); } catch { /* non-fatal */ }
+    for (const id of ids) void deleteDocChunks(id);   // fail-soft, embeddings are anchored to attachment_id
   }
   // Also drop the durable rows so a deleted session doesn't leave document bytes behind.
   try { deleteChatAttachmentsBySession(sessionId); } catch { /* non-fatal */ }
@@ -578,6 +748,13 @@ export function buildAttachmentContextBlock(descriptors: AttachmentDescriptor[])
   const hasLarge    = descriptors.some(d => !d.isParsed && d.isLarge);
   const hasSmall    = descriptors.some(d => !d.isParsed && !d.isLarge);
   const thresholdKb = Math.round(LARGE_FILE_THRESHOLD / 1024);
+
+  // Doc-RAG retrieval steering — ONLY when the flag is on. When off, bigParsed is
+  // empty and this whole block collapses to '', keeping the legacy context output
+  // byte-identical (Stage 2 dormant contract).
+  const bigParsed = docRagEnabled()
+    ? descriptors.filter(d => d.isParsed && (d.parsedTokens ?? 0) > RAG_INLINE_TOKEN_THRESHOLD)
+    : [];
 
   const parsedSection = hasParsed ? `
 ### Pre-parsed documents — use get_attachment_parsed
@@ -640,6 +817,20 @@ Raw text only (faster, no chunking):
       command: "curl -s -X POST ${DOCUFLOW_API_URL}/extract -F 'file=@<disk_path>'"
     })` : '';
 
+  const ragSection = bigParsed.length ? `
+### Large pre-parsed documents — use search_document (chunk retrieval)
+
+These pre-parsed documents are large — dumping their full markdown would flood the context. For each, retrieve ONLY the passages relevant to the user's question:
+
+${bigParsed.map(d => `    search_document({ id: "${d.id}", query: "<your question>" })   // "${d.name}" ≈ ${d.parsedTokens} tokens`).join('\n')}
+
+    → returns { ok: true, hits: [{ chunkIndex, content, score }] }
+
+Rules:
+  - Prefer search_document for these — call it with a focused query per sub-question.
+  - get_attachment_parsed still returns the FULL markdown if you genuinely need the whole document, but avoid it for these large files unless necessary.
+  - If search_document returns no hits (not embedded yet), fall back to get_attachment_parsed.` : '';
+
   const fallbackHeader = hasUnparsed ? `\n## Fallback routes (for files that could not be pre-parsed)` : '';
 
   return `
@@ -650,7 +841,7 @@ The user has uploaded ${descriptors.length} document${descriptors.length === 1 ?
 ${lines.join('\n')}
 
 ## How to parse these documents
-${parsedSection}${fallbackHeader}${smallSection}${largeSection}
+${parsedSection}${ragSection}${fallbackHeader}${smallSection}${largeSection}
 
 ## Rules
 

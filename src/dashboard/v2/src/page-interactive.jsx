@@ -66,10 +66,10 @@ const Interactive = () => {
             <div key={s.name} onClick={() => setSel(s.name)} style={{
               padding: '10px 14px', cursor: 'pointer',
               borderLeft: `2px solid ${sel === s.name ? 'var(--accent)' : 'transparent'}`,
-              background: sel === s.name ? 'rgba(0,183,255,0.08)' : 'transparent',
+              background: sel === s.name ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
               borderBottom: '1px dashed var(--line-soft)',
             }}>
-              <div className="mono" style={{ fontSize: 11, color: sel === s.name ? '#fff' : 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessTitle(s)}</div>
+              <div className="mono" style={{ fontSize: 11, color: sel === s.name ? 'var(--text)' : 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessTitle(s)}</div>
               <div className="mono muted" style={{ fontSize: 9, marginTop: 3, display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span className={`tag ${s.kind === 'claude' ? 'blue' : 'violet'}`} style={{ fontSize: 8, padding: '0 4px' }}>{s.kind === 'claude' ? 'CLAUDE' : 'AGY'}</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
@@ -81,7 +81,7 @@ const Interactive = () => {
         {/* Pane viewer */}
         <div className="nc-panel" style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="mono" style={{ fontSize: 11, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sel || 'no session'}</span>
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sel || 'no session'}</span>
             <span className="mono" style={{ fontSize: 10, color: sel ? (alive ? 'var(--green)' : 'var(--muted)') : 'transparent', whiteSpace: 'nowrap' }}>{sel ? (alive ? '● live · 2s' : '○ ended') : ''}</span>
           </div>
           <pre ref={paneRef} className="mono" style={{ flex: 1, margin: 0, padding: '12px 14px', overflow: 'auto', fontSize: 11, lineHeight: 1.45, color: 'var(--text-soft)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg-0)' }}>

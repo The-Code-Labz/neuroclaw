@@ -106,8 +106,8 @@ const RAGDocs = () => {
           {list.map(s => (
             <div key={s.source_id} className="nc-panel glow tilt" onClick={() => loadPages(s.source_id)}
               style={{ padding: 12, cursor: 'pointer', position: 'relative',
-                boxShadow: active === s.source_id ? '0 0 0 1px var(--accent), 0 0 18px rgba(0,183,255,0.22)' : undefined }}>
-              <div className="mono" style={{ fontSize: 12, color: '#fff', marginBottom: 4, wordBreak: 'break-word' }}>
+                boxShadow: active === s.source_id ? '0 0 0 1px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent)' : undefined }}>
+              <div className="mono" style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4, wordBreak: 'break-word' }}>
                 {s.title || s.source_id}
               </div>
               <div className="mono muted" style={{ fontSize: 9, marginBottom: 8, wordBreak: 'break-all' }}>{s.source_id}</div>
@@ -132,7 +132,7 @@ const RAGDocs = () => {
             <>
               <div className="nc-panel glow" style={{ padding: 12, marginBottom: 12 }}>
                 <div className="label-tiny neonc" style={{ marginBottom: 6 }}>SOURCE</div>
-                <div className="mono" style={{ fontSize: 13, color: '#fff', wordBreak: 'break-word' }}>{activeSrc?.title || active}</div>
+                <div className="mono" style={{ fontSize: 13, color: 'var(--text)', wordBreak: 'break-word' }}>{activeSrc?.title || active}</div>
                 <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>
                   {active} · {total} chunk{total === 1 ? '' : 's'}
                 </div>

@@ -1,15 +1,18 @@
 import { randomUUID } from 'crypto';
-import { getDb, logAudit, getAllAgents, getDefaultProject, bumpFailureCount, getAgentById, deactivateAgent, enqueueJob } from '../db';
+import { getDb, logAudit, getAllAgents, getDefaultProject, bumpFailureCount, getAgentById, deactivateAgent, enqueueJob, unmetBlockerCount, addTaskDependency } from '../db';
 import { classifyRoute } from './router';
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
 import { runHoldoutReview } from './holdout-reviewer';
+import { onReviewFailed, onReviewPassed } from './self-heal/heal-loop';
+import { classifyVerificationMode } from './task-classification';
 
 export type TaskStatus    = 'todo' | 'doing' | 'review' | 'done' | 'failed' | 'blocked' | 'cancelled';
 /** Canonical task status set — mirrors the tasks.status CHECK constraint in db.ts.
  *  Single source of truth for runtime validation (API + tools). */
 export const TASK_STATUSES: readonly string[] = ['todo', 'doing', 'review', 'done', 'failed', 'blocked', 'cancelled'];
 export type PriorityLevel = 'low' | 'medium' | 'high' | 'critical';
+export type TaskVerificationMode = 'reconcile' | 'review';
 
 export interface AppTask {
   id:             string;
@@ -39,6 +42,7 @@ export interface AppTask {
   max_retries:       number;
   task_source:       string;           // 'dashboard' | 'subtask' | 'background'
   archon_task_id:    string | null;    // legacy cross-reference column (unused; retained for schema compat)
+  verification_mode: TaskVerificationMode | null; // 'reconcile' | 'review' — set at creation by dispatcher
   created_at:        string;
   updated_at:        string;
 }
@@ -75,7 +79,10 @@ export interface CreateTaskOptions {
   code_examples?:   unknown;           // JSON-serialized into `code_examples`
   task_source?:     string;            // 'dashboard' | 'archon' | 'subtask' | 'background'
   archon_task_id?:  string;            // cross-reference to Archon/Supabase task ID
+  verification_mode?: TaskVerificationMode; // dispatcher-only: 'reconcile' asserts main moved, 'review' bypasses
   status?:          TaskStatus;        // initial status (defaults to 'todo')
+  dependsOn?:       string[];          // Wave-2 Item D: blocker task ids (must be 'done' before this can be claimed)
+  routine_key?:     string;            // Wave-2 Item E: routine coalescing key (routine-spawned tasks only)
 }
 
 function priorityLevelFor(score: number, override?: PriorityLevel): PriorityLevel {
@@ -104,15 +111,34 @@ export async function createTask(
   const resolvedAgentId = opts.agentId ?? await autoAssign(title, opts.description);
   const projectId       = opts.project_id ?? getDefaultProject().id;
 
+  // L1 — attribution sync at source. Precedence:
+  //   1. explicit caller-provided assignee (respects non-agent owners like "AI IDE Agent")
+  //   2. resolved agent's name (the real doer) — keeps card/table/monitors in agreement
+  //   3. "User" only when genuinely unassigned
+  const explicitAssignee = opts.assignee?.trim();
+  const resolvedAssignee = explicitAssignee
+    || (resolvedAgentId ? (getAgentById(resolvedAgentId)?.name ?? 'User') : 'User');
+
+  // Durable reconcile-gate discriminator. Precedence:
+  //   1. explicit dispatcher-provided verification_mode wins
+  //   2. else auto-classify from title+description (shared classifier — identical
+  //      logic to the review-time path, so the two can never drift)
+  //   3. classifier returns null for non-gate tasks → stored as null (unchanged)
+  // This makes verification_mode a real, populated, auditable column instead of a
+  // field nothing ever wrote. Frozen at creation (the update path strips it).
+  const resolvedVerificationMode =
+    opts.verification_mode ?? classifyVerificationMode(title, opts.description);
+
   const id = randomUUID();
   const db = getDb();
   db.prepare(`
     INSERT INTO tasks (
       id, title, description, session_id, agent_id, priority,
       project_id, parent_task_id, assignee, task_order, feature,
-      sources, code_examples, priority_level, status, task_source, archon_task_id
+      sources, code_examples, priority_level, status, task_source, archon_task_id,
+      verification_mode, routine_key, doing_since
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     title,
@@ -122,7 +148,7 @@ export async function createTask(
     priority,
     projectId,
     opts.parent_task_id ?? null,
-    opts.assignee?.trim() || 'User',
+    resolvedAssignee,
     opts.task_order ?? 0,
     opts.feature ?? null,
     JSON.stringify(opts.sources       ?? []),
@@ -131,8 +157,28 @@ export async function createTask(
     opts.status ?? 'todo',
     opts.task_source ?? 'dashboard',
     opts.archon_task_id ?? null,
+    resolvedVerificationMode,
+    opts.routine_key ?? null,
+    // Wave-2 Item C4 (ASAGI MAJOR): a task that starts life already in 'doing'
+    // (e.g. background_agent createTask) must carry a start-stamp or it is
+    // permanently invisible to Sentinel's runaway pass (which requires
+    // doing_since IS NOT NULL). Stamp on the doing edge only.
+    (opts.status ?? 'todo') === 'doing' ? Date.now() : null,
   );
+  // Wave-2 Item D: register blocker edges. addTaskDependency guards self-edges,
+  // cycles, and unknown ids — a bad blocker id is logged-and-skipped, not fatal.
+  if (opts.dependsOn?.length) {
+    for (const blockerId of opts.dependsOn) {
+      const r = addTaskDependency(id, blockerId);
+      if (!r.ok) logger.warn('task-mgr: dependency edge skipped on create', { taskId: id, blockerId, error: r.error });
+    }
+  }
   logAudit('task_created', 'task', id, { title, agentId: resolvedAgentId, projectId });
+  // Traceability: record when the gate discriminator was auto-derived (vs. an
+  // explicit dispatcher override or a non-gate null).
+  if (opts.verification_mode == null && resolvedVerificationMode != null) {
+    logAudit('task_verification_mode_autoset', 'task', id, { title, mode: resolvedVerificationMode });
+  }
   if (!opts.agentId && resolvedAgentId) {
     logHive('task_created', `task-mgr: Task "${title}" created and auto-assigned`, resolvedAgentId, { taskId: id });
   }
@@ -166,6 +212,20 @@ export function updateTask(
     archon_task_id?:     string | null;
   },
 ): void {
+  // Wave-2 Item D (ASAGI FATAL fix): the claim-SQL gate alone is NOT airtight —
+  // manage_task(update, status='doing') calls here directly, bypassing the claim
+  // path. So the SAME unmet-blocker check MUST gate the transition-to-'doing'
+  // here too, or Item D is decorative. Strip only the illegal status flip; keep
+  // any other field edits in the same call.
+  if (fields.status === 'doing') {
+    const unmet = unmetBlockerCount(id);
+    if (unmet > 0) {
+      logger.warn('task-mgr: refused doing-transition — task has unmet blockers', { taskId: id, unmetBlockers: unmet });
+      logAudit('task_doing_blocked_by_deps', 'task', id, { unmetBlockers: unmet });
+      fields = { ...fields, status: undefined };
+    }
+  }
+
   const sets: string[] = ["updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"];
   const params: unknown[] = [];
 
@@ -199,6 +259,18 @@ export function updateTask(
   if (fields.status === 'done' && fields.failure_count === undefined) {
     sets.push('failure_count = ?'); params.push(0);
   }
+  // Wave-2 Item C4: maintain the runaway start-stamp on status transitions.
+  //   → 'doing': stamp ONLY on the null→value edge (COALESCE keeps an existing
+  //     start time, so a re-entrant update while already 'doing' can NOT reset
+  //     the clock and let a runaway escape).
+  //   → any other status: clear it, so a later retry re-stamps fresh.
+  // (The claim path stamps unconditionally; this covers the manage_task
+  //  update(status='doing') path and every exit transition.)
+  if (fields.status === 'doing') {
+    sets.push('doing_since = COALESCE(doing_since, ?)'); params.push(Date.now());
+  } else if (fields.status !== undefined) {
+    sets.push('doing_since = ?'); params.push(null);
+  }
 
   if (sets.length === 1) return;
   params.push(id);
@@ -230,7 +302,20 @@ function deactivateIdleTempAgent(agentId: string | null, exceptTaskId: string): 
   }
 }
 
+/** Tasks whose holdout verdict is currently being computed (reentrancy guard). */
+const inFlightHoldout = new Set<string>();
+
 async function applyHoldoutVerdict(id: string, task: AppTask): Promise<void> {
+  // Reentrancy guard: the 5-min recoverStuckReviewTasks sweep can re-fire this
+  // for a task still in 'review'; without it, two passes race failure_count /
+  // status writes on the same row. In-process only — a restart clears it, which
+  // is correct because the boot sweep re-drives anything genuinely stranded.
+  if (inFlightHoldout.has(id)) {
+    logger.info('task-mgr: holdout verdict already in flight — skipping duplicate', { taskId: id });
+    return;
+  }
+  inFlightHoldout.add(id);
+  try {
   let verdict;
   try {
     verdict = await runHoldoutReview(task);
@@ -242,21 +327,56 @@ async function applyHoldoutVerdict(id: string, task: AppTask): Promise<void> {
   }
 
   if (verdict.passed) {
+    // Self-heal LEARN: if this task carried a prior critique, the re-review just
+    // verified (function-level) that the fix held — credit it. Shadow-safe:
+    // observe/learn only, never alters control flow.
+    onReviewPassed({
+      taskId:        id,
+      title:         task.title,
+      priorFeedback: task.reviewer_feedback,
+      runId:         task.session_id ?? undefined,
+    });
     updateTask(id, { status: 'done' });
     deactivateIdleTempAgent(task.agent_id, id);
     return;
   }
+
+  // Self-heal OBSERVE + STORM. In shadow mode this only records + logs; the
+  // returned decision cannot alter behavior (suppress=false, injectFix=null).
+  const heal = onReviewFailed({
+    taskId:      id,
+    title:       task.title,
+    description: task.description ?? undefined,
+    feedback:    verdict.feedback,
+    runId:       task.session_id ?? undefined,
+  });
 
   const maxRetries = task.max_retries ?? 3;
   // `task` is a snapshot captured before the multi-second review LLM call — read
   // failure_count fresh so a concurrent bump isn't lost, and increment atomically.
   const cur = (getDb().prepare('SELECT failure_count FROM tasks WHERE id = ?')
     .get(id) as { failure_count: number } | undefined)?.failure_count ?? task.failure_count;
+
+  // Live-mode storm breaker: a systemic signature (same failure ≥ threshold this
+  // run) is parked as `blocked` (not `failed`) so a human sees the systemic
+  // blocker instead of it being silently auto-archived as a failure.
+  // In shadow mode heal.suppress is always false, so this is inert.
+  if (heal.suppress) {
+    updateTask(id, { status: 'blocked', last_error: `[self-heal: systemic signature ${heal.signature}] ${verdict.feedback}` });
+    deactivateIdleTempAgent(task.agent_id, id);
+    return;
+  }
+
   if (cur < maxRetries) {
     bumpFailureCount(id);
+    // Live-mode only: fold a confidence-gated stored fix into the critique fed
+    // back to the agent. In shadow mode heal.injectFix is null (no change).
+    const feedbackOut = heal.injectFix
+      ? `${verdict.feedback}\n\n---\nKNOWN FIX (self-heal, previously verified):\n${heal.injectFix}`
+      : verdict.feedback;
     updateTask(id, {
       status:            'todo',
-      reviewer_feedback: verdict.feedback,
+      reviewer_feedback: feedbackOut,
     });
     // Re-dispatch immediately. The job that produced this output already
     // completed (status was 'review'), so without this the bounced task strands
@@ -279,6 +399,9 @@ async function applyHoldoutVerdict(id: string, task: AppTask): Promise<void> {
       last_error: verdict.feedback,
     });
     deactivateIdleTempAgent(task.agent_id, id);
+  }
+  } finally {
+    inFlightHoldout.delete(id);
   }
 }
 
@@ -345,6 +468,69 @@ export function getTaskById(id: string): AppTask | null {
 /** Look up a single non-archived task by its cross-reference archon_task_id. */
 export function getTaskByArchonId(archonId: string): AppTask | null {
   return (getDb().prepare('SELECT * FROM tasks WHERE archon_task_id = ? AND archived = 0').get(archonId) as AppTask) ?? null;
+}
+
+/**
+ * Build a compact goal-ancestry block for a task so the working agent sees the
+ * *why* (Paperclip: "every task traces back to the mission"), not just a flat
+ * title. Walks parent_task_id upward (hard depth cap 5 + cycle guard) and
+ * resolves the owning project's title/description.
+ *
+ * Returns '' when the task has neither a parent nor a project — so flat tasks
+ * add ZERO prompt noise and the dispatched user message stays byte-identical to
+ * before. The caller places this on the volatile user message (never the stable
+ * system prefix), so the prompt-cache stable-prefix split (WS1) is untouched.
+ * Kill-switch: TASK_ANCESTRY_ENABLED=false.
+ */
+export function buildTaskAncestry(taskId: string): string {
+  if (process.env.TASK_ANCESTRY_ENABLED === 'false') return '';
+  const db = getDb();
+  const trunc = (s: string): string => (s.length > 120 ? s.slice(0, 117) + '…' : s);
+
+  const self = db.prepare('SELECT id, title, parent_task_id, project_id FROM tasks WHERE id = ?')
+    .get(taskId) as { id: string; title: string; parent_task_id: string | null; project_id: string | null } | undefined;
+  if (!self) return '';
+
+  // Walk parent chain upward → [root … parent, self], depth-capped + cycle-guarded.
+  const chain: string[] = [trunc(self.title)];
+  const seen = new Set<string>([self.id]);
+  let cursor = self.parent_task_id;
+  let depth = 0;
+  while (cursor && depth < 5) {
+    if (seen.has(cursor)) break;               // cycle guard
+    seen.add(cursor);
+    const row = db.prepare('SELECT title, parent_task_id FROM tasks WHERE id = ?')
+      .get(cursor) as { title: string; parent_task_id: string | null } | undefined;
+    if (!row) break;
+    chain.unshift(trunc(row.title));           // prepend → root ends up first
+    cursor = row.parent_task_id;
+    depth++;
+  }
+
+  // Owning project: title = name line, description = goal line (projects has NO
+  // name/goal columns — confirmed schema uses title/description).
+  // CRITICAL [ASAGI]: exclude the seeded default/catch-all project. Every task
+  // without an explicit project is auto-assigned getDefaultProject() (the
+  // "NeuroClaw" row, which HAS a description), so without this guard a genuinely
+  // flat task would emit "Project: NeuroClaw — Default project…" — anti-signal
+  // boilerplate on every dispatch. Only surface a REAL user-created project.
+  let projectLine = '';
+  if (self.project_id && self.project_id !== getDefaultProject().id) {
+    const proj = db.prepare('SELECT title, description FROM projects WHERE id = ?')
+      .get(self.project_id) as { title: string | null; description: string | null } | undefined;
+    if (proj?.title) {
+      projectLine = `Project: ${trunc(proj.title)}${proj.description ? ` — ${trunc(proj.description)}` : ''}`;
+    }
+  }
+
+  const hasParent = chain.length > 1;
+  if (!hasParent && !projectLine) return '';   // flat task → no ancestry, no noise
+
+  const lines = ['<goal-context>'];
+  if (projectLine) lines.push(projectLine);
+  if (hasParent) lines.push(`Goal chain: ${chain.join(' → ')}`);
+  lines.push('</goal-context>');
+  return lines.join('\n');
 }
 
 // TODO [task queue workers]: When status → 'doing', push to BullMQ/Redis for async execution

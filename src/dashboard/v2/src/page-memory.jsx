@@ -329,7 +329,7 @@ const Memory = () => {
         <div className="nc-panel glow hide-mobile" style={{ padding: 12, minWidth: 180, flex: '0 0 180px' }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>TYPES</div>
           {types.map(t => (
-            <div key={t} onClick={() => setFilter(t)} style={{ padding: '7px 10px', borderRadius: 2, cursor: 'pointer', background: filter === t ? 'rgba(0,183,255,0.12)' : 'transparent', border: filter === t ? '1px solid var(--line-hard)' : '1px solid transparent', marginBottom: 3, fontFamily: 'var(--mono)', fontSize: 11, color: filter === t ? '#fff' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div key={t} onClick={() => setFilter(t)} style={{ padding: '7px 10px', borderRadius: 2, cursor: 'pointer', background: filter === t ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', border: filter === t ? '1px solid var(--line-hard)' : '1px solid transparent', marginBottom: 3, fontFamily: 'var(--mono)', fontSize: 11, color: filter === t ? 'var(--text)' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>{t}</span>
               <span className="mono muted" style={{ fontSize: 9 }}>{getTypeCount(t)}</span>
             </div>
@@ -344,12 +344,12 @@ const Memory = () => {
           {list.map(m => {
             const dim = m.decay;
             return (
-              <div key={m._raw?.id || m.id} className="nc-panel glow tilt" onClick={() => setActive(m)} style={{ padding: 12, cursor: 'pointer', opacity: dim ? 0.55 : 1, position: 'relative', boxShadow: m.salience > 0.7 ? '0 0 0 1px var(--accent), 0 0 20px rgba(0,183,255,0.25)' : undefined }}>
+              <div key={m._raw?.id || m.id} className="nc-panel glow tilt" onClick={() => setActive(m)} style={{ padding: 12, cursor: 'pointer', opacity: dim ? 0.55 : 1, position: 'relative', boxShadow: m.salience > 0.7 ? '0 0 0 1px var(--accent), 0 0 20px color-mix(in srgb, var(--accent) 25%, transparent)' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span className={`tag ${m.type === 'preference' ? 'violet' : m.type === 'insight' ? 'cyan' : m.type === 'procedural' ? 'blue' : 'muted'}`} style={{ fontSize: 9 }}>{m.type}</span>
                   <span className="mono muted" style={{ fontSize: 9 }}>{m.id}</span>
                 </div>
-                <div className="mono" style={{ fontSize: 12, color: '#fff', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <div className="mono" style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
                   <span>{m.title}</span>
                 </div>
                 <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)', lineHeight: 1.5, marginBottom: 8 }}>{m.summary}</div>
@@ -382,7 +382,7 @@ const Memory = () => {
         {active && (
           <div className="nc-panel glow hide-tablet" style={{ padding: 14, alignSelf: 'start', position: 'sticky', top: 0, minWidth: 280, maxWidth: 320 }}>
             <div className="label-tiny neonc" style={{ marginBottom: 10 }}>MEMORY INSPECTOR</div>
-            <div className="mono" style={{ fontSize: 12, color: '#fff', marginBottom: 4, display: 'flex', gap: 6 }}>
+            <div className="mono" style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4, display: 'flex', gap: 6 }}>
               {active.title}
             </div>
             <div className="mono muted" style={{ fontSize: 10, marginBottom: 10 }}>{active.id} · {active.type}</div>

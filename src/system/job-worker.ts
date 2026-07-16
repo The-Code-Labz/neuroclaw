@@ -12,6 +12,7 @@ import {
 } from '../db';
 import { completeBackgroundTask, failBackgroundTask, getTask } from './background-tasks';
 import { registerRunOwner, clearRunOwner } from './run-ownership';
+import { registerStream, clearStream } from './stream-control';
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
 import { translateClaudeError, isTimeoutAbort } from '../utils/claudeErrorLabel';
@@ -53,14 +54,20 @@ export function stopJobWorker(): void {
   if (workerTimer) { clearInterval(workerTimer); workerTimer = null; }
 }
 
-// Immortal-live backstop. A wedged agent_task/background_agent run keeps its
-// claim + task heartbeat fresh forever (the 20s timer fires regardless of token
-// progress), so neither Sentinel nor the watchdog will touch it and the per-job
-// stale sweep (claimed_at, heartbeat-refreshed) never fires. This cap uses the
-// IMMUTABLE first_claimed_at (never refreshed): any claimed task-bearing job
-// past it has run longer than every plane's hard timeout (~15min) → the plane
-// abort failed to fire → force-fail the job + task so it stops being immortal.
-const WEDGED_JOB_CAP_MS = 25 * 60 * 1000;
+// Immortal-live backstop — the BLUNT last resort. A wedged agent_task/
+// background_agent run keeps its claim + task heartbeat fresh forever (the 20s
+// timer fires regardless of token progress), so the per-job stale sweep
+// (claimed_at, heartbeat-refreshed) never fires. This cap uses the IMMUTABLE
+// first_claimed_at (never refreshed): any claimed task-bearing job past it has
+// run longer than the backbone's own absolute ceiling AND Sentinel's targeted
+// runaway interrupt → both graceful paths failed → force-fail the job + task.
+//
+// Wave-2 Item C (ASAGI FATAL): must sit ABOVE both graceful ceilings so it is
+// genuinely the LAST line, not the first. Ordering (see config.ts absoluteMaxMs):
+//   absoluteMaxMs (25m) < RUNAWAY_BUDGET_MS (30m) < WEDGED_JOB_CAP_MS (35m).
+// The old 25m value sat BELOW the (old 45m) absoluteMaxMs, making the backbone's
+// graceful bail dead code for 25–45m runs — raised to 35m to restore ordering.
+const WEDGED_JOB_CAP_MS = 35 * 60 * 1000;
 
 async function _recoverWedgedJobs(): Promise<void> {
   const cutoff = new Date(Date.now() - WEDGED_JOB_CAP_MS).toISOString();
@@ -269,7 +276,7 @@ async function _runBackgroundAgent(payload: BackgroundAgentPayload): Promise<str
 
 async function _runAgentTask(payload: AgentTaskPayload, attempts: number, maxAttempts: number): Promise<string> {
   const { chatStream } = await import('../agent/alfred');
-  const { updateTask } = await import('../system/task-manager');
+  const { updateTask, buildTaskAncestry } = await import('../system/task-manager');
 
   const agent = getAgentById(payload.agentId);
   if (!agent) throw new Error(`agent_task: agent ${payload.agentId} not found`);
@@ -283,7 +290,10 @@ async function _runAgentTask(payload: AgentTaskPayload, attempts: number, maxAtt
     `SELECT t.session_id AS session_id, s.source AS source
      FROM tasks t LEFT JOIN sessions s ON s.id = t.session_id WHERE t.id = ?`,
   ).get(payload.taskId) as { session_id: string | null; source: string | null } | undefined;
-  const sessionId = (existing?.session_id && existing.source === 'agent_task')
+  // freshSession (L3 same-agent retry) forces a new session so a zombie run of the
+  // same agent can't interleave into the resumed conversation (stillOwner() can't
+  // distinguish them — same agent_id). Otherwise resume the dedicated work session.
+  const sessionId = (!payload.freshSession && existing?.session_id && existing.source === 'agent_task')
     ? existing.session_id
     : createSession(payload.agentId, `Task: ${payload.taskTitle.slice(0, 60)}`, 'agent_task');
   // Link the work session to the task so the holdout reviewer (buildArtifact in
@@ -294,15 +304,26 @@ async function _runAgentTask(payload: AgentTaskPayload, attempts: number, maxAtt
   // Track this run so a tool-dispatch ownership check can stop it executing tools
   // if it gets reassigned or force-failed mid-run. Cleared in finally.
   registerRunOwner(sessionId, payload.taskId, payload.agentId);
+  // Register an abort handle for THIS run so Sentinel's runaway pass (Wave-2
+  // Item C) can call stopStream(sessionId) to interrupt a live-but-runaway turn.
+  // Threaded into chatStream below; cleared in the finally to avoid leaks across
+  // retries. No-op behaviorally until something actually aborts it.
+  const runawaySignal = registerStream(sessionId);
 
   const stillOwner = (): boolean => {
     const row = getDb().prepare('SELECT agent_id FROM tasks WHERE id = ?').get(payload.taskId) as { agent_id: string | null } | undefined;
     return !!row && row.agent_id === payload.agentId;
   };
 
-  const userMessage = payload.taskDescription
+  const base = payload.taskDescription
     ? `${payload.taskTitle}\n\n${payload.taskDescription}`
     : payload.taskTitle;
+  // Prepend goal ancestry (owning project + parent chain) so the agent works the
+  // INTENT, not just the literal title. Rides the volatile user message — never
+  // the stable system prefix — so the prompt-cache stable-prefix split (WS1) is
+  // untouched. Empty for flat tasks → byte-identical to before.
+  const ancestry = buildTaskAncestry(payload.taskId);
+  const userMessage = ancestry ? `${ancestry}\n\n${base}` : base;
 
   let response = '';
   try {
@@ -312,6 +333,11 @@ async function _runAgentTask(payload: AgentTaskPayload, attempts: number, maxAtt
       (chunk) => { response += chunk; },
       agent.system_prompt ?? '',
       payload.agentId,
+      undefined,      // onMeta
+      undefined,      // attachments
+      undefined,      // extraSystemContext
+      undefined,      // runId
+      runawaySignal,  // Wave-2 Item C: external abort handle
     );
     // Some provider planes (e.g. codex, kimi) persist the assistant turn to the
     // session but don't feed this streamed accumulator, leaving `response` empty.
@@ -393,6 +419,7 @@ async function _runAgentTask(payload: AgentTaskPayload, attempts: number, maxAtt
     throw err;
   } finally {
     clearRunOwner(sessionId);
+    clearStream(sessionId);   // Wave-2 Item C: release the abort handle
   }
   return response;
 }

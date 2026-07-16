@@ -14,6 +14,10 @@ export interface SpendInput {
   output_tokens: number;
   /** Provider-reported prompt-cache hits (subset of input_tokens). WS1 metric. */
   cached_input_tokens?: number;
+  /** Studio Phase 1: per-call USD cost for non-token spend (image gen, etc.). */
+  cost_usd?:     number;
+  /** Abacus metering: provider-reported compute points consumed this call. */
+  compute_points?: number;
   agent_id?:     string | null;
   session_id?:   string | null;
 }
@@ -23,8 +27,8 @@ export function logSpend(input: SpendInput): void {
     const tier = input.tier ?? classifyTier(input.model_id);
     getDb().prepare(`
       INSERT INTO model_spend
-        (id, provider, model_id, tier, input_tokens, output_tokens, cached_input_tokens, agent_id, session_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, provider, model_id, tier, input_tokens, output_tokens, cached_input_tokens, cost_usd, compute_points, agent_id, session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       input.provider,
@@ -33,6 +37,8 @@ export function logSpend(input: SpendInput): void {
       input.input_tokens,
       input.output_tokens,
       input.cached_input_tokens ?? 0,
+      input.cost_usd ?? 0,
+      input.compute_points ?? 0,
       input.agent_id ?? null,
       input.session_id ?? null,
     );

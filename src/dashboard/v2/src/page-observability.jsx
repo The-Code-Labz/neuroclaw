@@ -8,13 +8,15 @@ import './page-analytics.jsx';
 import './page-usage.jsx';
 import './page-health.jsx';
 import './page-logs.jsx';
+import './page-compression.jsx';
 
 const Observability = () => (
   <SubTabs pageId="observability" tabs={[
-    { id: 'analytics', label: 'Analytics', render: () => <Analytics/> },
-    { id: 'usage',     label: 'Usage',     render: () => <Usage/> },
-    { id: 'health',    label: 'Health',    render: () => <Health/> },
-    { id: 'logs',      label: 'Logs',      render: () => <Logs/> },
+    { id: 'analytics',   label: 'Analytics',   render: () => <Analytics/> },
+    { id: 'usage',       label: 'Usage',       render: () => <Usage/> },
+    { id: 'health',      label: 'Health',      render: () => <Health/> },
+    { id: 'logs',        label: 'Logs',        render: () => <Logs/> },
+    { id: 'compression', label: 'Compression', render: () => <Compression/> },
   ]}/>
 );
 

@@ -11,8 +11,8 @@
 // Moonshot quota with the main Kimi agents (Jarvis/FRIDAY) — watch the Kimi window.
 
 import { logger } from '../utils/logger';
-import { config } from '../config';
 import { getDb } from '../db';
+import { resolveFamilyModel } from './subagent-providers-store';
 
 export type SubAgentProvider  = 'kimi' | 'minimax';
 export type SubAgentComplexity = 'simple' | 'complex' | 'frontier';
@@ -82,7 +82,7 @@ function resolveComplexity(text: string, override?: string): SubAgentComplexity 
  * sub-agent route is exhausted.
  */
 export function getMinimaxFallbackModel(_complexity?: SubAgentComplexity): string {
-  return config.subAgent.minimax.model;
+  return resolveFamilyModel('minimax');
 }
 
 /**
@@ -114,7 +114,7 @@ export function triageSubAgentModel(
   if (kindOverride === 'code') {
     return {
       provider:   'kimi',
-      model:      config.subAgent.kimi.model,
+      model:      resolveFamilyModel('kimi'),
       complexity,
       family:     'kimi',
       codeScore:  0,
@@ -124,7 +124,7 @@ export function triageSubAgentModel(
   if (kindOverride === 'prose') {
     return {
       provider:   'minimax',
-      model:      config.subAgent.minimax.model,
+      model:      resolveFamilyModel('minimax'),
       complexity,
       family:     'minimax',
       codeScore:  0,
@@ -141,10 +141,10 @@ export function triageSubAgentModel(
   let model: string;
   if (codeScore > proseScore) {
     provider = 'kimi';
-    model    = config.subAgent.kimi.model;
+    model    = resolveFamilyModel('kimi');
   } else {
     provider = 'minimax';
-    model    = config.subAgent.minimax.model;
+    model    = resolveFamilyModel('minimax');
   }
 
   // Guard: if model_catalog explicitly marks this model as non-chat, fall back
@@ -152,7 +152,7 @@ export function triageSubAgentModel(
   if (!isChatCapableModel(model)) {
     logger.warn('sub-agent-triage: selected model is not chat_capable — falling back to minimax', { model, provider });
     provider = 'minimax';
-    model    = config.subAgent.minimax.model;
+    model    = resolveFamilyModel('minimax');
   }
 
   logger.debug('sub-agent triage', { provider, model, complexity, codeScore, proseScore });

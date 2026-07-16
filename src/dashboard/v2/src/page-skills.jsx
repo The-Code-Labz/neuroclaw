@@ -274,7 +274,7 @@ const Skills = () => {
                 <>
                   <div className="label-tiny" style={{ marginTop: 14, marginBottom: 6 }}>SCRIPTS</div>
                   {s.scripts.map(fn => (
-                    <div key={fn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px dashed rgba(0,183,255,0.06)' }}>
+                    <div key={fn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' }}>
                       <code className="mono" style={{ fontSize: 11 }}>{fn}</code>
                       {s.source === 'project' && (
                         <button className="nc-btn ghost" style={{ fontSize: 10, color: 'var(--danger)' }} onClick={() => removeScript(s.name, fn)}>remove</button>

@@ -70,6 +70,29 @@ const connectionState = () => {
   return { tone: 'green', label: 'connected' };
 };
 
+const getDashboardToken = () => {
+  try {
+    return new URLSearchParams(location.search).get('token')
+      || document.cookie.match(/dashboard-token=([^;]+)/)?.[1]
+      || '';
+  } catch { return ''; }
+};
+
+const VersionSwitch = () => {
+  const token = getDashboardToken();
+  const isV4 = location.pathname.startsWith('/dashboard-v4');
+  const href = isV4
+    ? (token ? `/dashboard?token=${encodeURIComponent(token)}` : '/dashboard')
+    : (token ? `/dashboard-v4?token=${encodeURIComponent(token)}` : '/dashboard-v4');
+  const label = isV4 ? 'v4 → v3' : 'v3 → v4';
+  return (
+    <a href={href} className="nc-btn version-switch" title={`Switch to ${isV4 ? 'v3' : 'v4'} dashboard`}>
+      <Icon name={isV4 ? 'arrow-left' : 'arrow-right'} size={12} />
+      <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>{label}</span>
+    </a>
+  );
+};
+
 const RestartButton = ({ iconOnly = false }) => {
   const [state, setState] = React.useState('idle'); // idle | confirm | restarting
 
@@ -147,7 +170,7 @@ const Sidebar = ({ active, setActive, collapsed, setCollapsed }) => {
     }}>
       {/* Logo */}
       <div style={{ padding: isCollapsed ? '14px 8px' : '16px 16px 12px', display: 'flex', alignItems: 'center', justifyContent: isCollapsed ? 'center' : 'flex-start', gap: 10, borderBottom: '1px solid var(--line-soft)' }}>
-        <div style={{ filter: 'drop-shadow(0 0 6px rgba(0,183,255,0.7))' }}>
+        <div style={{ filter: 'drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent))' }}>
           <Icon name="logo" size={isCollapsed ? 28 : 26} />
         </div>
         {!isCollapsed && (
@@ -320,7 +343,7 @@ const NotificationBell = () => {
             <div className="mono muted" style={{ padding: '18px 14px', fontSize: 11, textAlign: 'center' }}>// all clear</div>
           ) : (
             alerts.slice(0, 5).map((a, i) => (
-              <div key={a.id} style={{ padding: '10px 14px', borderBottom: i < Math.min(alerts.length, 5) - 1 ? '1px dashed rgba(0,183,255,0.06)' : 'none' }}>
+              <div key={a.id} style={{ padding: '10px 14px', borderBottom: i < Math.min(alerts.length, 5) - 1 ? '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' : 'none' }}>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
                   <span className={`dot ${sevColor(a.severity)} pulse`} />
                   <span className={`tag ${sevColor(a.severity)}`} style={{ fontSize: 9 }}>{a.type}</span>
@@ -385,6 +408,8 @@ const TopBar = ({ activeLabel, onCmd }) => {
 
       <NotificationBell />
 
+      <VersionSwitch />
+
       {/* Search / Cmd - compact on mobile */}
       <button onClick={onCmd} className="nc-btn topbar-search" style={{ minWidth: 'auto', justifyContent: 'center' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -392,8 +417,8 @@ const TopBar = ({ activeLabel, onCmd }) => {
           <span className="hide-mobile" style={{ color: 'var(--muted)' }}>Search · Command...</span>
         </span>
         <span className="hide-tablet mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-          <kbd style={{ background: 'rgba(0,183,255,0.1)', border: '1px solid var(--line)', padding: '0 5px', borderRadius: 2, fontSize: 10 }}>⌘</kbd>
-          <kbd style={{ background: 'rgba(0,183,255,0.1)', border: '1px solid var(--line)', padding: '0 5px', borderRadius: 2, fontSize: 10 }}>K</kbd>
+          <kbd style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', border: '1px solid var(--line)', padding: '0 5px', borderRadius: 2, fontSize: 10 }}>⌘</kbd>
+          <kbd style={{ background: 'color-mix(in srgb, var(--accent) 10%, transparent)', border: '1px solid var(--line)', padding: '0 5px', borderRadius: 2, fontSize: 10 }}>K</kbd>
         </span>
       </button>
     </header>

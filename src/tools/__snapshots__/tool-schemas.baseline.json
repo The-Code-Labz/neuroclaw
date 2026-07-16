@@ -17,7 +17,7 @@
         ]
       },
       "input_image": {
-        "description": "For edit/upscale: the source image as an https URL or base64 data URL.",
+        "description": "For edit/upscale: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a \"data:image/...;base64,\" URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context.",
         "type": "string"
       },
       "model": {
@@ -89,6 +89,50 @@
       "question": {
         "description": "Optional focus for the vision model.",
         "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
+  "append_note": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "note_id": {
+        "description": "Id of the note to append to (from list_notes). Preferred when known.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Title of the note to append to. If no note with this title exists it is created. Use this to keep building ONE continuous note across turns.",
+        "type": "string"
+      },
+      "content": {
+        "type": "string",
+        "description": "Markdown to append to the end of the note."
+      },
+      "attribution": {
+        "description": "Insert a \"— author · timestamp\" divider before this block. Default true; set false to append seamlessly into one flowing document.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "content"
+    ],
+    "additionalProperties": false
+  },
+  "archive_item_delete": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Archive item id."
+      },
+      "permanent": {
+        "description": "When true, permanently delete the MinIO object and DB row. Default false (soft-delete via archived flag).",
+        "type": "boolean"
       }
     },
     "required": [
@@ -690,6 +734,84 @@
     ],
     "additionalProperties": false
   },
+  "fal_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source image. fal's queue REQUIRES a public https URL — pass one directly, or pass a session upload id (from list_uploads), a local file path, or a base64/data: URI and the server will stage it to a public URL automatically. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.",
+        "type": "string"
+      },
+      "image_size": {
+        "description": "fal image_size, e.g. \"square_hd\", \"landscape_16_9\", \"portrait_4_3\". Model-dependent. Generate only — edit models use aspect_ratio (baked into the prompt/model default) instead.",
+        "type": "string"
+      },
+      "num_images": {
+        "description": "How many images to generate. Default 1.",
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "model": {
+        "description": "fal model id (endpoint_id from fal's v1/models catalog). Default per operation: generate→\"fal-ai/flux/schnell\", edit→\"fal-ai/nano-banana/edit\". Others (generate, live-verified 2026-07-14): fal-ai/flux/dev, fal-ai/flux-pro/v1.1, fal-ai/flux-pro/v1.1-ultra, fal-ai/flux-2, fal-ai/flux-2-pro, fal-ai/nano-banana, fal-ai/nano-banana-2, fal-ai/nano-banana-pro, fal-ai/bytedance/seedream/v4/text-to-image, fal-ai/bytedance/seedream/v4.5/text-to-image, bytedance/seedream/v5/pro/text-to-image, fal-ai/ideogram/v3, fal-ai/recraft/v3/text-to-image, fal-ai/z-image/turbo, openai/gpt-image-2, xai/grok-imagine-image. Others (edit): fal-ai/nano-banana-2/edit, fal-ai/nano-banana-pro/edit, fal-ai/flux-pro/kontext, fal-ai/flux-pro/kontext/max, fal-ai/flux-2/edit, fal-ai/flux-2-pro/edit, fal-ai/bytedance/seedream/v4/edit, fal-ai/bytedance/seedream/v4.5/edit, bytedance/seedream/v5/pro/edit, fal-ai/gemini-25-flash-image/edit, fal-ai/gemini-3-pro-image-preview/edit, fal-ai/gpt-image-1.5/edit, openai/gpt-image-2/edit, xai/grok-imagine-image/edit.",
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "description": "Content filter strictness (strictest→most permissive). Only honored by the Nano-Banana family (default \"4\") and Pro-tier FLUX models like flux-pro/v1.1*, flux-2-pro/-max/-flex (default \"2\"). Silently ignored by models that don't expose it (flux/schnell, flux/dev, flux-2 base, gpt-image-*, seedream, ideogram, recraft, qwen-image, grok-imagine-image).",
+        "type": "string",
+        "enum": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ]
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "fetch_archive_bytes": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Archive item id to download locally."
+      },
+      "dest_path": {
+        "description": "Optional absolute destination path. If omitted, writes to a persistent scratch path under _shared/archive-fetch/.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
   "find_projects": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -768,6 +890,29 @@
         "maximum": 9007199254740991
       }
     },
+    "additionalProperties": false
+  },
+  "fs_edit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "oldString": {
+        "type": "string",
+        "description": "Exact text to find. Must appear exactly once in the file."
+      },
+      "newString": {
+        "type": "string",
+        "description": "Text to replace it with."
+      }
+    },
+    "required": [
+      "path",
+      "oldString",
+      "newString"
+    ],
     "additionalProperties": false
   },
   "fs_list": {
@@ -1019,6 +1164,20 @@
     ],
     "additionalProperties": false
   },
+  "get_archive_item": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Archive item id from list_archive or register_archive."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false
+  },
   "get_attachment": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1148,6 +1307,24 @@
     ],
     "additionalProperties": false
   },
+  "glob": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Glob pattern, e.g. 'src/**/*.ts' or '**/*.md'."
+      },
+      "path": {
+        "description": "Base directory to search from. Defaults to the workspace root.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "additionalProperties": false
+  },
   "gpt_image_edit": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1247,6 +1424,28 @@
     ],
     "additionalProperties": false
   },
+  "grok_web_generate_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "What to generate."
+      },
+      "quality": {
+        "description": "\"standard\" uses grok-imagine-image (~5-10s). \"hd\" uses grok-imagine-image-quality (~10-20s). Defaults to standard.",
+        "type": "string",
+        "enum": [
+          "standard",
+          "hd"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
   "index_content": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1270,6 +1469,56 @@
     ],
     "additionalProperties": false
   },
+  "kie_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source image. KIE's job queue REQUIRES a public https URL — pass one directly, or pass a session upload id (from list_uploads), a local file path, or a base64/data: URI and the server will stage it to a public URL automatically. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. \"1:1\", \"16:9\", \"3:4\". Default \"1:1\".",
+        "type": "string"
+      },
+      "output_format": {
+        "description": "Output format. Default \"png\".",
+        "type": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ]
+      },
+      "model": {
+        "description": "KIE media model id (unified createTask API). Default per operation: generate→\"google/nano-banana\", edit→\"google/nano-banana-edit\". AVAILABLE MODELS (live-verified 2026-07-14) — generate: google/nano-banana, google/imagen4, google/imagen4-fast, google/imagen4-ultra, bytedance/seedream, bytedance/seedream-v4-text-to-image, ideogram/v3-text-to-image, qwen/text-to-image, qwen2/text-to-image, grok-imagine/text-to-image. edit (need input_image): google/nano-banana-edit, bytedance/seedream-v4-edit, seedream/4.5-edit, seedream/5-lite-image-to-image, seedream/5-pro-image-to-image, ideogram/v3-edit, ideogram/v3-remix, ideogram/character-edit, qwen/image-edit, qwen/image-to-image, qwen2/image-edit, grok-imagine/image-to-image. NOTE: gpt-image and flux are NOT on KIE's unified API — use voidai_gpt_image / fal_image for those.",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
   "list_agents": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1279,6 +1528,44 @@
       },
       "include_temp": {
         "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_archive": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "category": {
+        "description": "Filter to one archive category.",
+        "type": "string",
+        "enum": [
+          "video",
+          "image",
+          "audio",
+          "broll",
+          "code",
+          "document",
+          "other"
+        ]
+      },
+      "tag": {
+        "description": "Filter to items that include this exact tag.",
+        "type": "string"
+      },
+      "include_archived": {
+        "description": "Include soft-deleted items. Default false.",
+        "type": "boolean"
+      },
+      "pinned_first": {
+        "description": "Sort pinned items to the top. Default false (newest first).",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Max items to return (default 100).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
       }
     },
     "additionalProperties": false
@@ -1317,6 +1604,28 @@
     "properties": {},
     "additionalProperties": false
   },
+  "list_media": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "kind": {
+        "description": "Filter to one media kind.",
+        "type": "string",
+        "enum": [
+          "image",
+          "video",
+          "audio"
+        ]
+      },
+      "limit": {
+        "description": "Max items to return (default 100).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      }
+    },
+    "additionalProperties": false
+  },
   "list_my_subtasks": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1339,6 +1648,17 @@
     "properties": {
       "active": {
         "description": "Filter to only active or inactive workflows. Omit to return all.",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "list_notes": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "include_archived": {
+        "description": "Include archived notes. Default false.",
         "type": "boolean"
       }
     },
@@ -1599,6 +1919,14 @@
       "code_examples": {
         "description": "JSON array of code snippet references. Each entry typically {file, line, summary}."
       },
+      "verification_mode": {
+        "description": "Dispatcher-only discriminator for the deterministic reconcile gate. 'reconcile' asserts main HEAD moved during the task; 'review' bypasses that assertion because a review is supposed to leave main untouched. Ignored on update — a task cannot mutate its own mode.",
+        "type": "string",
+        "enum": [
+          "reconcile",
+          "review"
+        ]
+      },
       "hard": {
         "description": "On delete: when true, permanently remove. Default false (archive).",
         "type": "boolean"
@@ -1681,6 +2009,200 @@
     ],
     "additionalProperties": false
   },
+  "notebook_add_source": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook for this conversation.",
+        "type": "string"
+      },
+      "source": {
+        "type": "string",
+        "description": "An uploaded document attachment_id, OR an https URL to a document (PDF/DOCX/HTML/MD/TXT). YouTube URLs are not supported in v1."
+      }
+    },
+    "required": [
+      "source"
+    ],
+    "additionalProperties": false
+  },
+  "notebook_ask": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook.",
+        "type": "string"
+      },
+      "question": {
+        "type": "string",
+        "description": "The question to answer using RAG across ALL documents in the notebook."
+      },
+      "top_k": {
+        "description": "How many passages to retrieve (default 10).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "additionalProperties": false
+  },
+  "notebook_create": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Name of the notebook (collection of documents)."
+      },
+      "description": {
+        "description": "Optional description of what the notebook is for.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "notebook_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "notebook_source_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "notebook_status": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "notebook_use": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "type": "string",
+        "description": "The notebook id to make the active notebook for this conversation."
+      }
+    },
+    "required": [
+      "notebook_id"
+    ],
+    "additionalProperties": false
+  },
+  "notebooklm_ask": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook.",
+        "type": "string"
+      },
+      "question": {
+        "type": "string",
+        "description": "The question to answer using RAG across ALL documents in the notebook."
+      },
+      "top_k": {
+        "description": "How many passages to retrieve (default 10).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "additionalProperties": false
+  },
+  "notebooklm_create": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Name of the notebook (collection of documents)."
+      },
+      "description": {
+        "description": "Optional description of what the notebook is for.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "notebooklm_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "notebooklm_source_add": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook for this conversation.",
+        "type": "string"
+      },
+      "source": {
+        "type": "string",
+        "description": "An uploaded document attachment_id, OR an https URL to a document (PDF/DOCX/HTML/MD/TXT). YouTube URLs are not supported in v1."
+      }
+    },
+    "required": [
+      "source"
+    ],
+    "additionalProperties": false
+  },
+  "notebooklm_source_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "description": "Notebook id. If omitted, uses the active notebook.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "notebooklm_status": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "notebooklm_use": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "notebook_id": {
+        "type": "string",
+        "description": "The notebook id to make the active notebook for this conversation."
+      }
+    },
+    "required": [
+      "notebook_id"
+    ],
+    "additionalProperties": false
+  },
   "notify_user": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1706,6 +2228,271 @@
     },
     "required": [
       "message"
+    ],
+    "additionalProperties": false
+  },
+  "openart_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image, mode text2image). 'edit' (mode image2image) transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source/reference image. Pass a session upload id (from list_uploads), a local file path, a base64/data: URI, or a public https URL — the server reads the bytes and uploads them to OpenArt via a presigned PUT. PREFER an upload id or file path for local images (read server-side, never inlined into your context). Ignored for generate.",
+        "type": "string"
+      },
+      "model": {
+        "description": "OpenArt model id (NOT displayName). One of: nano-banana-2, nano-banana-pro, nano-banana-2-lite (default), gpt-image-2, byte-plus-seedream-4-5, byte-plus-seedream-5-lite. All support both generate and edit.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio: one of 21:9, 16:9, 3:2, 4:3, 5:4, 1:1 (default), 4:5, 3:4, 2:3, 9:16.",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "openmontage_exec": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "python_code": {
+        "description": "Python source to run via \"$HOME/openmontage/.venv/bin/python -c\" (base64-wrapped server-side, so no shell-quoting risk). cwd is $HOME/openmontage, so `from lib...`/`from tools...` imports resolve. Provide this OR command, not both.",
+        "type": "string"
+      },
+      "command": {
+        "description": "Raw shell command to run instead of python_code (e.g. a direct ffmpeg/npx call). cwd is $HOME/openmontage. Provide this OR python_code, not both.",
+        "type": "string"
+      },
+      "secrets": {
+        "description": "Provider secret NAMES to inject into the remote process env for this call (values never reach the agent). Allowlisted to OpenMontage provider shims only.",
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "SHARED_VOIDAI_BG_KEY",
+            "SHARED_VOID_API_FREE_KEY",
+            "SHARED_KOKORO_API_KEY",
+            "SHARED_FAL_API_KEY",
+            "SHARED_KIE_API_KEY"
+          ]
+        }
+      },
+      "timeout_seconds": {
+        "description": "Execution ceiling in seconds (default 300, max 540 — SSH exec hard cap is 600s).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 540
+      }
+    },
+    "additionalProperties": false
+  },
+  "pin_archive_item": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Archive item id."
+      },
+      "pinned": {
+        "type": "boolean",
+        "description": "Pin (true) or unpin (false) the item."
+      }
+    },
+    "required": [
+      "id",
+      "pinned"
+    ],
+    "additionalProperties": false
+  },
+  "read_note": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "note_id": {
+        "description": "Id of the note to read (from list_notes).",
+        "type": "string"
+      },
+      "title": {
+        "description": "Exact title of the note to read (alternative to note_id).",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "register_archive": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "description": "Remote https URL of the file to archive. Provide this OR base64.",
+        "type": "string"
+      },
+      "base64": {
+        "description": "Base64 (or data: URL) of the file bytes. Provide this OR url.",
+        "type": "string"
+      },
+      "category": {
+        "description": "Archive category. If omitted it is inferred from the MIME type.",
+        "type": "string",
+        "enum": [
+          "video",
+          "image",
+          "audio",
+          "broll",
+          "code",
+          "document",
+          "other"
+        ]
+      },
+      "title": {
+        "description": "Short human label shown in the archive.",
+        "type": "string"
+      },
+      "description": {
+        "description": "Longer description of the asset and how to use it.",
+        "type": "string"
+      },
+      "tags": {
+        "description": "Reusable tags for finding this asset later, e.g. [\"b-roll\", \"city\", \"night\"].",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "mime_type": {
+        "description": "MIME type, e.g. video/mp4, image/png, text/markdown. Inferred from the source when omitted.",
+        "type": "string"
+      },
+      "source_tool": {
+        "description": "Which tool/model produced it, e.g. render_remote, abacus_image.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "register_media": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "url": {
+        "description": "Remote https URL of the generated media to store (e.g. an image/video/audio link returned by a generation tool). Provide this OR base64.",
+        "type": "string"
+      },
+      "base64": {
+        "description": "Base64 (or data: URL) of the media bytes. Provide this OR url.",
+        "type": "string"
+      },
+      "kind": {
+        "description": "Media kind. If omitted it is inferred from the MIME type.",
+        "type": "string",
+        "enum": [
+          "image",
+          "video",
+          "audio"
+        ]
+      },
+      "title": {
+        "description": "Short human label shown in the Media gallery card.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "The prompt or description that produced this media.",
+        "type": "string"
+      },
+      "mime_type": {
+        "description": "MIME type, e.g. image/png, video/mp4, audio/mpeg. Inferred from the source when omitted.",
+        "type": "string"
+      },
+      "source_tool": {
+        "description": "Which tool/model produced it, e.g. voidai_image, chatgpt_image.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "render_remote": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "engine": {
+        "type": "string",
+        "enum": [
+          "hyperframes",
+          "remotion"
+        ],
+        "description": "Which render stack to use. \"hyperframes\" = an HTML+GSAP composition folder containing index.html (Puppeteer capture → FFmpeg NVENC). \"remotion\" = a React/TypeScript Remotion project folder."
+      },
+      "project_path": {
+        "type": "string",
+        "description": "Absolute local path to the composition folder on the app box. For hyperframes: a folder containing index.html. For remotion: the Remotion project root (containing package.json). node_modules/.git are excluded from upload automatically."
+      },
+      "title": {
+        "description": "Human label for the resulting video in the Media gallery. Defaults to the folder name.",
+        "type": "string"
+      },
+      "duration_seconds": {
+        "description": "HyperFrames only: clip length in seconds (default 5).",
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 600
+      },
+      "fps": {
+        "description": "HyperFrames only: frames per second (default 30).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120
+      },
+      "width": {
+        "description": "HyperFrames only: viewport width in px (default 1280).",
+        "type": "integer",
+        "minimum": 16,
+        "maximum": 7680
+      },
+      "height": {
+        "description": "HyperFrames only: viewport height in px (default 720).",
+        "type": "integer",
+        "minimum": 16,
+        "maximum": 4320
+      },
+      "composition_id": {
+        "description": "Remotion only: the composition id to render (default \"Main\").",
+        "type": "string"
+      },
+      "entry": {
+        "description": "Remotion only: entry file relative to the project root (e.g. src/index.ts). Auto-detected when omitted.",
+        "type": "string"
+      },
+      "register": {
+        "description": "Auto-register the resulting MP4 into the Media gallery (Studio › Media). Default true.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "engine",
+      "project_path"
     ],
     "additionalProperties": false
   },
@@ -1820,6 +2607,10 @@
         "description": "Set true to route this sub-agent through the shell-capable executor (supports git, npm, file writes). Off by default — sub-agents use Kimi K2.6/MiniMax and return output as text.",
         "type": "boolean"
       },
+      "allow_composio": {
+        "description": "Set true to let this sub-agent call Composio tools (COMPOSIO_*) for READ/lookup/pagination work — e.g. driving a multi-page YouTube/Gmail/Notion list loop without burning the parent context. Off by default. Blast-radius note: this blesses the whole Composio surface for the spawn, so keep destructive actions (delete/send) on the parent for human review and scope the sub-agent task to fetch-only.",
+        "type": "boolean"
+      },
       "kind": {
         "description": "Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content.",
         "type": "string",
@@ -1932,6 +2723,39 @@
     ],
     "additionalProperties": false
   },
+  "search_archive": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Substring to search across title, description, and tags."
+      },
+      "category": {
+        "description": "Restrict search to one category.",
+        "type": "string",
+        "enum": [
+          "video",
+          "image",
+          "audio",
+          "broll",
+          "code",
+          "document",
+          "other"
+        ]
+      },
+      "limit": {
+        "description": "Max items to return (default 100).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
   "search_code_examples": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1952,6 +2776,31 @@
       }
     },
     "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "search_document": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "The attachment_id of the uploaded document to search — the UUID after \"attachment_id:\" in the system context block."
+      },
+      "query": {
+        "type": "string",
+        "description": "A natural-language question or keywords. Returns the most semantically relevant passages from the document instead of the whole thing — use this for LARGE pre-parsed documents flagged \"use search_document\" rather than dumping the full markdown into context."
+      },
+      "top_k": {
+        "description": "How many passages to return (default 6).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": [
+      "id",
       "query"
     ],
     "additionalProperties": false
@@ -2140,6 +2989,79 @@
     ],
     "additionalProperties": false
   },
+  "ssh_download": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "machine": {
+        "type": "string",
+        "description": "Registered machine name or id."
+      },
+      "remote_path": {
+        "type": "string",
+        "description": "Absolute path of the remote file to download."
+      },
+      "local_path": {
+        "type": "string",
+        "description": "Destination absolute path on the local host."
+      }
+    },
+    "required": [
+      "machine",
+      "remote_path",
+      "local_path"
+    ],
+    "additionalProperties": false
+  },
+  "ssh_run": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "machine": {
+        "type": "string",
+        "description": "Registered machine name or id (from the Connect → Machines tab)."
+      },
+      "command": {
+        "type": "string",
+        "description": "Shell command to run on the remote host."
+      },
+      "timeout_ms": {
+        "description": "Command timeout in ms (default 60000, max 300000).",
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      }
+    },
+    "required": [
+      "machine",
+      "command"
+    ],
+    "additionalProperties": false
+  },
+  "ssh_upload": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "machine": {
+        "type": "string",
+        "description": "Registered machine name or id."
+      },
+      "local_path": {
+        "type": "string",
+        "description": "Absolute path of the local file to upload."
+      },
+      "remote_path": {
+        "type": "string",
+        "description": "Destination absolute path on the remote host."
+      }
+    },
+    "required": [
+      "machine",
+      "local_path",
+      "remote_path"
+    ],
+    "additionalProperties": false
+  },
   "update_job": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -2174,6 +3096,174 @@
     ],
     "additionalProperties": false
   },
+  "venice_image_edit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text directions for the edit (e.g. \"change the sky to a sunrise\", \"remove the tree\"). Short, descriptive prompts work best."
+      },
+      "input_image": {
+        "type": "string",
+        "description": "Required. The image to edit. Accepts: an https URL; a session upload id (from list_uploads); a local file path (absolute, or relative to your workspace, ending in .png/.jpg/.jpeg/.webp/.gif/.bmp); a base64 string; or a \"data:image/...;base64,\" URI. PREFER the upload id or file path for local images — the server reads the file directly, so the bytes never have to be inlined into your own context (which is slow and can be rejected for large images)."
+      },
+      "model": {
+        "description": "Venice edit model id. Omit to use Venice's built-in default. Options: firered-image-edit, qwen-edit-uncensored, grok-imagine-edit, grok-imagine-quality-edit, qwen-image-2-edit, qwen-image-2-pro-edit, wan-2-7-pro-edit, flux-2-max-edit, gpt-image-2-edit, gpt-image-1-5-edit, nano-banana-2-edit, nano-banana-pro-edit, nano-banana-2-lite-edit, luma-uni-1-edit, luma-uni-1-max-edit, seedream-v5-lite-edit, seedream-v5-pro-edit, seedream-v4-edit.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Output aspect ratio. \"auto\" (or omit) infers the closest supported ratio from the input image; set explicitly when exact output dimensions are required.",
+        "type": "string",
+        "enum": [
+          "auto",
+          "1:1",
+          "3:2",
+          "16:9",
+          "21:9",
+          "9:16",
+          "2:3",
+          "3:4",
+          "4:5"
+        ]
+      },
+      "resolution": {
+        "description": "Resolution tier, e.g. \"1K\", \"2K\", \"4K\". Supported values vary by model. Default \"1K\".",
+        "type": "string"
+      },
+      "output_format": {
+        "description": "Output format. When omitted, inferred from resolution: PNG for 1K, JPEG for 2K/4K.",
+        "type": "string",
+        "enum": [
+          "jpeg",
+          "jpg",
+          "png",
+          "webp"
+        ]
+      },
+      "quality": {
+        "description": "Quality tier — currently only honored by gpt-image-2-edit (default \"high\" for that model). Ignored by other models.",
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "input_image"
+    ],
+    "additionalProperties": false
+  },
+  "voidai_gemini_pro_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a \"data:image/...;base64,\" URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. \"1:1\", \"16:9\", \"2:3\", \"3:4\". Default \"1:1\".",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution. STANDARD≈1K (default), plus 2K and 4K. Gemini Pro is the right model for 2K/4K.",
+        "type": "string",
+        "enum": [
+          "STANDARD",
+          "2K",
+          "4K"
+        ]
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "voidai_gpt_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "operation": {
+        "description": "Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image.",
+        "type": "string",
+        "enum": [
+          "generate",
+          "edit"
+        ]
+      },
+      "input_image": {
+        "description": "For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a \"data:image/...;base64,\" URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.",
+        "type": "string"
+      },
+      "mask": {
+        "description": "For edit: optional mask (https URL or base64 data URL). Transparent areas of the mask mark the region to change (inpaint). Ignored for generate.",
+        "type": "string"
+      },
+      "size": {
+        "description": "Output size. Default \"1024x1024\"; 1024x1536 (portrait) and 1536x1024 (landscape) also supported.",
+        "type": "string",
+        "enum": [
+          "1024x1024",
+          "1024x1536",
+          "1536x1024",
+          "512x512"
+        ]
+      },
+      "model": {
+        "description": "VoidAI gpt-image model id. Default \"gpt-image-2\". Others: \"gpt-image-1.5\", \"gpt-image-1\".",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
   "voidai_image": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -2191,7 +3281,7 @@
         ]
       },
       "input_image": {
-        "description": "For edit: the source image as an https URL or a base64 data URL. Ignored for generate.",
+        "description": "For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a \"data:image/...;base64,\" URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.",
         "type": "string"
       },
       "aspect_ratio": {
@@ -2266,6 +3356,29 @@
     },
     "required": [
       "query"
+    ],
+    "additionalProperties": false
+  },
+  "write_note": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Short title for the note (shown in the Notes tab list)."
+      },
+      "content": {
+        "type": "string",
+        "description": "The note body in Markdown. No length limit — use this to hand the user a long, continuous document instead of a truncated Discord message."
+      },
+      "pinned": {
+        "description": "Pin to the top of the Notes list. Default false.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "title",
+      "content"
     ],
     "additionalProperties": false
   },

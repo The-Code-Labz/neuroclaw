@@ -236,7 +236,7 @@ registerBuiltin('archive', {
 });
 
 registerBuiltin('mode', {
-  description: 'Switch this session between chat mode (plain, no tools) and agent mode (full tools/skills); /mode alone shows current',
+  description: 'Switch this session between chat mode (fast, self-selecting tools + memory, no skills/roster/decomposition) and agent mode (full tools/skills/orchestration); /mode alone shows current',
   options: [
     { name: 'mode', description: 'chat | agent | auto (auto clears the override to inherit the agent default)', type: 'string', required: false },
   ],
@@ -247,7 +247,7 @@ registerBuiltin('mode', {
 
     const describe = (v: number | null | undefined): string =>
       v == null ? 'AUTO (inherit agent default)'
-        : v === 1 ? 'CHAT (plain completion — no tools/skills/MCP)'
+        : v === 1 ? 'CHAT (fast — memory + self-selecting core tools, no skills/roster/decomposition)'
           : 'AGENT (full tools, skills & MCP)';
 
     if (!arg) {
@@ -260,7 +260,7 @@ registerBuiltin('mode', {
 
     if (arg === 'chat' || arg === 'plain') {
       setSessionChatMode(ctx.sessionId, true);
-      await ctx.reply('// switched to CHAT mode — plain completion, no tools/skills/MCP');
+      await ctx.reply('// switched to CHAT mode — fast, memory + self-selecting core tools (no skills/roster/decomposition)');
     } else if (arg === 'agent' || arg === 'full') {
       setSessionChatMode(ctx.sessionId, false);
       await ctx.reply('// switched to AGENT mode — full tools, skills & MCP');

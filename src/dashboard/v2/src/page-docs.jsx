@@ -104,7 +104,7 @@ const Docs = () => {
                      onClick={() => setActive({ section: section.slug, slug: a.slug })}
                      style={{
                        padding: '6px 16px', fontSize: 12, cursor: 'pointer',
-                       background: isActive ? 'rgba(0,183,255,0.10)' : 'transparent',
+                       background: isActive ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
                        color: isActive ? 'var(--accent)' : 'var(--text-soft)',
                        borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                      }}

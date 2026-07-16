@@ -88,7 +88,7 @@ const Analytics = () => {
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 160 }}>
             {[34,52,28,71,46,84,62].map((v, i) => (
               <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                <div className="chart-bar" style={{ height: `${(v/84)*100}%`, width: '100%', background: 'linear-gradient(180deg, var(--accent-2), rgba(0,245,212,0.2))' }}/>
+                <div className="chart-bar" style={{ height: `${(v/84)*100}%`, width: '100%', background: 'linear-gradient(180deg, var(--accent-2), color-mix(in srgb, var(--accent-2) 20%, transparent))' }}/>
                 <span className="mono muted" style={{ fontSize: 9 }}>{['M','T','W','T','F','S','S'][i]}</span>
               </div>
             ))}
@@ -106,7 +106,7 @@ const Analytics = () => {
             {heat.map((row, ri) => (
               <div key={ri} style={{ display: 'grid', gridTemplateColumns: 'repeat(24, 1fr)', gap: 3 }}>
                 {row.map((v, ci) => (
-                  <div key={ci} style={{ height: 16, background: `rgba(0,183,255,${0.06 + v*0.65})`, boxShadow: v > 0.7 ? '0 0 6px rgba(0,183,255,0.5)' : 'none', borderRadius: 1 }}/>
+                  <div key={ci} style={{ height: 16, background: `color-mix(in srgb, var(--accent) ${(6 + v*65).toFixed(1)}%, transparent)`, boxShadow: v > 0.7 ? '0 0 6px color-mix(in srgb, var(--accent) 50%, transparent)' : 'none', borderRadius: 1 }}/>
                 ))}
               </div>
             ))}

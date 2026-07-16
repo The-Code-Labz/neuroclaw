@@ -83,10 +83,10 @@ async function generate(context: string, sessionId: string, agentId?: string): P
   const useAntigravity   = config.skillForge.provider === 'antigravity';
   const useOpenRouter    = config.skillForge.provider === 'openrouter';
   const antigravityModel = config.skillForge.antigravityModel;
-  // The OpenRouter fallback model: honor SKILL_FORGE_MODEL (default Gemini 3.5
-  // Flash). bgChatCompletion() tries the VoidAI bg model (haiku) first, then this.
+  // The OpenRouter fallback model: honor SKILL_FORGE_MODEL (default Gemini 2.5
+  // Flash Lite). bgChatCompletion() tries the VoidAI bg model (haiku) first, then this.
   const fallbackModel = useOpenRouter
-    ? (process.env.SKILL_FORGE_MODEL?.trim() || 'google/gemini-3.5-flash')
+    ? (process.env.SKILL_FORGE_MODEL?.trim() || 'google/gemini-2.5-flash-lite')
     : (config.background.model ?? config.voidai.skillForgeModel);
   let raw: string;
 

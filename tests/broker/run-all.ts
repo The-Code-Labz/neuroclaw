@@ -16,7 +16,7 @@ import {
   initTokenKey, mintAgentToken, verifyAgentToken, AuthError,
   _resetJtiCacheForTests, isTokenKeyInitialised, jtiCacheSize,
 } from '../../src/broker/agentToken';
-import { scrubOutput, createStreamScrubber } from '../../src/broker/scrubber';
+import { scrubOutput, createStreamScrubber, shouldScrubName, isLiteralScrubExempt } from '../../src/broker/scrubber';
 import {
   parseName, normalizeAgentPrefix, isValidUpperSnake,
   isAllowedType, buildName, globMatch,
@@ -186,6 +186,86 @@ async function suite(name: string, fn: () => Promise<void>): Promise<void> {
       assert.equal(out.scrubbed.includes(tok), false);
       assert.ok(out.scrubbed.includes('***ORACLE_GITHUB_PAT***'));
     });
+
+    // ── Name classification (over-scrub guard) ──────────────────────────────
+    await it('shouldScrubName: proven identifiers never-scrub', () => {
+      assert.equal(shouldScrubName('SHARED_MINIO_BUCKET_NAME'), false);
+      assert.equal(shouldScrubName('SHARED_N8N_URL'), false);
+      assert.equal(shouldScrubName('SHARED_MINIO_ENDPOINT'), false);
+      assert.equal(shouldScrubName('SHARED_SUPABASE_URL'), false);
+    });
+
+    await it('shouldScrubName: credentials always scrub (fail-closed)', () => {
+      assert.equal(shouldScrubName('SHARED_MINIO_SECRET_KEY'), true);
+      assert.equal(shouldScrubName('SHARED_MINIO_ACCESS_KEY'), true);
+      assert.equal(shouldScrubName('ORACLE_GITHUB_PAT'), true);
+      assert.equal(shouldScrubName('SHARED_APP_TOKEN'), true);
+      assert.equal(shouldScrubName('SHARED_DB_PASSWORD'), true);
+    });
+
+    await it('shouldScrubName: unknown / CUSTOM / unparseable → scrub', () => {
+      assert.equal(shouldScrubName('SHARED_FOO_CUSTOM'), true);
+      // mixed identifier + credential/unknown token → any bad token forces scrub
+      assert.equal(shouldScrubName('SHARED_GOTENBERG_API_BASIC_AUTH_USERNAME_CUSTOM'), true);
+      assert.equal(shouldScrubName('SHARED_FOO_WEIRDTYPE'), true);
+      assert.equal(shouldScrubName('S'), true);            // unparseable
+      assert.equal(shouldScrubName('ONLY_TWO'), true);     // wrong shape
+    });
+
+    await it('over-scrub guard: identifier value left verbatim', () => {
+      const out = scrubOutput(
+        'endpoint=https://minio.example.com bucket=neuroclaw-archive',
+        { SHARED_MINIO_ENDPOINT: 'https://minio.example.com', SHARED_MINIO_BUCKET_NAME: 'neuroclaw-archive' },
+      );
+      assert.equal(out.triggered, false);
+      assert.equal(out.scrubbed, 'endpoint=https://minio.example.com bucket=neuroclaw-archive');
+    });
+
+    await it('over-scrub guard: credential still scrubs even alongside identifiers', () => {
+      const out = scrubOutput(
+        'host=minio.example.com secret=AKIAsupersecretkeyVALUE',
+        { SHARED_MINIO_ENDPOINT: 'minio.example.com', SHARED_MINIO_SECRET_KEY: 'AKIAsupersecretkeyVALUE' },
+      );
+      assert.equal(out.triggered, true);
+      assert.ok(out.scrubbed.includes('minio.example.com'));        // identifier untouched
+      assert.ok(!out.scrubbed.includes('AKIAsupersecretkeyVALUE')); // credential gone
+      assert.ok(out.scrubbed.includes('***SHARED_MINIO_SECRET_KEY***'));
+    });
+
+    // ── Entropy/length floor (literal branch only) ──────────────────────────
+    await it('entropy floor: degenerate literal not naked-substring scrubbed', () => {
+      // low-entropy dictionary-ish value would mangle unrelated output
+      const out = scrubOutput('the password field is required', { SHARED_APP_KEY: 'password' });
+      assert.equal(out.triggered, false);
+      assert.equal(out.scrubbed, 'the password field is required');
+    });
+
+    await it('entropy floor: encodings of a degenerate value STILL scrub', () => {
+      const v = 'password';
+      const b64 = Buffer.from(v).toString('base64');
+      const hex = Buffer.from(v).toString('hex');
+      const out = scrubOutput(`b64=${b64} hex=${hex}`, { SHARED_APP_KEY: v });
+      assert.equal(out.triggered, true);
+      assert.ok(!out.scrubbed.includes(b64));
+      assert.ok(!out.scrubbed.includes(hex));
+    });
+
+    await it('entropy floor: real short-ish high-entropy key still literal-scrubs', () => {
+      const v = 'aB3xK9pQ7z';   // 10 chars, high per-char entropy
+      const out = scrubOutput(`token=${v}`, { SHARED_APP_KEY: v });
+      assert.equal(out.triggered, true);
+      assert.ok(!out.scrubbed.includes(v));
+      assert.ok(out.scrubbed.includes('***SHARED_APP_KEY***'));
+    });
+
+    await it('isLiteralScrubExempt: only degenerate single tokens exempt', () => {
+      assert.equal(isLiteralScrubExempt('admin'), true);
+      assert.equal(isLiteralScrubExempt('password'), true);
+      assert.equal(isLiteralScrubExempt('changeme'), true);
+      assert.equal(isLiteralScrubExempt('aB3xK9pQ7z'), false);   // too long
+      assert.equal(isLiteralScrubExempt('s3cr3t-x'), false);     // has separator
+      assert.equal(isLiteralScrubExempt('aB3xK9pQ'), false);     // 8 chars, high entropy
+    });
   });
 
   // ── Name parser ─────────────────────────────────────────────────────────
@@ -317,7 +397,7 @@ async function suite(name: string, fn: () => Promise<void>): Promise<void> {
     // the whole Hono stack. The internal helper isn't exported, so we
     // re-implement the contract here and assert it's stable.
     const crypto2 = await import('node:crypto');
-    const secret = 'cf2b9e9a311054ace6642d455edada3c667d500a4b0ecf79b70e9061808e1c66';
+    const secret = 'cf2b9e9a311054ace6642d455edada3c667d500a4b0ecf79b70e9061808e1c66'; // gitleaks:allow — deterministic HMAC test vector (not a live credential); required fixed for a stable signature assertion
     const body = '{"event":"test","timestamp":1778874948494}';
     const hex = crypto2.createHmac('sha256', secret).update(body).digest('hex');
 
