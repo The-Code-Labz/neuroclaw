@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { resolveImageInput } from './image-input';
 import {
   searchMemoryTool,
   writeVaultNoteTool, saveSessionSummaryTool, compactContextTool,
@@ -26,7 +27,7 @@ import {
 import { searchKnowledgeBase, searchCodeExamples, listSources } from '../kb/kb-search';
 import { crawlAndIndex, ingestKbContent } from '../kb/kb-ingest';
 import {
-  getAllAgents, getAgentByName, getAgentById, getDb,
+  getAllAgents, getAgentByName, getAgentById, getDb, logAudit,
   createSession, saveMessage,
   createAgentMessage, updateAgentMessageResponse, markAgentMessagesDelivered,
   createAgentUserMessage,
@@ -39,6 +40,7 @@ import {
   listProjects, getProject, getDefaultProject,
   createProject, updateProject, archiveProject, deleteProjectHard,
   enqueueJob,
+  addTaskDependency, clearTaskDependencies, unmetBlockerCount, getTaskDependencies,
   type AgentRecord, type DiscordBotRow, type ProjectRecord, type AgentTaskPayload,
 } from '../db';
 import { listVoidAIVoices, listElevenLabsVoices, listKokoroVoices } from '../audio/voices';
@@ -53,12 +55,23 @@ import { spawnAgentAsync, countActiveTempAgents } from '../system/spawner';
 import { evaluateSpawn } from '../system/decomposer';
 import { getSpawnConfig } from '../db';
 import { logHive } from '../system/hive-mind';
+import { logSpend } from '../system/model-spend';
+import { classifyComplexity } from '../system/model-triage';
+import {
+  startHandoffRecord,
+  touchHandoffHeartbeat,
+  completeHandoffRecord,
+  failHandoffRecord,
+  findRunningHandoffByTargetSession,
+  type HandoffCallContext,
+} from '../system/handoff-recovery';
 import { runSubAgentAsync } from '../system/sub-agent-runner';
 import { type TaskNotifyPolicy } from '../system/task-notify-policy';
 import {
   createBackgroundTask, completeBackgroundTask, failBackgroundTask, taskEvents,
 } from '../system/background-tasks';
-import { bashRun, fsRead, fsWrite, fsList, fsSearch, checkFsBoundary } from '../system/exec-tools';
+import { bashRun, fsRead, fsWrite, fsList, fsSearch, fsEdit, globFiles, checkFsBoundary } from '../system/exec-tools';
+import { tryRelay } from '../system/relay';
 import { listAccessible } from '../broker/agentSecrets';
 import { browserlessRequest, bingSearchViaBrowser, renderViaProxyClearingChallenge } from '../system/browser';
 import { braveSearch } from '../system/brave-search';
@@ -66,16 +79,37 @@ import { getDowntimeEvents } from '../system/analytics';
 import { readFilteredLogLines } from '../utils/logger';
 import * as S from './schemas';
 import { listUploads, getUpload, recordProcessing } from '../system/session-uploads';
+import { docNotebooksEnabled } from '../system/doc-notebooks';
+import { listNotes, getNote, getNoteByTitle, createNote, appendNote } from '../system/notes-store';
+import { mediaEnabled, listMedia as listMediaStore, registerMediaFromUrl, registerMediaFromBase64 } from '../system/media-store';
+import {
+  archiveEnabled,
+  listArchive as listArchiveStore,
+  searchArchive as searchArchiveStore,
+  getArchiveItem as getArchiveItemStore,
+  fetchArchiveBytes as fetchArchiveBytesStore,
+  registerArchiveFromUrl,
+  registerArchiveFromBase64,
+  setArchivePinned,
+  deleteArchiveItem,
+} from '../system/archive-store';
+import { renderRemote } from '../system/render-forge';
+import { execRemoteWithSecrets } from '../system/render-node-exec';
 import { describeImage } from '../vision/vision-service';
 import { promises as fspUploads } from 'fs';
 import { generateImage } from '../image/image-service';
 import { generateVoidaiImage } from '../image/voidai-image';
 import { generateVoidaiGptImage } from '../image/voidai-gpt-image';
+import { runMediaJob } from '../infra/media-jobs';
+import { kieAdapter } from '../infra/media-adapters/kie';
+import { falAdapter } from '../infra/media-adapters/fal';
 import { generateAbacusMedia, pcmToWav } from '../agent/abacus-media';
 import { synthesize } from '../audio/tts';
 import type { ToolContext } from './context';
+import { archiveGeneratedImage } from '../image/image-archive';
 import { getMcpRegistryTools, findMcpRegistryTool } from './adapters/mcp-registry-adapter';
 import { callRegisteredTool } from '../mcp/mcp-registry';
+import { callTool } from '../mcp/mcp-client';
 
 export interface GateResult { allowed: boolean; reason?: string }
 
@@ -97,6 +131,11 @@ export interface ToolDef<Schema extends z.ZodType = z.ZodType<any, any>> {
    *  call_tool. Keep the core set small — every core tool costs tokens on
    *  every single request. */
   core?: boolean;
+  /** Coarse output class for the token-optimization layer. 'retrieval' results
+   *  (memory, KB, RAG, uploads, vision) are NEVER compressed — their output is
+   *  signal, not noise. Omit for ordinary tools; the compression middleware
+   *  treats undefined as compressible (unless the name is on the exempt set). */
+  category?: 'retrieval' | 'action' | 'compute';
 }
 
 const ALLOW: GateResult = { allowed: true };
@@ -177,6 +216,97 @@ function gateHermes(ctx: ToolContext): GateResult {
   }
   return ALLOW;
 }
+// spec: ssh-machine-connections — two-layer gate. Global kill-switch
+// (SSH_TOOLS_ENABLED) + per-agent ssh_enabled (mirrors exec_enabled), and never
+// available to sub-agents (they can't hold broker identity for the credential).
+function gateSsh(ctx: ToolContext): GateResult {
+  if (!config.ssh.enabled) return { allowed: false, reason: 'SSH tools disabled (SSH_TOOLS_ENABLED=false)' };
+  if (!ctx.agentId) return { allowed: false, reason: 'ssh requires an agent context' };
+  if ((ctx.spawnDepth ?? 0) >= 1) return { allowed: false, reason: 'ssh not available to sub-agents' };
+  const agent = getAgentById(ctx.agentId);
+  if (!agent?.ssh_enabled) return { allowed: false, reason: 'ssh is not enabled for this agent' };
+  return ALLOW;
+}
+// render_remote is a CONSTRAINED tool (fixed machine, no arbitrary shell), so it
+// gets a lighter gate than raw ssh_run: it honours the master SSH switch and
+// needs agent context, but does NOT require the per-agent ssh_enabled capability
+// — the goal is that any agent can dispatch a render to the forge.
+function gateRender(ctx: ToolContext): GateResult {
+  if (!config.ssh.enabled) return { allowed: false, reason: 'render forge unavailable (SSH_TOOLS_ENABLED=false)' };
+  if (!ctx.agentId) return { allowed: false, reason: 'render requires an agent context' };
+  return ALLOW;
+}
+// spec: native-notebook-rag — runtime flag flip, no restart (mirrors gateKb).
+function gateNotebooks(_ctx: ToolContext): GateResult {
+  return docNotebooksEnabled()
+    ? ALLOW
+    : { allowed: false, reason: 'notebooks disabled (DOC_NOTEBOOKS_ENABLED=false)' };
+}
+
+// Media gallery — gated on R2 object-storage creds being present.
+function gateMedia(_ctx: ToolContext): GateResult {
+  return mediaEnabled()
+    ? ALLOW
+    : { allowed: false, reason: 'media storage not configured (R2 creds missing)' };
+}
+
+// NeuroArchive — gated on MinIO object-storage creds being present.
+function gateArchive(_ctx: ToolContext): GateResult {
+  return archiveEnabled()
+    ? ALLOW
+    : { allowed: false, reason: 'archive storage not configured (MINIO creds missing)' };
+}
+
+// ── Notebook handlers (shared by notebook_* and notebooklm_* aliases) ───────
+async function nbCreate(args: { title: string; description?: string }, ctx: ToolContext) {
+  const { createNotebook } = await import('../system/doc-notebooks');
+  const r = await createNotebook({ sessionId: ctx.sessionId ?? null, title: args.title, description: args.description });
+  if (!r.ok || !r.data) return { ok: false, error: r.error ?? 'create failed' };
+  return { ok: true, notebook: { id: r.data.id, title: r.data.title, session_id: r.data.session_id, created_at: r.data.created_at } };
+}
+async function nbList(_args: unknown, _ctx: ToolContext) {
+  const { listNotebooks } = await import('../system/doc-notebooks');
+  const r = await listNotebooks();
+  if (!r.ok) return { ok: false, error: r.error ?? 'list failed' };
+  return { ok: true, notebooks: (r.data ?? []).map(n => ({ id: n.id, title: n.title, source_count: n.source_count, updated_at: n.updated_at })) };
+}
+async function nbUse(args: { notebook_id: string }, ctx: ToolContext) {
+  const { getNotebook, useNotebook } = await import('../system/doc-notebooks');
+  const nb = await getNotebook(args.notebook_id);
+  if (!nb) return { ok: false, error: `notebook "${args.notebook_id}" not found` };
+  useNotebook(ctx.sessionId ?? null, nb.id);
+  return { ok: true, notebook: { id: nb.id, title: nb.title } };
+}
+async function nbStatus(_args: unknown, ctx: ToolContext) {
+  const { getActiveNotebook } = await import('../db');
+  const { getNotebook } = await import('../system/doc-notebooks');
+  const id = ctx.sessionId ? getActiveNotebook(ctx.sessionId) : null;
+  if (!id) return { ok: true, active: null };
+  const nb = await getNotebook(id);
+  return { ok: true, active: nb ? { id: nb.id, title: nb.title } : null };
+}
+async function nbAddSource(args: { notebook_id?: string; source: string }, ctx: ToolContext) {
+  const { addNotebookSource, resolveNotebookId } = await import('../system/doc-notebooks');
+  const nbId = await resolveNotebookId(args.notebook_id, ctx.sessionId ?? null);
+  if (!nbId) return { ok: false, error: 'no notebook_id given and no active notebook — call notebook_use first' };
+  const r = await addNotebookSource({ notebookId: nbId, source: args.source, sessionId: ctx.sessionId ?? null, agentId: ctx.agentId });
+  if (!r.ok || !r.data) return { ok: false, error: r.error ?? 'add source failed' };
+  return { ok: true, source: { notebook_id: nbId, attachment_id: r.data.attachment_id, source_title: r.data.source_title, source_kind: r.data.source_kind }, embedded: r.data.embedded };
+}
+async function nbSourceList(args: { notebook_id?: string }, ctx: ToolContext) {
+  const { listNotebookSources, resolveNotebookId } = await import('../system/doc-notebooks');
+  const nbId = await resolveNotebookId(args.notebook_id, ctx.sessionId ?? null);
+  if (!nbId) return { ok: false, error: 'no notebook_id given and no active notebook — call notebook_use first' };
+  const r = await listNotebookSources(nbId);
+  if (!r.ok) return { ok: false, error: r.error ?? 'list failed' };
+  return { ok: true, notebook_id: nbId, sources: (r.data ?? []).map(s => ({ attachment_id: s.attachment_id, title: s.source_title, kind: s.source_kind })) };
+}
+async function nbAsk(args: { notebook_id?: string; question: string; top_k?: number }, ctx: ToolContext) {
+  const { askNotebook, resolveNotebookId } = await import('../system/doc-notebooks');
+  const nbId = await resolveNotebookId(args.notebook_id, ctx.sessionId ?? null);
+  if (!nbId) return { ok: false, error: 'no notebook_id given and no active notebook — call notebook_use first' };
+  return askNotebook({ notebookId: nbId, question: args.question, topK: args.top_k });
+}
 
 // ── Sub-agent tool lockdown gate ──────────────────────────────────────────
 // See specs/sub-agent-tool-lockdown.md Fix 2.
@@ -194,7 +324,15 @@ export function isToolBlockedForSubAgent(
   // default. MCP research tools (mcp__server__tool) are intentionally NOT
   // blocked here — sub-agents should reach them.
   if (config.subAgent.blockAgentDelegation && toolName.startsWith('agent__')) return true;
-  if (config.subAgent.blockComposio && toolName.startsWith('COMPOSIO_')) return true;
+  if (config.subAgent.blockComposio && toolName.startsWith('COMPOSIO_')) {
+    // Category sentinel: a parent that spawned with allow_composio: true passes
+    // the 'composio' pseudo-override, blessing the whole COMPOSIO_ surface for
+    // this spawn only. Checked here (before the prefix returns true) because the
+    // override list is exact-match and Composio tool names are dynamic — a
+    // category flag survives new toolkits where an enumerated list would rot.
+    if (allowedOverrides?.includes('composio')) return false;
+    return true;
+  }
   return config.subAgent.blockedTools.includes(toolName);
 }
 
@@ -206,24 +344,101 @@ async function runAgentTurn(
   sessionLabel: string,
   runId?: string | null,
   source: string = 'unknown',
+  sessionId?: string,
+  handoffCtx?: HandoffCallContext,
 ): Promise<{ sessionId: string; response: string }> {
   const { chatStream } = await import('../agent/alfred');
-  const sessId = createSession(recipient.id, sessionLabel, source);
+  // Reuse a pre-created session when the caller stamped one (e.g. execute_now's
+  // dedicated execution session, needed for L2 liveness correlation); otherwise
+  // create a fresh one as before.
+  const sessId = sessionId ?? createSession(recipient.id, sessionLabel, source);
+
+  const handoffId = handoffCtx
+    ? startHandoffRecord({ ...handoffCtx, targetAgentId: recipient.id, targetSessionId: sessId, message })
+    : null;
+
+  let heartbeat: NodeJS.Timeout | null = null;
+  if (handoffId) {
+    heartbeat = setInterval(() => {
+      try { touchHandoffHeartbeat(handoffId); } catch { /* best-effort */ }
+    }, 20_000);
+    if (typeof (heartbeat as { unref?: () => void }).unref === 'function') {
+      (heartbeat as unknown as { unref: () => void }).unref();
+    }
+  }
+
   let response = '';
-  await chatStream(
-    message,
-    sessId,
-    (c) => { response += c; },
-    recipient.system_prompt ?? '',
-    recipient.id,
-    undefined,
-    undefined,
-    undefined,
-    runId ?? undefined,
-  );
-  // chatStream already saves both the user and assistant messages internally;
-  // a second saveMessage here would double-write every agent-to-agent response.
-  return { sessionId: sessId, response };
+  try {
+    await chatStream(
+      message,
+      sessId,
+      (c) => { response += c; },
+      recipient.system_prompt ?? '',
+      recipient.id,
+      undefined,
+      undefined,
+      undefined,
+      runId ?? undefined,
+    );
+
+    // Some provider planes persist the assistant turn to the session but do not
+    // feed the streamed accumulator. Mirror the agent_task safety net: if the
+    // accumulator is empty, recover the actual output from the session.
+    if (!response.trim()) {
+      const { getSessionMessages } = await import('../db');
+      const lastAssistant = getSessionMessages(sessId).reverse().find(m => m.role === 'assistant');
+      if (lastAssistant?.content?.trim()) {
+        response = lastAssistant.content;
+      }
+    }
+
+    if (handoffId) completeHandoffRecord(handoffId, response);
+    return { sessionId: sessId, response };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (handoffId) failHandoffRecord(handoffId, errMsg);
+    throw err;
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+  }
+}
+
+// ── MCP image content-block delivery ────────────────────────────────────────
+// The containerized image agents now return the image bytes as a native MCP
+// ImageContent block ({ type:'image', data:<base64>, mimeType }). callTool()
+// returns the raw content array whenever an image block is present. If we find
+// one, deliver + archive it through the same chokepoint the direct-API tools
+// use. Returns null when there is no usable image block, so callers can fall
+// back to their legacy path/text handling (old, not-yet-rebuilt containers).
+async function deliverMcpImage(
+  raw: unknown,
+  ctx: ToolContext,
+  meta: { source: string; alt: string; label: string; model?: string | null },
+): Promise<unknown | null> {
+  const arr: Array<{ type?: string; data?: string; mimeType?: string }> | null =
+    Array.isArray(raw)
+      ? (raw as Array<{ type?: string; data?: string; mimeType?: string }>)
+      : (raw && typeof raw === 'object' && Array.isArray((raw as { content?: unknown[] }).content)
+          ? (raw as { content: Array<{ type?: string; data?: string; mimeType?: string }> }).content
+          : null);
+  if (!arr) return null;
+  const img = arr.find(b => b?.type === 'image' && typeof b?.data === 'string' && (b.data as string).length > 0);
+  if (!img) return null;
+
+  try {
+    const res = await deliverAndArchive(
+      { base64: img.data, mime_type: typeof img.mimeType === 'string' ? img.mimeType : 'image/png', alt: meta.alt },
+      ctx,
+      { source: meta.source, prompt: meta.alt, model: meta.model ?? null },
+    );
+    if (res && typeof res === 'object' && (res as { ok?: boolean }).ok) {
+      logHive('tool_result', `${meta.label}: delivered inline (image block)`, ctx.agentId ?? undefined,
+        { label: meta.label }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      return { ok: true, source: meta.label, url: (res as { url: string }).url,
+        instructions: 'Image already delivered inline. Reference it in your reply.' };
+    }
+  } catch { /* fall through — caller degrades to its legacy path/text handling */ }
+  return null;
 }
 
 // ── Image-wrapper delivery helper ───────────────────────────────────────────
@@ -239,6 +454,7 @@ async function proxyMcpImageTool(
   input: Record<string, unknown>,
   ctx: ToolContext,
   alt: string,
+  model?: string | null,
 ): Promise<unknown> {
   let raw: unknown;
   try {
@@ -247,13 +463,21 @@ async function proxyMcpImageTool(
     return { ok: false, error: `${server}/${remoteTool} failed: ${(err as Error).message}` };
   }
 
-  // Flatten the MCP content array to text.
+  // Preferred path: native MCP image content block (new containers).
+  const viaBlock = await deliverMcpImage(raw, ctx, { source: `mcp:${remoteTool}`, alt, label: `${server}/${remoteTool}`, model });
+  if (viaBlock) return viaBlock;
+
+  // Flatten the MCP content array to text (raw may be the array itself when
+  // image blocks are present, or an object with a .content array, or a string).
   let text = '';
-  if (raw && typeof raw === 'object' && Array.isArray((raw as { content?: unknown[] }).content)) {
-    text = ((raw as { content: Array<{ type?: string; text?: string }> }).content)
-      .map(c => (c?.type === 'text' ? c.text ?? '' : ''))
-      .join('\n')
-      .trim();
+  const contentArr: Array<{ type?: string; text?: string }> | null =
+    Array.isArray(raw)
+      ? (raw as Array<{ type?: string; text?: string }>)
+      : (raw && typeof raw === 'object' && Array.isArray((raw as { content?: unknown[] }).content)
+          ? (raw as { content: Array<{ type?: string; text?: string }> }).content
+          : null);
+  if (contentArr) {
+    text = contentArr.map(c => (c?.type === 'text' ? c.text ?? '' : '')).join('\n').trim();
   } else if (typeof raw === 'string') {
     text = raw.trim();
   }
@@ -276,9 +500,10 @@ async function proxyMcpImageTool(
         : 'image/png';
       const sendTool = registry.find(t => t.name === 'send_image_to_user');
       if (sendTool) {
-        const res = await sendTool.handler(
+        const res = await deliverAndArchive(
           { base64: buf.toString('base64'), mime_type: mime, alt },
           ctx,
+          { source: `mcp:${remoteTool}`, prompt: alt, model: model ?? null },
         );
         if ((res as { ok?: boolean }).ok) {
           logHive('tool_result', `${server}/${remoteTool}: delivered inline`, ctx.agentId ?? undefined, { server, remoteTool }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
@@ -292,6 +517,41 @@ async function proxyMcpImageTool(
   // Path not locally readable (sidecar on another host) — return the raw result.
   return { ok: true, source: `${server}/${remoteTool}`, result: text || raw,
     instructions: 'If a file path was returned, it lives on the image sidecar; use send_image_to_user with a URL/base64 if you need it inline.' };
+}
+
+// ── Generated-image delivery + archive ──────────────────────────────────────
+// Every generation tool delegates its final display to send_image_to_user.
+// deliverAndArchive() wraps that delegation and, on success, fires a
+// fire-and-forget push of the image to the Supabase 'agent-images' bucket +
+// SQLite index (for the gallery). send_image_to_user itself stays untouched, so
+// direct agent calls (screenshots/passthroughs) are NOT archived — only images
+// a generation tool produced, carrying the ORIGINAL prompt.
+async function deliverAndArchive(
+  payload: Record<string, unknown>,
+  ctx:     ToolContext,
+  meta:    { source: string; prompt: string; model?: string | null },
+): Promise<unknown> {
+  const sendTool = registry.find(t => t.name === 'send_image_to_user');
+  if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
+  const res = await sendTool.handler(payload, ctx);
+  if (res && typeof res === 'object' && (res as { ok?: boolean }).ok) {
+    const agentName = (ctx.agentId ? getAgentById(ctx.agentId)?.name : null) ?? ctx.agentId ?? 'agent';
+    void archiveGeneratedImage({
+      source:    meta.source,
+      prompt:    meta.prompt ?? '',
+      alt:       typeof payload.alt === 'string' ? payload.alt : '',
+      caption:   typeof payload.caption === 'string' ? payload.caption : null,
+      base64:    typeof payload.base64 === 'string' ? payload.base64 : null,
+      sourceUrl: typeof payload.url === 'string' ? payload.url : ((res as { url?: string }).url ?? null),
+      mime:      typeof payload.mime_type === 'string' ? payload.mime_type : null,
+      agentId:   ctx.agentId ?? null,
+      agentName,
+      sessionId: ctx.sessionId ?? null,
+      runId:     ctx.runId ?? null,
+      model:     meta.model ?? null,
+    }).catch(() => { /* archive is best-effort; never affects delivery */ });
+  }
+  return res;
 }
 
 // ── The registry ──────────────────────────────────────────────────────────
@@ -340,6 +600,7 @@ export const registry: ToolDef[] = [
   // ── memory / vault ───────────────────────────────────────────────────────
   {
     name:            'search_memory',
+    category:        'retrieval',
     core:            true,
     externalSurface: true,
     description: 'Search across memory_index + NeuroVault. Returns categorized hits ranked by salience, importance, recency. Call this BEFORE answering when the user references prior work or expects continuity.',
@@ -399,9 +660,307 @@ export const registry: ToolDef[] = [
     },
   },
 
+  // ── Shared Notepad (agent_notes) ──────────────────────────────────────────
+  // Escape Discord's message-length limit: write / keep appending to a single
+  // Markdown note the user reads and copies in the dashboard Notes tab.
+  {
+    name:        'write_note',
+    core:        true,
+    description: 'Write a Markdown note to the shared Notepad (the dashboard Notes tab). Use this whenever you need to hand the user a LONG or continuous document that would be truncated by Discord\'s message-length limit — reports, plans, full logs, code dumps. Returns the note id (append to it later with append_note).',
+    schema:      S.writeNoteSchema,
+    shape:       S.writeNoteShape,
+    gate:        gateMcp,
+    handler: async (args, ctx) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : undefined;
+      const note = createNote({
+        title:   args.title,
+        content: args.content,
+        pinned:  args.pinned,
+        author:  agent?.name ?? 'agent',
+        agentId: ctx.agentId ?? null,
+      });
+      return { ok: true, id: note.id, title: note.title, chars: note.content.length, url: `/dashboard#notes` };
+    },
+  },
+  {
+    name:        'append_note',
+    core:        true,
+    description: 'Append Markdown to an existing shared Notepad note (by note_id, or by title). If a title is given and no such note exists, it is created. Use this to build ONE continuous document across turns instead of sending many capped messages.',
+    schema:      S.appendNoteSchema,
+    shape:       S.appendNoteShape,
+    gate:        gateMcp,
+    handler: async (args, ctx) => {
+      if (!args.note_id && !args.title) return { ok: false, error: 'provide note_id or title' };
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : undefined;
+      const { note, created } = appendNote({
+        id:          args.note_id,
+        title:       args.title,
+        content:     args.content,
+        attribution: args.attribution,
+        author:      agent?.name ?? 'agent',
+        agentId:     ctx.agentId ?? null,
+      });
+      return { ok: true, id: note.id, title: note.title, created, chars: note.content.length, url: `/dashboard#notes` };
+    },
+  },
+  {
+    name:        'list_notes',
+    description: 'List the shared Notepad notes (titles, ids, authors, size) — newest first. Use to find a note id before append_note / read_note.',
+    schema:      S.listNotesSchema,
+    shape:       S.listNotesShape,
+    gate:        gateMcp,
+    handler: async (args) => {
+      const items = listNotes({ includeArchived: args.include_archived });
+      return { ok: true, count: items.length, items };
+    },
+  },
+  {
+    name:        'read_note',
+    description: 'Read the full Markdown content of a shared Notepad note by note_id or exact title.',
+    schema:      S.readNoteSchema,
+    shape:       S.readNoteShape,
+    gate:        gateMcp,
+    handler: async (args) => {
+      const note = args.note_id ? getNote(args.note_id) : (args.title ? getNoteByTitle(args.title) : null);
+      if (!note) return { ok: false, error: 'note not found' };
+      return { ok: true, id: note.id, title: note.title, author: note.author, content: note.content, updated_at: note.updated_at };
+    },
+  },
+
+  // ── Media gallery (agent_media) ──────────────────────────────────────────
+  // Register generated media (image/video/audio) into the Studio › Media tab.
+  // Bytes are stored in R2; the human watches/hears them in the gallery.
+  {
+    name:        'register_media',
+    description: 'Store a piece of generated media (image, video, or audio) in the Media gallery (dashboard Studio › Media tab) so the user can view/play it. Pass the media as a remote https `url` OR a `base64` payload. Use this after generating an image/video/audio so it is saved and playable instead of lost. Returns the media id.',
+    schema:      S.registerMediaSchema,
+    shape:       S.registerMediaShape,
+    gate:        gateMedia,
+    handler: async (args, ctx) => {
+      if (!args.url && !args.base64) return { ok: false, error: 'provide url or base64' };
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : undefined;
+      const common = {
+        kind:       args.kind,
+        title:      args.title,
+        prompt:     args.prompt,
+        mimeType:   args.mime_type,
+        sourceTool: args.source_tool,
+        author:     agent?.name ?? 'agent',
+        agentId:    ctx.agentId ?? null,
+        sessionId:  ctx.sessionId ?? null,
+      };
+      try {
+        const item = args.url
+          ? await registerMediaFromUrl(args.url, common)
+          : await registerMediaFromBase64(args.base64!, common);
+        return { ok: true, id: item.id, kind: item.kind, size: item.size, url: '/dashboard#studio' };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'list_media',
+    description: 'List media stored in the Media gallery (newest first) — id, kind, title, prompt, source tool, author. Optionally filter by kind.',
+    schema:      S.listMediaSchema,
+    shape:       S.listMediaShape,
+    gate:        gateMedia,
+    handler: async (args) => {
+      const items = await listMediaStore({ kind: args.kind, limit: args.limit ?? 100 });
+      return { ok: true, count: items.length, items: items.map(({ url: _url, ...rest }) => rest) };
+    },
+  },
+  {
+    name:        'render_remote',
+    description: 'Render a video composition on the GPU render-node and pull the finished MP4 back, auto-landing it in the Media gallery (Studio › Media). Supports two engines: "hyperframes" (an HTML+GSAP folder with index.html — Puppeteer capture → FFmpeg NVENC) and "remotion" (a React/TypeScript Remotion project). Author the composition locally; this dispatches the heavy render off the app box. Returns { ok, mediaId, localPath, renderMs, frames }.',
+    schema:  S.renderRemoteSchema,
+    shape:   S.renderRemoteShape,
+    gate:    gateRender,
+    handler: async (args, ctx) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      const res = await renderRemote({
+        engine:          args.engine,
+        projectPath:     args.project_path,
+        title:           args.title,
+        durationSeconds: args.duration_seconds,
+        fps:             args.fps,
+        width:           args.width,
+        height:          args.height,
+        compositionId:   args.composition_id,
+        entry:           args.entry,
+        register:        args.register,
+        agentId:         ctx.agentId ?? null,
+        agentName:       agent?.name ?? 'agent',
+        sessionId:       ctx.sessionId ?? null,
+        runId:           ctx.runId ?? null,
+      });
+      return res;
+    },
+  },
+  {
+    name:        'openmontage_exec',
+    description: 'Run Python or a shell command inside the vendored OpenMontage venv ($HOME/openmontage) on the render-node, with provider secrets injected server-side. OpenMontage has NO single-shot "render" call like render_remote — it is an agent-driven, stage-gated pipeline (assets → edit → compose → publish); the driving agent IS the orchestrator, calling `get_next_stage()`/checkpoint APIs and ToolRegistry tools stage by stage (see lib/checkpoint.py, lib/paths.py). Use this to read/advance a project\'s pipeline state, run a provider tool for a stage, or drive it to the next `awaiting_human` gate — then use the OpenMontage Backlot dashboard (or a future gate tool) for human approval. Same operator-scoped SSH transport as render_remote; no render-node SSH grant needed. Returns stdout/stderr/exitCode (tails truncated).',
+    schema:  S.openmontageExecSchema,
+    shape:   S.openmontageExecShape,
+    gate:    gateRender,
+    handler: async (args, ctx) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      if (!args.python_code && !args.command) return { ok: false, error: 'provide python_code or command' };
+      if (args.python_code && args.command) return { ok: false, error: 'provide exactly one of python_code or command, not both' };
+
+      const OM_DIR = 'openmontage';
+      let command: string;
+      if (args.python_code) {
+        const b64 = Buffer.from(args.python_code, 'utf8').toString('base64');
+        command = `cd "$HOME/${OM_DIR}" && .venv/bin/python -c "import base64;exec(base64.b64decode('${b64}').decode())"`;
+      } else {
+        command = `cd "$HOME/${OM_DIR}" && ${args.command}`;
+      }
+
+      // Anything that legitimately runs longer than the render node's ~10m sshd
+      // exec ceiling MUST go DETACHED (launch-and-poll) — holding the channel
+      // would get SIGKILLed at ~540s. Short calls keep the cheaper sync path.
+      const timeoutSec = args.timeout_seconds ?? 300;
+      const detached = timeoutSec > 480;
+      const res = await execRemoteWithSecrets({
+        command,
+        secretNames: args.secrets ?? [],
+        concurrencyGroup: 'openmontage',
+        detached,
+        timeoutMs: detached ? undefined : Math.max(1_000, timeoutSec * 1000),
+        maxWaitMs: detached ? timeoutSec * 1000 : undefined,
+        agentId: ctx.agentId ?? null,
+        agentName: agent?.name ?? 'agent',
+        sessionId: ctx.sessionId ?? null,
+        runId: ctx.runId ?? null,
+      });
+      return {
+        ok: res.ok,
+        exitCode: res.exitCode,
+        stdout: res.stdout.slice(-6000),
+        stderr: res.stderr.slice(-3000),
+        error: res.error,
+        injectedSecrets: res.injectedSecrets,
+      };
+    },
+  },
+
+  // ── NeuroArchive (MinIO long-term reusable asset store) ────────────────────
+  // Distinct from the Media gallery: these are durable, deliberately reusable
+  // assets (b-roll, brand assets, code templates) kept indefinitely.
+  {
+    name:        'register_archive',
+    description: 'Store a file in NeuroArchive — the long-term, reusable asset library backed by MinIO. Use for b-roll, reference footage, brand assets, reusable image sets, code snippets/templates, or any file you want to pull back into future workflows. Pass the file as a remote https `url` OR a `base64` payload. Include category + tags so it is findable later. Returns the archive item id.',
+    schema:      S.registerArchiveSchema,
+    shape:       S.registerArchiveShape,
+    gate:        gateArchive,
+    handler: async (args, ctx) => {
+      if (!args.url && !args.base64) return { ok: false, error: 'provide url or base64' };
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : undefined;
+      const common = {
+        category:    args.category,
+        title:       args.title,
+        description: args.description,
+        tags:        args.tags,
+        mimeType:    args.mime_type,
+        sourceTool:  args.source_tool,
+        author:      agent?.name ?? 'agent',
+        agentId:     ctx.agentId ?? null,
+        sessionId:   ctx.sessionId ?? null,
+      };
+      try {
+        const item = args.url
+          ? await registerArchiveFromUrl(args.url, common)
+          : await registerArchiveFromBase64(args.base64!, common);
+        return { ok: true, id: item.id, category: item.category, size: item.size, checksum: item.checksum_sha256 };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'list_archive',
+    description: 'List items stored in NeuroArchive (newest first, or pinned-first). Filter by category and/or exact tag. Soft-deleted items are excluded by default.',
+    schema:      S.listArchiveSchema,
+    shape:       S.listArchiveShape,
+    gate:        gateArchive,
+    handler: async (args) => {
+      const items = await listArchiveStore({
+        category: args.category,
+        tag: args.tag,
+        includeArchived: args.include_archived,
+        pinnedFirst: args.pinned_first,
+        limit: args.limit ?? 100,
+      });
+      return { ok: true, count: items.length, items: items.map(({ url: _url, ...rest }) => rest) };
+    },
+  },
+  {
+    name:        'search_archive',
+    description: 'Search NeuroArchive by substring across title, description, and tags. Useful for finding that b-roll clip or code template again.',
+    schema:      S.searchArchiveSchema,
+    shape:       S.searchArchiveShape,
+    gate:        gateArchive,
+    handler: async (args) => {
+      const items = await searchArchiveStore(args.query, { category: args.category, limit: args.limit ?? 100 });
+      return { ok: true, count: items.length, items: items.map(({ url: _url, ...rest }) => rest) };
+    },
+  },
+  {
+    name:        'get_archive_item',
+    description: 'Fetch one NeuroArchive item\'s metadata + presigned URL by id. Bumps last_used_at.',
+    schema:      S.getArchiveItemSchema,
+    shape:       S.getArchiveItemShape,
+    gate:        gateArchive,
+    handler: async (args) => {
+      const item = await getArchiveItemStore(args.id);
+      if (!item) return { ok: false, error: 'archive item not found' };
+      return { ok: true, item };
+    },
+  },
+  {
+    name:        'fetch_archive_bytes',
+    description: 'Download a NeuroArchive object to a local path and return the path — for agents/tools that need actual bytes (e.g. video composition pulling a b-roll clip, code-gen pulling a template). Writes to a persistent scratch path so the orphan sweeper does not delete it. Bumps last_used_at.',
+    schema:      S.fetchArchiveBytesSchema,
+    shape:       S.fetchArchiveBytesShape,
+    gate:        gateArchive,
+    handler: async (args, ctx) => {
+      try {
+        const r = await fetchArchiveBytesStore(args.id, { sessionId: ctx.sessionId, destPath: args.dest_path });
+        return { ok: true, path: r.path, size: r.size, checksum: r.checksum };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  },
+  {
+    name:        'pin_archive_item',
+    description: 'Pin or unpin a NeuroArchive item so it surfaces at the top of list_archive (pinned_first=true).',
+    schema:      S.pinArchiveItemSchema,
+    shape:       S.pinArchiveItemShape,
+    gate:        gateArchive,
+    handler: async (args) => {
+      const item = await setArchivePinned(args.id, args.pinned);
+      if (!item) return { ok: false, error: 'archive item not found' };
+      return { ok: true, id: item.id, pinned: item.pinned };
+    },
+  },
+  {
+    name:        'archive_item_delete',
+    description: 'Soft-delete a NeuroArchive item by default (sets archived=1 so it disappears from normal lists). Pass permanent=true to permanently delete the MinIO object and DB row. Soft-delete is preferred — archive items are meant to be durable.',
+    schema:      S.archiveItemDeleteSchema,
+    shape:       S.archiveItemDeleteShape,
+    gate:        gateArchive,
+    handler: async (args) => {
+      const r = await deleteArchiveItem(args.id, args.permanent ?? false);
+      return r.ok ? { ok: true, id: args.id, permanent: args.permanent ?? false } : { ok: false, error: r.error };
+    },
+  },
+
   // ── knowledge base (Supabase RAG) ────────────────────────────────────────
   {
     name:        'search_knowledge_base',
+    category:    'retrieval',
     core:        true,
     externalSurface: true,
     description: 'Semantic search over the crawled documentation knowledge base. Use BEFORE answering questions about external libraries/docs the team has indexed.',
@@ -472,7 +1031,23 @@ export const registry: ToolDef[] = [
       logHive('agent_message_sent', `registry: ${senderName} → ${recipient.name}: "${args.message.slice(0, 60)}"`, sender?.id, { toAgentId: recipient.id, preview: args.message.slice(0, 80) });
 
       try {
-        const { sessionId, response } = await runAgentTurn(fullMessage, recipient, `Comms: ${senderName} → ${recipient.name}`, ctx.runId, 'comms');
+        const parentHandoff = ctx.sessionId ? findRunningHandoffByTargetSession(ctx.sessionId) : null;
+        const { sessionId, response } = await runAgentTurn(
+          fullMessage,
+          recipient,
+          `Comms: ${senderName} → ${recipient.name}`,
+          ctx.runId,
+          'comms',
+          undefined,
+          {
+            callerSessionId: ctx.sessionId ?? null,
+            callerAgentId: ctx.agentId ?? null,
+            callerRunId: ctx.runId ?? null,
+            source: 'message_agent',
+            agentMessageId: msgRecord?.id ?? null,
+            parentHandoffId: parentHandoff?.id ?? null,
+          },
+        );
         if (msgRecord) updateAgentMessageResponse(msgRecord.id, response, 'responded');
         return { ok: true, from: recipient.name, response, sessionId };
       } catch (err) {
@@ -678,9 +1253,8 @@ Uses xAI credentials from ~/.hermes/auth.json (xai-oauth pool) or the XAI_API_KE
       }
 
       // Delegate display to send_image_to_user, forwarding ctx for SSE delivery and message persistence.
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
-      return sendTool.handler({ url: result.url, alt: prompt }, ctx);
+      const model = args.quality === 'hd' ? 'grok-imagine-image-quality' : 'grok-imagine-image';
+      return deliverAndArchive({ url: result.url, alt: prompt }, ctx, { source: 'generate_image', prompt, model });
     },
   },
   {
@@ -738,14 +1312,78 @@ Requires VENICE_API_KEY in .env.`,
       }
 
       // Delegate display + Discord delivery to send_image_to_user.
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
-      return sendTool.handler({
+      return deliverAndArchive({
         base64:    imageB64,
         mime_type: 'image/png',
         alt:       args.alt ?? prompt,
         caption:   args.caption,
-      }, ctx);
+      }, ctx, { source: 'generate_image_venice', prompt, model });
+    },
+  },
+  {
+    name:        'venice_image_edit',
+    description: `Edit (inpaint/modify) an existing image using the Venice AI API and display the result inline in chat.
+
+Separate endpoint from generate_image_venice — Venice's /image/edit takes an input_image plus a short instruction (e.g. "change the sky to a sunrise", "remove the tree") and returns the modified image. Default model is Venice's built-in default edit model (currently qwen-edit) unless overridden. Venice returns raw image bytes which are saved to /uploads/chat/ and posted inline — the image appears in the chat bubble AND is delivered to Discord automatically.
+
+Requires VENICE_API_KEY in .env.`,
+    schema: S.veniceImageEditSchema,
+    shape:  S.veniceImageEditShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!args.input_image?.trim()) return { ok: false, error: 'input_image is required (an https URL or base64-encoded string).' };
+
+      if (!config.venice.enabled) {
+        return { ok: false, error: 'VENICE_API_KEY is not configured. Set it in .env to use Venice image editing.' };
+      }
+
+      // Resolved server-side: local uploads/paths are read+encoded here so the
+      // bytes never round-trip through the agent's own context. Venice's edit
+      // endpoint wants a bare base64 string or a URL — not a data: URI.
+      const resolved = await resolveImageInput(args.input_image, ctx, 'bare-base64');
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const image = resolved.value;
+
+      const reqBody: Record<string, unknown> = { prompt, image, safe_mode: false };
+      if (args.model?.trim())         reqBody.model = args.model.trim();
+      if (args.aspect_ratio)          reqBody.aspect_ratio = args.aspect_ratio;
+      if (args.resolution?.trim())    reqBody.resolution = args.resolution.trim();
+      if (args.output_format)         reqBody.output_format = args.output_format;
+      if (args.quality)               reqBody.quality = args.quality;
+
+      let imageB64: string;
+      let mime = 'image/png';
+      try {
+        const resp = await fetch('https://api.venice.ai/api/v1/image/edit', {
+          method:  'POST',
+          headers: {
+            'Authorization': `Bearer ${config.venice.apiKey}`,
+            'Content-Type':  'application/json',
+          },
+          body: JSON.stringify(reqBody),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          return { ok: false, error: `Venice edit API error ${resp.status}: ${errText.slice(0, 200)}` };
+        }
+        // Response is the raw image file (image/png|jpeg|webp), not JSON.
+        const contentType = resp.headers.get('content-type');
+        if (contentType && contentType.startsWith('image/')) mime = contentType;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length === 0) return { ok: false, error: 'Venice edit API returned an empty response.' };
+        imageB64 = buf.toString('base64');
+      } catch (err) {
+        const msg = (err as Error).message ?? String(err);
+        return { ok: false, error: `Venice edit fetch failed: ${msg.slice(0, 200)}` };
+      }
+
+      return deliverAndArchive({
+        base64:    imageB64,
+        mime_type: mime,
+        alt:       args.alt ?? prompt,
+        caption:   args.caption,
+      }, ctx, { source: 'venice_image_edit', prompt, model: args.model?.trim() || 'qwen-edit' });
     },
   },
   {
@@ -796,6 +1434,11 @@ quality "standard" (default, ~30-45s). Returns the image inline in the current c
         if (!last) return { ok: false, error: 'No response from gemini-web-agent' };
         const payload = JSON.parse(last.slice(5).trim());
         const content = payload?.result?.content;
+        // Preferred path: native MCP image content block (rebuilt container).
+        const viaBlock = await deliverMcpImage(content, ctx, {
+          source: 'gemini_web_generate_image', alt: prompt, label: 'gemini_web/gemini_generate_image', model: 'nano-banana',
+        });
+        if (viaBlock) return viaBlock;
         rawText = Array.isArray(content)
           ? content.map((c: { text?: string }) => c.text ?? '').join('\n')
           : (payload?.result?.structuredContent?.result ?? '');
@@ -826,9 +1469,44 @@ quality "standard" (default, ~30-45s). Returns the image inline in the current c
       }
 
       // 5. Delegate display to send_image_to_user (SSE + persistence)
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found' };
-      return sendTool.handler({ base64, mime_type: mime, alt: prompt }, ctx);
+      return deliverAndArchive({ base64, mime_type: mime, alt: prompt }, ctx, { source: 'gemini_web_generate_image', prompt, model: 'nano-banana' });
+    },
+  },
+  {
+    name:        'grok_web_generate_image',
+    description: `Generate an image via grok.com (Aurora) using the logged-in X web session — no xAI API key or API rate limits. Proxies to the grok-web sidecar (port 7113) and displays the image inline in chat.
+
+⚠️ Requires a provisioned grok.com browser session on the sidecar (grok_web_import_cookies). Prefer the direct-API tools (abacus_image, generate_image_venice, generate_image) for everyday generation; use this only when the user specifically wants Grok/Aurora web output.`,
+    schema:      S.generateImageSchema,
+    shape:       S.generateImageShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+
+      let raw: unknown;
+      try {
+        raw = await callTool('http://127.0.0.1:7113/mcp', 'grok_web_generate_image', { prompt });
+      } catch (err) {
+        return { ok: false, error: `grok-web-agent (7113) call failed: ${(err as Error).message.slice(0, 200)}` };
+      }
+
+      // Preferred path: native MCP image content block (rebuilt container).
+      const viaBlock = await deliverMcpImage(raw, ctx, {
+        source: 'grok_web_generate_image', alt: prompt, label: 'grok_web/grok_web_generate_image', model: 'aurora',
+      });
+      if (viaBlock) return viaBlock;
+
+      // Fallback: text (old container without an image block, or an Error/REFUSAL string).
+      let text = '';
+      if (Array.isArray(raw)) {
+        text = (raw as Array<{ type?: string; text?: string }>)
+          .map(c => (c?.type === 'text' ? c.text ?? '' : '')).join('\n').trim();
+      } else if (typeof raw === 'string') {
+        text = raw.trim();
+      }
+      if (text.startsWith('Error')) return { ok: false, error: text };
+      return { ok: true, source: 'grok_web/grok_web_generate_image', result: text || raw,
+        instructions: 'Image was generated on the grok-web sidecar but no inline bytes were returned. Rebuild the grok-web-agent container (Task 7) to get inline delivery + gallery archiving.' };
     },
   },
   {
@@ -896,6 +1574,12 @@ Requires ABACUS_API_KEY in .env.`,
       if ((operation === 'edit' || operation === 'upscale') && !args.input_image?.trim()) {
         return { ok: false, error: `operation "${operation}" requires input_image (an https URL or base64 data URL).` };
       }
+      let inputImage: string | undefined;
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image, ctx, 'data-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        inputImage = resolved.value;
+      }
       const defaults: Record<string, string> = { generate: 'flux_pro', edit: 'flux_kontext_edit', upscale: 'flux_kontext_edit' };
       const model = (args.model ?? defaults[operation]).trim();
 
@@ -909,22 +1593,25 @@ Requires ABACUS_API_KEY in .env.`,
         media = await generateAbacusMedia({
           model, prompt, modalities: ['image'],
           imageConfig,
-          inputImage: args.input_image?.trim() || undefined,
+          inputImage,
         });
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
 
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
+      // Meter the compute points Abacus actually consumed (ground truth from
+      // resp.usage.compute_points_used) into the durable spend ledger — logged
+      // before delivery so burned points are recorded even if delivery fails.
+      logSpend({ provider: 'abacus_image', model_id: model, input_tokens: 0, output_tokens: 0, compute_points: media.computePoints, agent_id: ctx.agentId ?? null, session_id: ctx.sessionId ?? null });
 
       const delivered: string[] = [];
       for (const item of media.items) {
-        const res = await sendTool.handler(
+        const res = await deliverAndArchive(
           item.base64
             ? { base64: item.base64, mime_type: item.mime, alt: args.alt ?? prompt, caption: args.caption }
             : { url: item.url, mime_type: item.mime, alt: args.alt ?? prompt, caption: args.caption },
           ctx,
+          { source: 'abacus_image', prompt, model },
         );
         if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
       }
@@ -960,13 +1647,19 @@ Requires VOIDAI_API_KEY in .env.`,
       if (operation === 'edit' && !args.input_image?.trim()) {
         return { ok: false, error: 'operation "edit" requires input_image (an https URL or base64 data URL).' };
       }
+      let inputImage: string | undefined;
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image, ctx, 'data-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        inputImage = resolved.value;
+      }
 
       let result: Awaited<ReturnType<typeof generateVoidaiImage>>;
       try {
         result = await generateVoidaiImage({
           operation,
           prompt,
-          inputImage:  args.input_image?.trim() || undefined,
+          inputImage,
           aspectRatio: args.aspect_ratio?.trim() || undefined,
           resolution:  args.resolution,
           model:       args.model?.trim() || undefined,
@@ -974,9 +1667,6 @@ Requires VOIDAI_API_KEY in .env.`,
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
 
       // Coerce the returned mime to the enum send_image_to_user accepts.
       const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -988,9 +1678,10 @@ Requires VOIDAI_API_KEY in .env.`,
 
       const delivered: string[] = [];
       for (const item of result.items) {
-        const res = await sendTool.handler(
+        const res = await deliverAndArchive(
           { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
           ctx,
+          { source: 'voidai_image', prompt, model: result.model },
         );
         if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
       }
@@ -1002,6 +1693,221 @@ Requires VOIDAI_API_KEY in .env.`,
         operation,
         urls: delivered,
         usage: result.usage,
+        instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
+      };
+    },
+  },
+  {
+    name:        'kie_image',
+    description: `Generate or edit an image via KIE AI's async media job API (default models google/nano-banana / google/nano-banana-edit) and display it inline in chat.
+
+Submits an async job, polls to completion, downloads the result, and posts it inline (chat bubble + Discord). operation: "generate" (default, text→image) or "edit" (transform input_image per the prompt — REQUIRES input_image as a public https URL). Params: aspect_ratio (default "1:1"), output_format (png/jpeg), model (KIE media model id — e.g. "google/imagen4-ultra", "bytedance/seedream-v4-text-to-image", or for edit "bytedance/seedream-v4-edit"). Access to KIE's premium model catalog at 30-80% below official APIs.
+
+Requires SHARED_KIE_API_KEY in the broker.`,
+    schema: S.kieImageSchema,
+    shape:  S.kieImageShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.kie.apiKey) return { ok: false, error: 'KIE_API_KEY is not configured (broker SHARED_KIE_API_KEY not resolved). Restart after provisioning.' };
+
+      const operation = args.operation ?? 'generate';
+      if (operation === 'edit' && !args.input_image?.trim()) {
+        return { ok: false, error: 'operation "edit" requires input_image (a public https URL).' };
+      }
+      let editImageUrl: string | undefined;
+      if (operation === 'edit') {
+        const resolved = await resolveImageInput(args.input_image!, ctx, 'public-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        editImageUrl = resolved.value;
+      }
+
+      const model = args.model?.trim() || (operation === 'edit' ? 'google/nano-banana-edit' : config.kie.imageModel);
+      const input: Record<string, unknown> = {
+        prompt,
+        aspect_ratio:  args.aspect_ratio?.trim() || '1:1',
+        output_format: args.output_format || 'png',
+      };
+      if (operation === 'edit') input.image_urls = [editImageUrl];
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(kieAdapter, model, input, { apiKey: config.kie.apiKey, kind: 'image', timeoutMs: 120_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+      const normalizeMime = (m: string): string => {
+        const lower = (m || '').toLowerCase();
+        if (lower === 'image/jpg') return 'image/jpeg';
+        return allowedMimes.has(lower) ? lower : 'image/png';
+      };
+
+      // 🔒 bytes-only: the primitive returns downloaded base64, never a KIE URL.
+      const delivered: string[] = [];
+      for (const item of result.items) {
+        const res = await deliverAndArchive(
+          { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
+          ctx,
+          { source: 'kie_image', prompt, model: result.model },
+        );
+        if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
+      }
+      logHive('tool_result', `kie_image[${operation}] ${result.model}: ${delivered.length} img`, ctx.agentId ?? undefined, { model: result.model, operation }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (delivered.length === 0) return { ok: false, error: 'KIE produced image(s) but delivery failed.' };
+      return {
+        ok: true,
+        model: result.model,
+        operation,
+        urls: delivered,
+        instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
+      };
+    },
+  },
+  {
+    name:        'fal_image',
+    description: `Generate or edit an image via fal.ai's async media queue (default models fal-ai/flux/schnell / fal-ai/nano-banana/edit) and display it inline in chat.
+
+Submits a queue job, polls to completion, downloads the result, and posts it inline (chat bubble + Discord). operation: "generate" (default, text→image) or "edit" (transform input_image per the prompt — REQUIRES input_image as a public https URL). Params: image_size (e.g. "square_hd", "landscape_16_9", generate only), num_images (default 1), model (fal model id — e.g. "fal-ai/flux/dev", "fal-ai/nano-banana-2", "fal-ai/flux-pro/kontext"), safety_tolerance (Nano-Banana + Pro-FLUX only). Fast, cheap FLUX/Nano-Banana generation and editing.
+
+Requires SHARED_FAL_API_KEY in the broker.`,
+    schema: S.falImageSchema,
+    shape:  S.falImageShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.fal.apiKey) return { ok: false, error: 'FAL_API_KEY is not configured (broker SHARED_FAL_API_KEY not resolved). Restart after provisioning.' };
+
+      const operation = args.operation ?? 'generate';
+      if (operation === 'edit' && !args.input_image?.trim()) {
+        return { ok: false, error: 'operation "edit" requires input_image (a public https URL).' };
+      }
+
+      const model = args.model?.trim() || (operation === 'edit' ? 'fal-ai/nano-banana/edit' : config.fal.imageModel);
+      const input: Record<string, unknown> = { prompt, num_images: args.num_images ?? 1 };
+      if (args.image_size?.trim() && operation === 'generate') input.image_size = args.image_size.trim();
+      if (args.safety_tolerance) input.safety_tolerance = args.safety_tolerance;
+      if (operation === 'edit') {
+        const resolved = await resolveImageInput(args.input_image!, ctx, 'public-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        // Field name is model-dependent: kontext-family, flux fill, and the
+        // legacy flux/dev image-to-image endpoints take a single `image_url`;
+        // nano-banana/seedream/flux-2/gpt-image edit models take an `image_urls`
+        // array. Default to the array form (majority pattern).
+        const singularField = /kontext|qwen-image-edit|\/v1\/fill|dev\/image-to-image/i.test(model);
+        if (singularField) input.image_url = resolved.value;
+        else input.image_urls = [resolved.value];
+      }
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(falAdapter, model, input, { apiKey: config.fal.apiKey, kind: 'image', timeoutMs: 120_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+      const normalizeMime = (m: string): string => {
+        const lower = (m || '').toLowerCase();
+        if (lower === 'image/jpg') return 'image/jpeg';
+        return allowedMimes.has(lower) ? lower : 'image/png';
+      };
+
+      // 🔒 bytes-only: the primitive returns downloaded base64, never a fal URL.
+      const delivered: string[] = [];
+      for (const item of result.items) {
+        const res = await deliverAndArchive(
+          { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
+          ctx,
+          { source: 'fal_image', prompt, model: result.model },
+        );
+        if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
+      }
+      logHive('tool_result', `fal_image[${operation}] ${result.model}: ${delivered.length} img`, ctx.agentId ?? undefined, { model: result.model, operation }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (delivered.length === 0) return { ok: false, error: 'fal produced image(s) but delivery failed.' };
+      return {
+        ok: true,
+        model: result.model,
+        operation,
+        urls: delivered,
+        instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
+      };
+    },
+  },
+  {
+    name:        'openart_image',
+    description: `Generate or edit an image via OpenArt (MCP, OAuth) and display it inline in chat.
+
+operation: "generate" (default, text→image) or "edit" (image2image — transform/reference input_image per the prompt; REQUIRES input_image). Models (all support both): nano-banana-2, nano-banana-pro, nano-banana-2-lite (default), gpt-image-2, byte-plus-seedream-4-5, byte-plus-seedream-5-lite. Params: aspect_ratio (1:1 default). Subscription-credit provider (no per-call USD). Images are posted inline and archived to the gallery.
+
+Requires SHARED_OPENART_REFRESH_TOKEN in the broker (one-time OAuth sign-in).`,
+    schema: S.openartImageSchema,
+    shape:  S.openartImageShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      const { openartConfigured } = await import('../infra/openart-auth');
+      if (!openartConfigured()) return { ok: false, error: 'OpenArt is not configured (broker SHARED_OPENART_REFRESH_TOKEN missing). Run the one-time OpenArt sign-in.' };
+
+      const operation = args.operation ?? 'generate';
+      const mode: 'text2image' | 'image2image' = operation === 'edit' ? 'image2image' : 'text2image';
+      const model = args.model?.trim() || config.openart.imageModel;
+
+      let referenceBytes: { buf: Buffer; mime: string } | undefined;
+      if (operation === 'edit') {
+        if (!args.input_image?.trim()) return { ok: false, error: 'operation "edit" requires input_image.' };
+        // resolveImageInput('data-url') yields a data: URI for upload-ids/paths/base64,
+        // but passes an https URL THROUGH UNCHANGED — so branch on the result (ASAGI #1).
+        const resolved = await resolveImageInput(args.input_image, ctx, 'data-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        try {
+          if (resolved.value.startsWith('data:')) {
+            const m = resolved.value.match(/^data:([^;]+);base64,(.*)$/);
+            if (!m) return { ok: false, error: 'could not parse resolved data URI for edit input' };
+            referenceBytes = { buf: Buffer.from(m[2], 'base64'), mime: m[1] };
+          } else {
+            const r = await fetch(resolved.value, { signal: AbortSignal.timeout(20_000) });
+            if (!r.ok) return { ok: false, error: `fetch edit input failed: HTTP ${r.status}` };
+            referenceBytes = { buf: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/png' };
+          }
+        } catch (err) {
+          return { ok: false, error: `could not read edit input: ${(err as Error).message}` };
+        }
+      }
+
+      const { runOpenArtImage } = await import('../infra/openart-client');
+      let items: Array<{ base64: string; mime: string }>;
+      try {
+        items = await runOpenArtImage({ prompt, model, mode, aspectRatio: args.aspect_ratio, referenceBytes });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+      const normalizeMime = (m: string): string => {
+        const lower = (m || '').toLowerCase();
+        if (lower === 'image/jpg') return 'image/jpeg';
+        return allowedMimes.has(lower) ? lower : 'image/png';
+      };
+
+      // 🔒 bytes-only → deliverAndArchive → gallery (identical to kie/fal).
+      const delivered: string[] = [];
+      for (const item of items) {
+        const res = await deliverAndArchive(
+          { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
+          ctx,
+          { source: 'openart_image', prompt, model },
+        );
+        if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
+      }
+      logHive('tool_result', `openart_image[${operation}] ${model}: ${delivered.length} img`, ctx.agentId ?? undefined, { model, operation }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (delivered.length === 0) return { ok: false, error: 'OpenArt produced image(s) but delivery failed.' };
+      return {
+        ok: true,
+        model,
+        operation,
+        urls: delivered,
         instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
       };
     },
@@ -1026,23 +1932,32 @@ Requires VOIDAI_API_KEY in .env.`,
       if (operation === 'edit' && !args.input_image?.trim()) {
         return { ok: false, error: 'operation "edit" requires input_image (an https URL or base64 data URL).' };
       }
+      let inputImage: string | undefined;
+      let mask: string | undefined;
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image, ctx, 'data-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        inputImage = resolved.value;
+      }
+      if (args.mask?.trim()) {
+        const resolvedMask = await resolveImageInput(args.mask, ctx, 'data-url');
+        if (!resolvedMask.ok) return { ok: false, error: resolvedMask.error };
+        mask = resolvedMask.value;
+      }
 
       let result: Awaited<ReturnType<typeof generateVoidaiGptImage>>;
       try {
         result = await generateVoidaiGptImage({
           operation,
           prompt,
-          inputImage: args.input_image?.trim() || undefined,
-          mask:       args.mask?.trim() || undefined,
+          inputImage,
+          mask,
           size:       args.size,
           model:      args.model?.trim() || undefined,
         });
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
 
       const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
       const normalizeMime = (m: string): string => {
@@ -1053,9 +1968,10 @@ Requires VOIDAI_API_KEY in .env.`,
 
       const delivered: string[] = [];
       for (const item of result.items) {
-        const res = await sendTool.handler(
+        const res = await deliverAndArchive(
           { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
           ctx,
+          { source: 'voidai_gpt_image', prompt, model: result.model },
         );
         if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
       }
@@ -1091,13 +2007,19 @@ Requires VOIDAI_API_KEY in .env.`,
       if (operation === 'edit' && !args.input_image?.trim()) {
         return { ok: false, error: 'operation "edit" requires input_image (an https URL or base64 data URL).' };
       }
+      let inputImage: string | undefined;
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image, ctx, 'data-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        inputImage = resolved.value;
+      }
 
       let result: Awaited<ReturnType<typeof generateVoidaiImage>>;
       try {
         result = await generateVoidaiImage({
           operation,
           prompt,
-          inputImage:  args.input_image?.trim() || undefined,
+          inputImage,
           aspectRatio: args.aspect_ratio?.trim() || undefined,
           resolution:  args.resolution,
           model:       'gemini-3-pro-image',
@@ -1105,9 +2027,6 @@ Requires VOIDAI_API_KEY in .env.`,
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-
-      const sendTool = registry.find(t => t.name === 'send_image_to_user');
-      if (!sendTool) return { ok: false, error: 'send_image_to_user tool not found in registry' };
 
       const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
       const normalizeMime = (m: string): string => {
@@ -1118,9 +2037,10 @@ Requires VOIDAI_API_KEY in .env.`,
 
       const delivered: string[] = [];
       for (const item of result.items) {
-        const res = await sendTool.handler(
+        const res = await deliverAndArchive(
           { base64: item.base64, mime_type: normalizeMime(item.mime), alt: args.alt ?? prompt, caption: args.caption },
           ctx,
+          { source: 'voidai_gemini_pro_image', prompt, model: result.model },
         );
         if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
       }
@@ -1151,7 +2071,7 @@ Requires VOIDAI_API_KEY in .env.`,
     shape:       S.gptImageGenerateShape,
     handler: async (args, ctx) =>
       proxyMcpImageTool('gpt_image', 'chatgpt_image_generate',
-        { prompt: args.prompt, ...(args.style ? { style: args.style } : {}) }, ctx, args.prompt),
+        { prompt: args.prompt, ...(args.style ? { style: args.style } : {}) }, ctx, args.prompt, 'gpt-image'),
   },
   {
     name:        'gpt_image_edit',
@@ -1160,7 +2080,7 @@ Requires VOIDAI_API_KEY in .env.`,
     shape:       S.gptImageEditShape,
     handler: async (args, ctx) =>
       proxyMcpImageTool('gpt_image', 'chatgpt_image_edit',
-        { prompt: args.prompt, image_path: args.image_path }, ctx, args.prompt),
+        { prompt: args.prompt, image_path: args.image_path }, ctx, args.prompt, 'gpt-image'),
   },
   {
     name:        'grok_image_edit',
@@ -1187,7 +2107,7 @@ Requires VOIDAI_API_KEY in .env.`,
     shape:       S.geminiImageGenerateShape,
     handler: async (args, ctx) =>
       proxyMcpImageTool('gemini_web', 'gemini_generate_image',
-        { prompt: args.prompt }, ctx, args.prompt),
+        { prompt: args.prompt }, ctx, args.prompt, 'nano-banana'),
   },
   {
     name:        'gemini_image_edit',
@@ -1196,7 +2116,7 @@ Requires VOIDAI_API_KEY in .env.`,
     shape:       S.geminiImageEditShape,
     handler: async (args, ctx) =>
       proxyMcpImageTool('gemini_web', 'gemini_edit_image',
-        { prompt: args.prompt, image_path: args.image_path }, ctx, args.prompt),
+        { prompt: args.prompt, image_path: args.image_path }, ctx, args.prompt, 'nano-banana'),
   },
   // NOTE: abacus_video was removed — Abacus's RouteLLM API only supports
   // text/image/audio modalities via /v1/chat/completions. Video model ids
@@ -1231,6 +2151,9 @@ Requires ABACUS_API_KEY in .env.`,
 
       const item = media.items.find(i => i.mime.startsWith('audio/')) ?? media.items[0];
       if (!item?.base64 && !item?.url) return { ok: false, error: 'Abacus returned no audio.' };
+      // Meter the compute points Abacus consumed — fires once for both the url
+      // and base64 return paths below.
+      logSpend({ provider: 'abacus_speech', model_id: model, input_tokens: 0, output_tokens: 0, compute_points: media.computePoints, agent_id: ctx.agentId ?? null, session_id: ctx.sessionId ?? null });
       if (item.url) {
         logHive('tool_result', `abacus_speech ${model}: url, ${media.computePoints} pts`, ctx.agentId ?? undefined, { model, computePoints: media.computePoints }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
         return { ok: true, model, audio_url: item.url, compute_points_used: media.computePoints };
@@ -1275,10 +2198,31 @@ Requires ABACUS_API_KEY in .env.`,
       taskEvents.emit('task_created', { taskId: task.id, title: task.title, toName: recipient.name, fromName: senderName, status: task.status });
 
       if (args.execute_now) {
-        updateTask(task.id, { status: 'doing' });
+        // Create a dedicated execution session for this task so liveness (L2)
+        // correlates the task with the run it actually executes in, not the
+        // caller's session. This closes the false-DEAD gap where L2 could match
+        // the wrong session, and gives the holdout reviewer the real work session.
+        const execSessionId = createSession(recipient.id, `Task: ${args.title.slice(0, 50)}`, 'agent_task');
+        updateTask(task.id, { status: 'doing', session_id: execSessionId });
         try {
           const taskMsg = args.description ? `${args.title}\n\n${args.description}` : args.title;
-          const { response } = await runAgentTurn(taskMsg, recipient, `Task: ${args.title.slice(0, 50)}`, ctx.runId, 'agent_task');
+          const parentHandoff = ctx.sessionId ? findRunningHandoffByTargetSession(ctx.sessionId) : null;
+          const { response } = await runAgentTurn(
+            taskMsg,
+            recipient,
+            `Task: ${args.title.slice(0, 50)}`,
+            ctx.runId,
+            'agent_task',
+            execSessionId,
+            {
+              callerSessionId: ctx.sessionId ?? null,
+              callerAgentId: ctx.agentId ?? null,
+              callerRunId: ctx.runId ?? null,
+              source: 'execute_now',
+              taskId: task.id,
+              parentHandoffId: parentHandoff?.id ?? null,
+            },
+          );
           // No agent_messages record exists for assign_task_to_agent — result is
           // returned directly to the caller; do NOT call updateAgentMessageResponse
           // here because task.id will never match any agent_messages row.
@@ -1443,12 +2387,18 @@ Requires ABACUS_API_KEY in .env.`,
   {
     name:        'bash_run',
     core:        true,
-    description: 'Run a shell command on the host. Returns stdout, stderr, exit code, duration. Output is byte-capped; some destructive patterns are hard-blocked.',
+    description: 'Run a shell command on the host. Returns stdout, stderr, exit code, duration. Output is byte-capped; some destructive patterns are hard-blocked. When called from an nclaw-cli session, this runs LOCALLY on the client machine, not the server.',
     schema:      S.bashRunSchema,
     shape:       S.bashRunShape,
     gate:        gateExec,
-    handler: async (args, ctx) =>
-      bashRun({
+    handler: async (args, ctx) => {
+      // Secrets/purpose are broker-scoped server concerns — a relay-attached
+      // CLI client has no access to the broker, so those args only make sense
+      // for local (server-side) execution and are intentionally dropped when
+      // relayed.
+      const relayed = await tryRelay(ctx.sessionId, 'bash_run', { command: args.command, cwd: args.cwd, timeout_ms: args.timeout_ms });
+      if (relayed !== undefined) return relayed;
+      return bashRun({
         command:    args.command,
         cwd:        args.cwd,
         timeout_ms: args.timeout_ms,
@@ -1456,7 +2406,8 @@ Requires ABACUS_API_KEY in .env.`,
         sessionId:  ctx.sessionId ?? undefined,
         secrets:    args.secrets,
         purpose:    args.purpose,
-      }),
+      });
+    },
   },
   {
     // Ungated by design — discovery is available to every agent. Secret NAMES
@@ -1475,45 +2426,86 @@ Requires ABACUS_API_KEY in .env.`,
   {
     name:        'fs_read',
     core:        true,
-    description: 'Read the contents of a file on the host. Output is byte-capped; truncated if too large.',
+    description: 'Read the contents of a file on the host. Output is byte-capped; truncated if too large. When called from an nclaw-cli session, this reads LOCALLY from the client machine, not the server.',
     schema:      S.fsReadSchema,
     shape:       S.fsReadShape,
     gate:        gateExec,
-    handler: async (args, ctx) => fsRead({ path: args.path, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined }),
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'fs_read', { path: args.path });
+      if (relayed !== undefined) return relayed;
+      return fsRead({ path: args.path, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
   },
   {
     name:        'fs_write',
     core:        true,
-    description: 'Write to a file on the host. mode=overwrite (default), append, or create (fails if exists). Creates parent dirs.',
+    description: 'Write to a file on the host. mode=overwrite (default), append, or create (fails if exists). Creates parent dirs. When called from an nclaw-cli session, this writes LOCALLY on the client machine, not the server.',
     schema:      S.fsWriteSchema,
     shape:       S.fsWriteShape,
     gate:        gateExec,
-    handler: async (args, ctx) =>
-      fsWrite({ path: args.path, content: args.content, mode: args.mode ?? 'overwrite', agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined }),
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'fs_write', { path: args.path, content: args.content, mode: args.mode ?? 'overwrite' });
+      if (relayed !== undefined) return relayed;
+      return fsWrite({ path: args.path, content: args.content, mode: args.mode ?? 'overwrite', agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
+  },
+  {
+    name:        'fs_edit',
+    core:        true,
+    description: 'Replace an exact, unique substring in a file (must occur exactly once). Prefer this over fs_write for small changes to existing files. When called from an nclaw-cli session, this edits LOCALLY on the client machine, not the server.',
+    schema:      S.fsEditSchema,
+    shape:       S.fsEditShape,
+    gate:        gateExec,
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'fs_edit', { path: args.path, oldString: args.oldString, newString: args.newString });
+      if (relayed !== undefined) return relayed;
+      return fsEdit({ path: args.path, oldString: args.oldString, newString: args.newString, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
   },
   {
     name:        'fs_list',
     core:        true,
-    description: 'List the contents of a directory.',
+    description: 'List the contents of a directory. When called from an nclaw-cli session, this lists LOCALLY on the client machine, not the server.',
     schema:      S.fsListSchema,
     shape:       S.fsListShape,
     gate:        gateExec,
-    handler: async (args, ctx) => fsList({ path: args.path, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined }),
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'fs_list', { path: args.path });
+      if (relayed !== undefined) return relayed;
+      return fsList({ path: args.path, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
+  },
+  {
+    name:        'glob',
+    core:        true,
+    description: "Find files by glob pattern (e.g. 'src/**/*.ts'). When called from an nclaw-cli session, this searches LOCALLY on the client machine, not the server.",
+    schema:      S.globSchema,
+    shape:       S.globShape,
+    gate:        gateExec,
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'glob', { pattern: args.pattern, path: args.path });
+      if (relayed !== undefined) return relayed;
+      return globFiles({ pattern: args.pattern, path: args.path, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
   },
   {
     name:        'fs_search',
     core:        true,
-    description: 'Recursively search for a regex/pattern across files (uses ripgrep when available, else grep -rn).',
+    description: 'Recursively search for a regex/pattern across files (uses ripgrep when available, else grep -rn). When called from an nclaw-cli session, this searches LOCALLY on the client machine, not the server.',
     schema:      S.fsSearchSchema,
     shape:       S.fsSearchShape,
     gate:        gateExec,
-    handler: async (args, ctx) =>
-      fsSearch({ pattern: args.pattern, path: args.path, max_results: args.max_results, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined }),
+    handler: async (args, ctx) => {
+      const relayed = await tryRelay(ctx.sessionId, 'fs_search', { pattern: args.pattern, path: args.path, max_results: args.max_results });
+      if (relayed !== undefined) return relayed;
+      return fsSearch({ pattern: args.pattern, path: args.path, max_results: args.max_results, agentId: ctx.agentId ?? undefined, sessionId: ctx.sessionId ?? undefined });
+    },
   },
 
   // ── Session uploads (files the user sent from Discord / web GUI) ──────────
   {
     name:        'list_uploads',
+    category:    'retrieval',
     core:        true,
     description: 'List every file the user uploaded in this session (documents, images, audio, video, or other) — id, name, type, size, on-disk path, and any processing already done (parsed/transcribed/described). Use get_upload to open one, analyze_image to look at a picture, or get_attachment_parsed for a pre-parsed document.',
     schema:      S.listUploadsSchema,
@@ -1543,6 +2535,7 @@ Requires ABACUS_API_KEY in .env.`,
   },
   {
     name:        'analyze_image',
+    category:    'retrieval',
     core:        true,
     description: 'Look at an uploaded image and describe it. Pass an image upload id from list_uploads and an optional question to focus on. Returns a text description from the vision model and caches it on the upload.',
     schema:      S.analyzeImageSchema,
@@ -2031,15 +3024,17 @@ Requires ABACUS_API_KEY in .env.`,
         if (!args.title) return { ok: false, error: 'title is required for create' };
         const projectId = args.project_id ?? getDefaultProject().id;
         const t = await createTask(args.title, {
-          description:    args.description,
-          project_id:     projectId,
-          parent_task_id: args.parent_task_id,
-          assignee:       args.assignee,
-          priority_level: args.priority_level,
-          task_order:     args.task_order,
-          feature:        args.feature,
-          sources:        args.sources,
-          code_examples:  args.code_examples,
+          description:       args.description,
+          project_id:        projectId,
+          parent_task_id:    args.parent_task_id,
+          assignee:          args.assignee,
+          priority_level:    args.priority_level,
+          task_order:        args.task_order,
+          feature:           args.feature,
+          sources:           args.sources,
+          code_examples:     args.code_examples,
+          verification_mode: args.verification_mode,
+          dependsOn:         args.dependsOn,
         });
         if (args.status && args.status !== 'todo') {
           updateTask(t.id, { status: args.status });
@@ -2051,6 +3046,37 @@ Requires ABACUS_API_KEY in .env.`,
       if (!existing) return { ok: false, error: `task "${args.task_id}" not found` };
 
       if (args.action === 'update') {
+        // Self-declare bypass guard: verification_mode is creation-only and
+        // immutable. Stripping it here prevents an assignee from flipping its
+        // own reconcile task to 'review' and skipping the HEAD-moved gate.
+        if (args.verification_mode !== undefined) {
+          const isSelf = ctx.agentId != null && ctx.agentId === existing.agent_id;
+          logAudit('task_verification_mode_rejected', 'task', existing.id, {
+            attempted: args.verification_mode,
+            actorAgentId: ctx.agentId ?? null,
+            isAssignee: isSelf,
+          });
+          logger.warn('registry: verification_mode ignored on task update (creation-only)', {
+            taskId: existing.id,
+            actorAgentId: ctx.agentId,
+            isAssignee: isSelf,
+            attempted: args.verification_mode,
+          });
+        }
+        // Wave-2 Item D: dependsOn REPLACES the blocker set on update ([] clears).
+        if (args.dependsOn !== undefined) {
+          clearTaskDependencies(existing.id);
+          for (const blockerId of args.dependsOn) {
+            const r = addTaskDependency(existing.id, blockerId);
+            if (!r.ok) return { ok: false, error: `dependency "${blockerId}": ${r.error}` };
+          }
+        }
+        // Clean feedback for an illegal doing-transition (updateTask also backstops
+        // this — see task-manager.ts — but pre-checking gives the agent a reason).
+        if (args.status === 'doing') {
+          const unmet = unmetBlockerCount(existing.id);
+          if (unmet > 0) return { ok: false, error: `cannot move to "doing": ${unmet} blocker(s) not yet done` };
+        }
         updateTask(existing.id, {
           title:          args.title,
           description:    args.description,
@@ -2825,6 +3851,7 @@ Requires ABACUS_API_KEY in .env.`,
       priority:      z.enum(['simple', 'complex', 'frontier']).optional().describe('Override automatic complexity triage'),
       notify_policy: z.enum(['done_only', 'all_updates', 'never']).optional().describe('Controls when proactive updates are delivered. done_only (default): notify on completion/failure/blocked only. all_updates: also notify on progress heartbeats. never: silent — result queryable only via get_subtask_result.'),
       allow_bash:    z.boolean().optional().describe('Set true to route this sub-agent through the shell-capable executor (supports git, npm, file writes). Off by default — sub-agents use Kimi K2.6/MiniMax and return output as text.'),
+      allow_composio: z.boolean().optional().describe('Set true to let this sub-agent call Composio tools (COMPOSIO_*) for READ/lookup/pagination work — e.g. driving a multi-page YouTube/Gmail/Notion list loop without burning the parent context. Off by default. Blast-radius note: this blesses the whole Composio surface for the spawn, so keep destructive actions (delete/send) on the parent for human review and scope the sub-agent task to fetch-only.'),
       kind:          z.enum(['code', 'prose']).optional().describe("Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content."),
       force:         z.boolean().optional().describe('Bypass the duplicate-task guard and spawn even if an identical subtask recently ran in this session. Only set when the user explicitly wants a re-run.'),
     }),
@@ -2835,11 +3862,12 @@ Requires ABACUS_API_KEY in .env.`,
       priority:      z.enum(['simple', 'complex', 'frontier']).optional().describe('Override automatic complexity triage'),
       notify_policy: z.enum(['done_only', 'all_updates', 'never']).optional().describe('Controls when proactive updates are delivered. done_only (default): notify on completion/failure/blocked only. all_updates: also notify on progress heartbeats. never: silent — result queryable only via get_subtask_result.'),
       allow_bash:    z.boolean().optional().describe('Set true to route this sub-agent through the shell-capable executor (supports git, npm, file writes). Off by default — sub-agents use Kimi K2.6/MiniMax and return output as text.'),
+      allow_composio: z.boolean().optional().describe('Set true to let this sub-agent call Composio tools (COMPOSIO_*) for READ/lookup/pagination work — e.g. driving a multi-page YouTube/Gmail/Notion list loop without burning the parent context. Off by default. Blast-radius note: this blesses the whole Composio surface for the spawn, so keep destructive actions (delete/send) on the parent for human review and scope the sub-agent task to fetch-only.'),
       kind:          z.enum(['code', 'prose']).optional().describe("Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content."),
       force:         z.boolean().optional().describe('Bypass the duplicate-task guard and spawn even if an identical subtask recently ran in this session. Only set when the user explicitly wants a re-run.'),
     },
     gate: gateSubAgent,
-    handler: async (args: { task: string; context: string; agent_name?: string; priority?: string; notify_policy?: string; allow_bash?: boolean; kind?: 'code' | 'prose'; force?: boolean }, ctx: ToolContext) => {
+    handler: async (args: { task: string; context: string; agent_name?: string; priority?: string; notify_policy?: string; allow_bash?: boolean; allow_composio?: boolean; kind?: 'code' | 'prose'; force?: boolean }, ctx: ToolContext) => {
       // Dedup backstop: if an IDENTICAL task is already running in this session,
       // return that task instead of spawning a duplicate. Root cause it guards:
       // across turns (esp. Discord, where history is restored from DB as
@@ -2917,6 +3945,38 @@ Requires ABACUS_API_KEY in .env.`,
           }
         }
       }
+      // Spawn-triviality telemetry (advisory only — never blocks the spawn).
+      // The decision to delegate is prompt-driven and biased hard toward
+      // spawning; there is no code throttle counterbalancing it. This scores
+      // the task with the same classifier the model-tier triage uses and logs
+      // whether the work looks trivial enough to have run inline. A cold
+      // sub-agent context forfeits the warm-context prompt-cache discount, so a
+      // 'low'-tier task with no code/multi-step signal is a candidate that
+      // likely cost more delegated than done inline. We MEASURE this before
+      // ever enforcing it — the log is the whole point.
+      try {
+        const triage = classifyComplexity(args.task);
+        const trivial =
+          triage.tier === 'low' &&
+          !triage.reasons.hasCode &&
+          !triage.reasons.multiStep &&
+          !args.kind;
+        logger.info('run_subtask: spawn triviality advisory', {
+          agentId:      ctx.agentId,
+          sessionId:    ctx.sessionId,
+          tier:         triage.tier,
+          score:        triage.score,
+          taskLength:   triage.reasons.length,
+          hasCode:      triage.reasons.hasCode,
+          multiStep:    triage.reasons.multiStep,
+          allowBash:    !!args.allow_bash,
+          explicitKind: args.kind ?? null,
+          inlineCandidate: trivial,
+          ...(trivial
+            ? { advisory: 'Task scored low-complexity with no code/multi-step signal — could likely have run inline. Delegate for context hygiene/parallelism, not for trivial work (cold sub-agent forfeits the prompt-cache discount).' }
+            : {}),
+        });
+      } catch { /* advisory only — never let telemetry break a spawn */ }
       const handle = runSubAgentAsync({
         task:                 args.task,
         context:              args.context,
@@ -2926,7 +3986,16 @@ Requires ABACUS_API_KEY in .env.`,
         priorityOverride:     args.priority,
         kind:                 args.kind,
         notifyPolicy:         args.notify_policy as TaskNotifyPolicy | undefined,
-        allowedToolOverrides: args.allow_bash ? ['bash_run'] : undefined,
+        allowedToolOverrides: (() => {
+          // Per-spawn tool blessings. bash_run enables the shell executor;
+          // the 'composio' sentinel (honored by isToolBlockedForSubAgent BEFORE
+          // the COMPOSIO_ prefix scan) lifts the default Composio lockdown for
+          // this one sub-agent only — the global default-deny gate is untouched.
+          const overrides: string[] = [];
+          if (args.allow_bash) overrides.push('bash_run');
+          if (args.allow_composio) overrides.push('composio');
+          return overrides.length > 0 ? overrides : undefined;
+        })(),
       });
       const SHELL_HINT_RE = /\b(?:curl|wget|git\s+(?:clone|push|pull|commit|log)|npm|pip|gh\s+run|fetch\s+logs?|ci\s+logs?|github\s+actions?|bash|shell|execute|docker|ssh|scp)\b/i;
       const shellWarning = !args.allow_bash && SHELL_HINT_RE.test(args.task)
@@ -3092,7 +4161,7 @@ Requires ABACUS_API_KEY in .env.`,
         // For small files, base64 is safe to forward to MCP tools.
         base64:    isLarge ? null : rec.base64,
         _hint:     isLarge
-          ? `File is >= ${Math.round(LARGE_THRESHOLD / 1024)} KB — use bash_run to POST disk_path to ${process.env.DOCUFLOW_API_URL ?? 'https://docuflow-api.your-domain.com'}/parse instead of base64`
+          ? `File is >= ${Math.round(LARGE_THRESHOLD / 1024)} KB — use bash_run to POST disk_path to ${process.env.DOCUFLOW_API_URL ?? 'https://docuflow-api.neurolearninglabs.com'}/parse instead of base64`
           : 'Forward base64 to mcp__docuflow__parse_document_base64',
       };
     },
@@ -3110,6 +4179,7 @@ Requires ABACUS_API_KEY in .env.`,
   },
   {
     name:        'get_attachment_parsed',
+    category:    'retrieval',
     core:        true,
     description: 'Retrieve pre-parsed text from a document the user uploaded. Returns the extracted title, markdown body, and stats from the docuflow parse — no base64 involved. Only works for documents marked "✓ pre-parsed" in the system context block. If the document was not pre-parsed (docuflow was unreachable at upload time), use get_attachment instead.',
     schema:      S.getAttachmentParsedSchema,
@@ -3144,6 +4214,114 @@ Requires ABACUS_API_KEY in .env.`,
         markdown: rec.parsedContent.markdown,
         stats:    rec.parsedContent.stats,
       };
+    },
+  },
+  {
+    name:        'search_document',
+    category:    'retrieval',
+    core:        true,
+    description: 'Semantic search over a LARGE pre-parsed uploaded document — returns only the passages most relevant to your query instead of the whole markdown. Use this for documents flagged "use search_document" in the context block (too big to inline). For small docs, get_attachment_parsed (full markdown) is fine. Returns { ok, id, name, hits: [{ chunkIndex, content, score }] }.',
+    schema:      S.searchDocumentSchema,
+    shape:       S.searchDocumentShape,
+    handler: async (args: { id: string; query: string; top_k?: number }, ctx: ToolContext) => {
+      // Authz: resolve the attachment and confirm it belongs to THIS session
+      // before searching — an agent must not pull chunks from another session's
+      // document by guessing an attachment_id (A.S.A.G.I by-id authz review).
+      const { getAttachment } = await import('../system/attachment-registry');
+      const { searchDocument, docRagEnabled } = await import('../system/doc-rag');
+      const rec = getAttachment(args.id);
+      if (!rec) {
+        return { ok: false, error: `no attachment with id "${args.id}" — it may have expired or never existed` };
+      }
+      if (ctx.sessionId && rec.sessionId !== ctx.sessionId) {
+        return { ok: false, error: 'attachment belongs to a different session' };
+      }
+      if (!docRagEnabled()) {
+        return { ok: false, id: rec.id, name: rec.name, error: 'document search is not enabled — use get_attachment_parsed to read the full markdown instead' };
+      }
+      const hits = await searchDocument({
+        query:        args.query,
+        attachmentId: rec.id,
+        sessionId:    ctx.sessionId ?? rec.sessionId,
+        topK:         args.top_k,
+      });
+      if (!hits.length) {
+        return { ok: true, id: rec.id, name: rec.name, hits: [], note: 'no relevant passages found (the document may not be embedded yet — fall back to get_attachment_parsed for the full text)' };
+      }
+      return {
+        ok:   true,
+        id:   rec.id,
+        name: rec.name,
+        hits: hits.map(h => ({ chunkIndex: h.chunkIndex, content: h.content, score: Number(h.score.toFixed(3)) })),
+      };
+    },
+  },
+  // ── Notebook / collection RAG (spec: native-notebook-rag) ────────────────
+  // NotebookLM replacement: build a named collection of documents and ask
+  // questions across ALL of them with cited answers. notebooklm_* aliases give
+  // drop-in compat during the MCP cutover. All gated by DOC_NOTEBOOKS_ENABLED.
+  { name: 'notebook_create', description: 'Create a named notebook (a collection of documents you can query together, like NotebookLM). Returns { ok, notebook }.', schema: S.notebookCreateSchema, shape: S.notebookCreateShape, gate: gateNotebooks, handler: nbCreate },
+  { name: 'notebook_list', description: 'List all notebooks with their source counts. Returns { ok, notebooks }.', schema: S.notebookListSchema, shape: S.notebookListShape, gate: gateNotebooks, handler: nbList },
+  { name: 'notebook_use', description: 'Set the active notebook for this conversation so later notebook tools can omit notebook_id. Returns { ok, notebook }.', schema: S.notebookUseSchema, shape: S.notebookUseShape, gate: gateNotebooks, handler: nbUse },
+  { name: 'notebook_status', description: 'Show the active notebook for this conversation. Returns { ok, active }.', schema: S.notebookStatusSchema, shape: S.notebookStatusShape, gate: gateNotebooks, handler: nbStatus },
+  { name: 'notebook_add_source', description: 'Add a source to a notebook — an uploaded attachment_id OR an https document URL (PDF/DOCX/HTML/MD/TXT). It is parsed + embedded once. Returns { ok, source, embedded }.', schema: S.notebookAddSourceSchema, shape: S.notebookAddSourceShape, gate: gateNotebooks, handler: nbAddSource },
+  { name: 'notebook_source_list', description: 'List the sources in a notebook. Returns { ok, sources }.', schema: S.notebookSourceListSchema, shape: S.notebookSourceListShape, gate: gateNotebooks, handler: nbSourceList },
+  { name: 'notebook_ask', description: 'Ask a question answered with RAG across ALL documents in a notebook, with citations. Returns { ok, answer, citations, retrieved_chunks }.', schema: S.notebookAskSchema, shape: S.notebookAskShape, gate: gateNotebooks, handler: nbAsk },
+  // notebooklm_* aliases (same handlers) — drop-in for the MCP contract.
+  { name: 'notebooklm_create', description: 'Alias of notebook_create.', schema: S.notebookCreateSchema, shape: S.notebookCreateShape, gate: gateNotebooks, handler: nbCreate },
+  { name: 'notebooklm_list', description: 'Alias of notebook_list.', schema: S.notebookListSchema, shape: S.notebookListShape, gate: gateNotebooks, handler: nbList },
+  { name: 'notebooklm_use', description: 'Alias of notebook_use.', schema: S.notebookUseSchema, shape: S.notebookUseShape, gate: gateNotebooks, handler: nbUse },
+  { name: 'notebooklm_status', description: 'Alias of notebook_status.', schema: S.notebookStatusSchema, shape: S.notebookStatusShape, gate: gateNotebooks, handler: nbStatus },
+  { name: 'notebooklm_source_add', description: 'Alias of notebook_add_source.', schema: S.notebookAddSourceSchema, shape: S.notebookAddSourceShape, gate: gateNotebooks, handler: nbAddSource },
+  { name: 'notebooklm_source_list', description: 'Alias of notebook_source_list.', schema: S.notebookSourceListSchema, shape: S.notebookSourceListShape, gate: gateNotebooks, handler: nbSourceList },
+  { name: 'notebooklm_ask', description: 'Alias of notebook_ask.', schema: S.notebookAskSchema, shape: S.notebookAskShape, gate: gateNotebooks, handler: nbAsk },
+  {
+    name:        'ssh_run',
+    description: 'Run a shell command on a registered remote machine over SSH. The machine (host, user, and its broker-stored key/password) is configured in the Connect → Machines tab; you reference it by name. Credentials are resolved server-side via the broker — you never see the key. Returns { ok, machine, exitCode, stdout, stderr }.',
+    schema:  S.sshRunSchema,
+    shape:   S.sshRunShape,
+    gate:    gateSsh,
+    handler: async (args: { machine: string; command: string; timeout_ms?: number }, ctx: ToolContext) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      if (!agent) return { ok: false, error: 'no agent context' };
+      const { sshRunCommand } = await import('../system/ssh-connect');
+      return sshRunCommand({
+        machineRef: args.machine, command: args.command,
+        agentId: agent.id, agentName: agent.name, sessionId: ctx.sessionId ?? '',
+        runId: ctx.runId ?? null, timeoutMs: args.timeout_ms,
+      });
+    },
+  },
+  {
+    name:        'ssh_upload',
+    description: 'Upload a local file to a registered remote machine over SFTP. Reference the machine by its name from the Connect → Machines tab. Returns { ok, machine, error? }.',
+    schema:  S.sshUploadSchema,
+    shape:   S.sshUploadShape,
+    gate:    gateSsh,
+    handler: async (args: { machine: string; local_path: string; remote_path: string }, ctx: ToolContext) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      if (!agent) return { ok: false, error: 'no agent context' };
+      const { sshUpload } = await import('../system/ssh-connect');
+      return sshUpload({
+        machineRef: args.machine, localPath: args.local_path, remotePath: args.remote_path,
+        agentId: agent.id, agentName: agent.name, sessionId: ctx.sessionId ?? '', runId: ctx.runId ?? null,
+      });
+    },
+  },
+  {
+    name:        'ssh_download',
+    description: 'Download a remote file from a registered machine over SFTP to a local path. Reference the machine by its name from the Connect → Machines tab. Returns { ok, machine, error? }.',
+    schema:  S.sshDownloadSchema,
+    shape:   S.sshDownloadShape,
+    gate:    gateSsh,
+    handler: async (args: { machine: string; remote_path: string; local_path: string }, ctx: ToolContext) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      if (!agent) return { ok: false, error: 'no agent context' };
+      const { sshDownload } = await import('../system/ssh-connect');
+      return sshDownload({
+        machineRef: args.machine, remotePath: args.remote_path, localPath: args.local_path,
+        agentId: agent.id, agentName: agent.name, sessionId: ctx.sessionId ?? '', runId: ctx.runId ?? null,
+      });
     },
   },
   {
@@ -3419,6 +4597,10 @@ function serializeTask(t: AppTask): Record<string, unknown> {
     archived_by:    t.archived_by,
     session_id:     t.session_id,
     agent_id:       t.agent_id,
+    verification_mode: t.verification_mode,
+    // Wave-2 Item D: dependency surface for the board's "⛔ blocked by N" badge.
+    depends_on:     getTaskDependencies(t.id),
+    blocked_by:     unmetBlockerCount(t.id),
     created_at:     t.created_at,
     updated_at:     t.updated_at,
   };

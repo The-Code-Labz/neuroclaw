@@ -14,6 +14,7 @@ import { getHermesProxyClient } from './hermes-proxy-client';
 import { getKimiApiClient } from './kimi-api-client';
 import { getLiteLlmClient } from './litellm-client';
 import { getAbacusClient } from './abacus-client';
+import { getOmniRouteClient } from './omniroute-client';
 import {
   streamClaudeCliChat,
   ClaudeCliRateLimitError,
@@ -55,7 +56,7 @@ import {
 import { createTask } from '../system/task-manager';
 import { logger } from '../utils/logger';
 import { classifyRoute } from '../system/router';
-import { resolveEquivalentApiModels } from '../system/model-catalog';
+import { resolveEquivalentApiModels, listCatalog } from '../system/model-catalog';
 import { logHive } from '../system/hive-mind';
 import { getLangfuse, createChatTrace, logToolSpan, estimateTokens } from '../system/langfuse';
 import { type BackgroundTask } from '../system/background-tasks';
@@ -69,7 +70,7 @@ import * as SkillForge from '../system/skill-forge';
 import { update as updateUserProfile, getContext as getUserContext } from '../system/user-profiler';
 import { classifyProviderError, reasonToLegacyAction, jitteredBackoff, type LegacyLlmAction } from './provider-error';
 import { orderByHealth, reportProviderSuccess, reportProviderFailure, extractRetryAfterMs } from '../infra/provider-health';
-import { runOpenAiAgentsBackbone } from './openai-agents-backbone';
+import { runOpenAiAgentsBackbone, type RunBackboneResult } from './openai-agents-backbone';
 import { backboneEnabled } from './openai-agents-tools';
 
 // TODO [ElevenLabs]: Stream audio output alongside text for voice-enabled agents
@@ -143,19 +144,29 @@ const SPAWN_GUIDANCE_TEXT =
 // Bump PROMPT_VERSION whenever a prompt constant changes. The caches
 // (orchSectionCache, teamSectionCache) key on agent IDs + this version string,
 // so incrementing it forces a rebuild on next turn without a restart.
-const PROMPT_VERSION = '3';
+const PROMPT_VERSION = '4';
 
 const RUN_SUBTASK_GUIDANCE =
-  '\n\n## run_subtask — USE THIS AGGRESSIVELY\n\n' +
-  'Call run_subtask when:\n' +
-  '- The user\'s request has 2+ independent components (research + code,\n' +
-  '  compare A vs B, fetch X and summarize Y)\n' +
-  '- Any single step would take more than ~300 tokens of your own output\n' +
-  '- You need to read/analyze multiple sources in parallel\n' +
-  '- Context is getting long — offload new work instead of growing it further\n\n' +
-  'CALL IT MULTIPLE TIMES IN ONE TURN — parallel calls fire simultaneously.\n\n' +
-  'DO NOT do the work yourself. DO NOT summarize what you are delegating.\n' +
-  'Just call the tool and tell the user what is in flight.\n\n' +
+  '\n\n## run_subtask — DELEGATE FOR CONTEXT HYGIENE & PARALLELISM\n\n' +
+  'A sub-agent does NOT make work cheaper — it moves work into a SEPARATE, COLD\n' +
+  'context. That forfeits the prompt-cache discount your warm main context gets,\n' +
+  'and adds handoff + cold-start overhead. So delegate to keep your context clean\n' +
+  'and to run things in parallel — NOT because it saves tokens (it usually costs\n' +
+  'more per task). For trivial or iterative work, just do it inline.\n\n' +
+  'Delegate when:\n' +
+  '- The request has 2+ INDEPENDENT components you can run in parallel\n' +
+  '  (research + code, compare A vs B, fetch X and summarize Y)\n' +
+  '- The work is CONTEXT-HEAVY — reading many files / large outputs that would\n' +
+  '  bloat your main thread\n' +
+  '- You want to ISOLATE a retry/failure loop so it can\'t pollute your context\n\n' +
+  'Do it INLINE (do NOT delegate) when:\n' +
+  '- The task is trivial (spawn overhead > the task itself)\n' +
+  '- It is interactive/iterative — needs tight back-and-forth with the user\n' +
+  '- It is context-bound — needs so much of the current conversation that the\n' +
+  '  handoff erases any benefit\n\n' +
+  'When you DO delegate: scope the task NARROWLY (a broad task burns its whole\n' +
+  'budget on re-investigation), and CALL IT MULTIPLE TIMES IN ONE TURN for\n' +
+  'independent components — parallel calls fire simultaneously.\n\n' +
   'Use agent_name to route to a specialist:\n' +
   '  "Researcher" → web research, knowledge retrieval\n' +
   '  "Coder"      → implementation, debugging, refactoring\n' +
@@ -277,6 +288,8 @@ function resolveProviderClient(provider: string | null | undefined): ProviderCli
       return { client: getLiteLlmClient(),    key: 'litellm',    label: 'LiteLLM',     defaultModel: config.litellm.model };
     case 'abacus':
       return { client: getAbacusClient(),     key: 'abacus',     label: 'Abacus AI',   defaultModel: config.abacus.model };
+    case 'omniroute':
+      return { client: getOmniRouteClient(),  key: 'omniroute',  label: 'OmniRoute',   defaultModel: config.omniroute.model };
     default:
       return { client: getClient(),           key: 'voidai',     label: 'VoidAI',     defaultModel: config.voidai.model };
   }
@@ -371,11 +384,41 @@ Do NOT create tasks in any other system. Always confirm a tool returned success 
 
 If you finish your current work and want more from the board, call \`claim_next_task\` — it atomically pulls the next available task and assigns it to you. When you complete a task you claimed or were assigned, set it to \`review\` (not \`done\`) via \`manage_task\` — a holdout reviewer verifies the work and advances it to \`done\`.`;
 
+// Token-optimization directives (spec 2026-07-10, Component A). Plain system-
+// prompt text → provider-agnostic by construction: works on all 14 backends and
+// both agent + chat mode with zero per-provider code. Injected only for agents
+// whose per-agent flag is set (default OFF), so user-facing/prose agents keep
+// their normal voice. This is the single universal composition choke point —
+// every specialist prompt in alfred.ts is `(system_prompt) + buildTeamSection`.
+const TERSE_DIRECTIVE = `
+
+## Response Style — Terse
+
+Answer with minimum prose. No preamble, no restatement of the question, no filler, no sign-off. Lead with the result. Keep code, commands, file paths, identifiers, and error text BYTE-EXACT — never abbreviate, paraphrase, or reformat them.`;
+
+const LEAN_CODE_DIRECTIVE = `
+
+## Code Style — Lean
+
+Write the minimum code that satisfies the requirement (YAGNI). No speculative abstractions, no unrequested features, no re-emitting unchanged code. Preserve ALL error handling and safety guards — "lean" means less scaffolding, never fewer safeguards.`;
+
+function buildOptimizeDirective(me: AgentRecord | undefined): string {
+  if (!me) return '';
+  let out = '';
+  if (me.optimize_terse)     out += TERSE_DIRECTIVE;
+  if (me.optimize_lean_code) out += LEAN_CODE_DIRECTIVE;
+  return out;
+}
+
 function buildTeamSection(currentAgentId: string, allAgents: AgentRecord[]): string {
   const peers = allAgents.filter(
     a => a.status === 'active' && a.id !== currentAgentId && !a.temporary,
   );
-  const hash = PROMPT_VERSION + ':' + peers.map(a => `${a.id}:${a.name}`).join(',');
+  const me = allAgents.find(a => a.id === currentAgentId);
+  const optimizeDirective = buildOptimizeDirective(me);
+  // Flags folded into the cache hash so toggling terse/lean_code busts the cache.
+  const hash = PROMPT_VERSION + ':' + (me?.optimize_terse ? 't' : '') + (me?.optimize_lean_code ? 'l' : '')
+    + ':' + peers.map(a => `${a.id}:${a.name}`).join(',');
   const cached = teamSectionCache.get(currentAgentId);
   if (cached?.hash === hash) return cached.content;
 
@@ -384,7 +427,7 @@ function buildTeamSection(currentAgentId: string, allAgents: AgentRecord[]): str
       peers.map(a => `- @${a.name}${a.description ? ' — ' + a.description : ''}`).join('\n') +
       '\nDo NOT tell the user to contact agents themselves — call the tool and do it for them.'
     : '';
-  const content = teamSection + RUN_SUBTASK_GUIDANCE + buildMemorySection() + TASK_MANAGEMENT_DIRECTIVE;
+  const content = teamSection + RUN_SUBTASK_GUIDANCE + buildMemorySection() + TASK_MANAGEMENT_DIRECTIVE + optimizeDirective;
   teamSectionCache.set(currentAgentId, { hash, content });
   return content;
 }
@@ -589,6 +632,7 @@ async function chatStreamOpenAI(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({
@@ -744,6 +788,7 @@ async function chatStreamOpenAI(
         agentName:     agentRecord.name,
         onChunk,
         onMeta,
+        signal,
       });
       if (result.ok) {
         // Input-token estimate from the request copy BEFORE appending the reply
@@ -1423,17 +1468,24 @@ async function chatStreamCodexCli(
   // Per-turn extra context (Discord ids etc.).
   if (extraSystemContext) activeSystemPrompt += extraSystemContext;
 
-  const priorHistoryText = flattenAnthropicHistoryAsText(history);
+  // App-server path uses persistent threads: history is injected as structured
+  // Responses-API items, so the lossy text flatten is omitted to avoid duplicate
+  // context. The CLI path remains stateless and still needs the flatten.
+  const priorHistoryText = useCodexAppServer ? '' : flattenAnthropicHistoryAsText(history);
   const finalSystemPrompt = priorHistoryText
     ? `${activeSystemPrompt}\n\n## Recent conversation\n${priorHistoryText}`
     : activeSystemPrompt;
 
   const configuredModel = agentRecord?.model;
-  const isValidCodexModel = configuredModel && (CODEX_CHATGPT_MODELS as readonly string[]).includes(configuredModel);
+  const liveCodexModels = listCatalog({ provider: 'codex' }).map(r => r.model_id);
+  // Cold-boot fallback: catalog not yet populated/refreshed — use the static
+  // allowlist so the gate still functions before the first catalog sync.
+  const codexAllowlist = liveCodexModels.length > 0 ? liveCodexModels : (CODEX_CHATGPT_MODELS as readonly string[]);
+  const isValidCodexModel = !!configuredModel && codexAllowlist.includes(configuredModel);
   if (configuredModel && !isValidCodexModel) {
     logger.warn('chatStreamCodexCli: configured model not in Codex ChatGPT allowlist, falling back to gpt-5.5', { configured: configuredModel });
   }
-  const model = isValidCodexModel ? configuredModel : 'gpt-5.5';
+  const model = isValidCodexModel ? configuredModel! : 'gpt-5.5';
   const trace = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
   const generation = trace?.generation({
     name: 'codex-cli-completion',
@@ -1453,6 +1505,7 @@ async function chatStreamCodexCli(
       model,
       agentId,
       sessionId,
+      history:      useCodexAppServer ? history : undefined,
       onUsage: (u) => {
         if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
         if (typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
@@ -1837,10 +1890,19 @@ export interface ChatImageAttachment {
  * per-request context the agent needs but that doesn't belong in its stored
  * prompt: the Discord turn ids the bot path threads in, etc.
  */
-// ── Chat mode: plain completion (no tools / skills / MCP / decomposition) ─────
+// ── Chat mode: fast, self-selecting tools (no skills / roster / decomposition) ─
 // Gated per-agent via agents.chat_mode, with a per-session override
-// (sessions.chat_mode wins when non-null). Two bare paths — OpenAI-compatible
-// and Anthropic-plane. CLI/external providers are unsupported and run normal.
+// (sessions.chat_mode wins when non-null). Two paths — OpenAI-compatible (via
+// the shared agents backbone) and Anthropic-plane (Claude SDK w/ NeuroClaw MCP).
+// Both inject memory BY DEFAULT and expose a CURATED core tool set the model
+// calls only when a turn needs it — tool-free turns stay a single fast
+// completion. Chat mode differs from agent mode purely in what it OMITS:
+// decomposition, Alfred routing, sub-agents, team roster, and skills. CLI/
+// external providers map to an equivalent API model inside resolveChatModeClient.
+//
+// Bounded tool loop for the Anthropic plane: keeps a tool-free turn to a single
+// round-trip while still allowing a genuine multi-tool turn. Env-overridable.
+const CHATMODE_MAX_TOOL_TURNS = Math.max(1, Number(process.env.CHATMODE_MAX_TOOL_TURNS) || 8);
 
 function chatModePersona(
   agentRecord: AgentRecord | undefined,
@@ -1862,8 +1924,8 @@ async function chatStreamPlainOpenAI(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
-  void onMeta;
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({ origin: 'chat', sessionId, initiatingAgentId: agentId, userMessage });
   const agentRecord = agentId ? getAgentById(agentId) : undefined;
@@ -1875,17 +1937,20 @@ async function chatStreamPlainOpenAI(
   const persona = chatModePersona(agentRecord, systemPrompt, extraSystemContext);
   // Passive memory (read): auto-inject relevant long-term memories. Reuses the
   // warm prefetchMemoryContext cache from chatStream() → ~no added latency.
-  // Self-gates to '' when memory/embeddings are disabled. No memory TOOLS —
-  // chat mode stays tool-less; this is injection-only.
+  // Self-gates to '' when memory/embeddings are disabled. Memory is ALWAYS
+  // injected by default (no tool call needed to recall it); the model may ALSO
+  // reach memory/search/etc. as tools when a turn genuinely needs them.
   const memoryBlock = await buildMemoryContextBlock({ query: userMessage, agentId });
 
   const history = getOrCreateHistory(sessionId, persona, agentId);
-  // Bare mode: history[0] is ALWAYS just persona — no team / skills / tools.
+  // Chat mode + tools: history[0] is the LEAN persona only — no team roster, no
+  // skills, no decomposition (that's the agent-mode machinery chat mode skips).
   // WS1: persona is the stable prefix (replaced only on content-hash change so
   // provider prompt caches stay warm); per-message memory recall rides the
   // latest user message as turn-context instead of mutating the system prompt.
   applyStablePrompt(history, sessionId, agentId, persona + TURN_CONTEXT_FRAMING + RESEARCH_DISCIPLINE);
   while (history.length > 1 && history[history.length - 1].role === 'user') history.pop();
+  sanitizeOrphanedToolCallPairs(history);
   // Native multi-modal: when the route resolved vision_mode='native', images
   // arrive as data-URI attachments — send them as image_url content parts so the
   // (vision-capable) model sees them directly. Mirrors chatStreamOpenAI.
@@ -1905,73 +1970,58 @@ async function chatStreamPlainOpenAI(
   // WS1: volatile memory recall rides the request copy; canonical history and
   // the messages table keep the raw user text.
   const requestHistory = withTurnContext(history, memoryBlock ? [memoryBlock] : []);
+  const sys = typeof requestHistory[0]?.content === 'string' ? requestHistory[0].content : persona;
 
-  // Try each candidate in order with PREFIX-GUARDED streaming: stream live, but
-  // withhold only a '['-leading prefix until VoidAI's error-as-content marker
-  // ([An error occurred. Reference: …]) is confirmed or ruled out. The happy path
-  // releases on the first non-'[' byte (~zero buffering); a flaky primary that
-  // returns the error is aborted mid-stream — before anything is emitted — and
-  // retried on the backup candidate without ever leaking the error to the user.
+  // ── Chat mode + tools ──────────────────────────────────────────────────────
+  // Same per-turn engine as agent mode (runOpenAiAgentsBackbone), which builds
+  // the CURATED core tool set (buildOpenAiTools: core + search_tools/call_tool;
+  // everything else reachable via those meta-tools) and runs a self-selecting
+  // tool loop with the give-up + idle-watchdog guards. The model calls a tool
+  // ONLY when a turn needs one — tool-free turns stay a single fast completion,
+  // exactly like ChatGPT/Claude web. Chat mode differs from agent mode purely in
+  // what it OMITS upstream: no decomposition, no Alfred routing, no sub-agents,
+  // no team roster, no skills. Candidate fallback (VoidAI → OpenRouter for CLI
+  // providers) is preserved by looping candidates until one returns ok.
+  const toolCtx: ToolContext = { agentId, sessionId, onMeta, runId: activeRunId };
   let text = '';
   let lastErr = '';
+  let winner: ChatModeCandidate | undefined;
+  let winResult: RunBackboneResult | undefined;
   for (const cand of candidates) {
-    let attempt = '';
-    let guardBuffer = '';   // accumulates the un-flushed prefix while inconclusive
-    let released = false;   // true once the prefix is cleared and we stream live
-    let sawError = false;   // true if the error marker was detected mid-stream
-    let usageCapture: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | null = null;  // OpenAI CompletionUsage (structural subset)
+    let result: RunBackboneResult;
     try {
-      const stream = await cand.client.chat.completions.create({ model: cand.model, messages: requestHistory, stream: true, stream_options: { include_usage: true } });
-      for await (const part of stream) {
-        // Usage rides the final chunk, which has no content delta — read it
-        // BEFORE the `!delta` skip below or it's lost. (Providers that ignore
-        // stream_options never send it → usageCapture stays null and we log
-        // nothing rather than fabricate an estimate.)
-        if (part.usage) usageCapture = part.usage;
-        const delta = part.choices?.[0]?.delta?.content ?? '';
-        if (!delta) continue;
-        attempt += delta;
-        if (released) { await onChunk(delta); continue; }
-        guardBuffer += delta;
-        const decision = guardDecision(guardBuffer);
-        if (decision === 'error') { sawError = true; break; }   // fail fast: abort the primary
-        if (decision === 'clean') { await onChunk(guardBuffer); released = true; }
-        // 'pending' → keep buffering, emit nothing yet
-      }
+      result = await runOpenAiAgentsBackbone({
+        client:       cand.client,
+        model:        cand.model,
+        providerKey:  cand.provider,
+        systemPrompt: sys,
+        history:      requestHistory,
+        ctx:          toolCtx,
+        agentName:    agentRecord?.name ?? 'Assistant',
+        onChunk,
+        onMeta,
+        signal,
+      });
     } catch (err) {
       lastErr = (err as Error).message;
-      logger.warn('chatStreamPlainOpenAI attempt failed', { agentId, provider: agentRecord?.provider, model: cand.model, err: lastErr });
+      logger.warn('chatStreamPlainOpenAI backbone attempt threw', { agentId, provider: cand.provider, model: cand.model, err: lastErr });
       reportProviderFailure(cand.provider, classifyProviderError(err), extractRetryAfterMs(err));
       continue;
     }
-    // Mid-stream error marker, or a stream that ended while still buffering an
-    // error/empty reply → suppress and try the next candidate.
-    if (sawError || (!released && isErrorReply(guardBuffer))) {
-      lastErr = guardBuffer.trim().slice(0, 200) || 'empty response';
-      logger.warn('chatStreamPlainOpenAI: provider returned error-as-content', { agentId, model: cand.model, snippet: lastErr });
+    if (!result.ok) {
+      lastErr = result.error ?? 'no response';
+      logger.warn('chatStreamPlainOpenAI backbone attempt failed', { agentId, provider: cand.provider, model: cand.model, err: lastErr });
       reportProviderFailure(cand.provider, { reason: 'server_error', httpStatus: null, retryable: true, shouldCompress: false, shouldFallback: true, message: lastErr });
       continue;
     }
     reportProviderSuccess(cand.provider);
-    // Short clean reply that ended before the guard released → flush it now.
-    if (!released) { await onChunk(guardBuffer); released = true; }
-    text = attempt;
-    // Real token usage from the winning candidate's final chunk (attributed to
-    // the actual upstream API — voidai/openrouter for CLI-fallback agents).
-    if (usageCapture?.prompt_tokens != null) {
-      logSpend({
-        provider: cand.provider, model_id: cand.model,
-        input_tokens: usageCapture.prompt_tokens,
-        output_tokens: usageCapture.completion_tokens ?? 0,
-        cached_input_tokens: usageCapture.prompt_tokens_details?.cached_tokens,
-        agent_id: agentId ?? null, session_id: sessionId,
-      });
-      bumpRunTokens(activeRunId, usageCapture.prompt_tokens, usageCapture.completion_tokens ?? 0);
-    }
+    text = result.text;
+    winner = cand;
+    winResult = result;
     break;
   }
 
-  if (!text) {
+  if (!text || !winner || !winResult) {
     history.pop();   // drop the optimistic user turn so retries start clean
     if (ownsRun) endRun(activeRunId, { status: 'error', error_text: lastErr || 'chat mode: no response' });
     await onChunk(`⚠️ Chat mode error: ${lastErr || 'no response'}`);
@@ -1981,10 +2031,25 @@ async function chatStreamPlainOpenAI(
   history.push({ role: 'assistant', content: text });
   saveMessage(sessionId, 'assistant', text, agentId);
   logAnalytics('message_sent', { role: 'assistant', length: text.length, agentId, chat_mode: true }, sessionId);
-  // Passive memory (write): ingest the exchange. Enqueue-only — the extraction
-  // LLM call runs later in the throttled job runner, so no per-turn cost.
-  ingestExchangeAsync({ source: 'chat', agent_id: agentId, agent_name: agentRecord?.name, session_id: sessionId, user_text: userMessage, assistant_text: text });
   if (ownsRun) endRun(activeRunId, { status: 'done', final_output: text });
+  // Per-turn finalization: real token usage from the winning candidate, spend,
+  // run-tokens, and passive memory ingest (enqueue-only, background extraction).
+  const estInput = requestHistory.reduce((s, m) => s + estimateTokens(typeof m.content === 'string' ? m.content : ''), 0);
+  finalizeBackboneTurn({
+    providerKey:       winner.provider,
+    model:             winner.model,
+    agentId,
+    agentName:         agentRecord?.name,
+    sessionId,
+    activeRunId,
+    userMessage,
+    assistantText:     text,
+    toolCalls:         winResult.toolCalls,
+    inputTokens:       winResult.usage?.inputTokens  ?? estInput,
+    outputTokens:      winResult.usage?.outputTokens ?? estimateTokens(text),
+    cachedInputTokens: winResult.usage?.cachedInputTokens,
+    suppressUserMessage,
+  });
 }
 
 async function chatStreamPlainAnthropic(
@@ -2030,8 +2095,13 @@ async function chatStreamPlainAnthropic(
   // Reuse the SAME transport as agent mode (the Claude Agent SDK CLI) so the
   // working credential is used — subscription OAuth for plain 'anthropic' (NOT
   // the rate-limited raw /v1/messages API), or the gateway key for
-  // claude-gateway/kimi/minimax — but with tools (execEnabled) AND all MCP
-  // servers (noMcp) suppressed for a plain conversational turn.
+  // claude-gateway/kimi/minimax. Chat mode + tools: the NeuroClaw MCP server is
+  // MOUNTED (noMcp:false) so the model can self-select memory / search / call_tool
+  // / web / bash when a turn needs it — but built-in file-editing tools stay OFF
+  // (execEnabled:false) to keep it conversational, not agentic. Memory is still
+  // injected by default below (no tool call required to recall it). maxTurns is
+  // bounded so a tool-free turn is a single fast completion and only a genuine
+  // tool loop spends extra round-trips.
   const gwTarget  = gatewayTargetFor(provider);
   const isGateway = isGatewayProvider(provider);
   if (isGateway && !gwTarget) {
@@ -2068,9 +2138,9 @@ async function chatStreamPlainAnthropic(
       model,
       agentId,
       gateway:      gwTarget ? { baseURL: gwTarget.baseURL, apiKey: gwTarget.apiKey } : undefined,
-      execEnabled:  false,   // no built-in Bash/Read/Write/… tools
-      noMcp:        true,    // no NeuroClaw / Composio / user MCP servers
-      maxTurns:     1,       // single conversational turn (no tool loop anyway)
+      execEnabled:  false,   // no built-in Bash/Read/Write/Edit — stays conversational
+      noMcp:        false,   // MOUNT NeuroClaw MCP: memory / search / call_tool / web / bash
+      maxTurns:     CHATMODE_MAX_TOOL_TURNS,   // bounded tool loop; tool-free turns are 1 call
       onUsage: u => {
         // ClaudeCliUsage fields are optional — guard before logging or we write NULL/0.
         if (u.input_tokens != null && u.output_tokens != null) {
@@ -2132,10 +2202,12 @@ export async function chatStream(
   // the MCP / provider connection is hot for the next turn.
   if (agentRecord) prewarmAgentAsync(agentRecord);
 
-  // ── Chat mode: bypass all agent machinery (tools/skills/MCP/decomposition) ──
-  // Per-agent default (agents.chat_mode) with a per-session override that wins
-  // when set (sessions.chat_mode). OpenAI-compatible and Anthropic-plane
-  // providers get bare paths; CLI/external providers fall through to normal.
+  // ── Chat mode: fast per-turn engine w/ self-selecting tools + default memory ──
+  // Skips the heavy agent machinery (decomposition / Alfred routing / sub-agents
+  // / team roster / skills) but KEEPS a curated core tool set the model calls
+  // only when needed. Per-agent default (agents.chat_mode) with a per-session
+  // override that wins when set (sessions.chat_mode). OpenAI-compatible and
+  // Anthropic-plane providers get the lean paths; MCP-backed agents fall through.
   {
     const sessionRec = getSessionById(sessionId);
     const effectiveChatMode = sessionRec?.chat_mode != null
@@ -2152,7 +2224,7 @@ export async function chatStream(
       } else {
         // OpenAI-compatible providers AND CLI providers (codex/antigravity/
         // claude-interactive — mapped to an equivalent API model inside).
-        return chatStreamPlainOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext, runId, suppressUserMessage);
+        return chatStreamPlainOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext, runId, suppressUserMessage, signal);
       }
     }
   }
@@ -2195,7 +2267,7 @@ export async function chatStream(
     // local system prompt; their behavior is fully owned by the remote process.
     return chatStreamMcp(userMessage, sessionId, onChunk, agentRecord, onMeta, runId, signal);
   }
-  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext, runId, suppressUserMessage);
+  return chatStreamOpenAI(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, attachments, extraSystemContext, runId, suppressUserMessage, signal);
 }
 
 // ── Parallel step execution helpers ──────────────────────────────────────────

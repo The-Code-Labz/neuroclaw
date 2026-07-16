@@ -76,14 +76,14 @@ const LiveTab = ({ running, events, lastEntry }) => {
         {running ? (
           <>
             <span className="dot green pulse" style={{ width: 7, height: 7 }}/>
-            <span className="mono" style={{ fontSize: 11, color: '#fff' }}>RUNNING</span>
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text)' }}>RUNNING</span>
             <span className="mono muted" style={{ fontSize: 10 }}>· started {toLocalTime(events.find(e => e.action === 'dream_cycle_start')?.created_at)}</span>
             <span className="tag" style={{ fontSize: 8, background: 'rgba(16,185,129,0.1)', borderColor: 'rgba(16,185,129,0.3)', color: 'var(--green)' }}>live</span>
           </>
         ) : lastEntry ? (
           <>
             <span className="dot" style={{ width: 7, height: 7, background: 'var(--muted)' }}/>
-            <span className="mono" style={{ fontSize: 11, color: '#fff' }}>LAST RUN</span>
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text)' }}>LAST RUN</span>
             <span className="mono muted" style={{ fontSize: 10 }}>· {toLocalTime(lastEntry.completedAt)} · {fmtDuration(lastEntry.durationMs)}</span>
             <span className="tag" style={{ fontSize: 8 }}>complete ✓</span>
           </>
@@ -108,8 +108,8 @@ const LiveTab = ({ running, events, lastEntry }) => {
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 9, fontWeight: 700,
                 background: state === 'done'   ? 'rgba(16,185,129,0.12)'  :
-                            state === 'active' ? 'rgba(0,183,255,0.12)'   : 'rgba(100,116,139,0.08)',
-                border: `1px solid ${state === 'done' ? 'rgba(16,185,129,0.4)' : state === 'active' ? 'rgba(0,183,255,0.5)' : 'rgba(100,116,139,0.2)'}`,
+                            state === 'active' ? 'color-mix(in srgb, var(--accent) 12%, transparent)'   : 'rgba(100,116,139,0.08)',
+                border: `1px solid ${state === 'done' ? 'rgba(16,185,129,0.4)' : state === 'active' ? 'color-mix(in srgb, var(--accent) 50%, transparent)' : 'rgba(100,116,139,0.2)'}`,
                 color: stepColor(state),
               }}>
                 {state === 'done' ? '✓' : state === 'active' ? '…' : '·'}
@@ -133,13 +133,13 @@ const LiveTab = ({ running, events, lastEntry }) => {
             {(vp.procedures ?? []).map((p, i) => (
               <div key={i} className="nc-panel" style={{ padding: '7px 10px' }}>
                 <div className="mono" style={{ fontSize: 7, color: 'var(--accent)', letterSpacing: '.1em', marginBottom: 3 }}>PROCEDURAL</div>
-                <div className="mono" style={{ fontSize: 10, color: '#fff' }}>{p.split('/').pop()?.replace(/_/g, ' ') ?? p}</div>
+                <div className="mono" style={{ fontSize: 10, color: 'var(--text)' }}>{p.split('/').pop()?.replace(/_/g, ' ') ?? p}</div>
               </div>
             ))}
             {(vp.insights ?? []).map((ins, i) => (
               <div key={i} className="nc-panel" style={{ padding: '7px 10px' }}>
                 <div className="mono" style={{ fontSize: 7, color: 'var(--accent-2)', letterSpacing: '.1em', marginBottom: 3 }}>INSIGHT</div>
-                <div className="mono" style={{ fontSize: 10, color: '#fff' }}>{ins.split('/').pop()?.replace(/_/g, ' ') ?? ins}</div>
+                <div className="mono" style={{ fontSize: 10, color: 'var(--text)' }}>{ins.split('/').pop()?.replace(/_/g, ' ') ?? ins}</div>
               </div>
             ))}
             {vp.log && (
@@ -219,7 +219,7 @@ const JournalEntry = ({ entry }) => {
   return (
     <div>
       <div style={{ marginBottom: 10 }}>
-        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Dream #{entry.number}</div>
+        <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Dream #{entry.number}</div>
         <div className="mono muted" style={{ fontSize: 10, display: 'flex', gap: 12 }}>
           <span>{toLocalTime(entry.completedAt)}</span>
           <span>{fmtDuration(entry.durationMs)}</span>
@@ -316,11 +316,11 @@ const JournalTab = ({ history, activeEntry, setActiveEntry }) => {
               style={{
                 padding: '9px 10px', borderRadius: 2, cursor: 'pointer', marginBottom: 3,
                 border: `1px solid ${isActive ? 'var(--line-hard)' : 'transparent'}`,
-                background: isActive ? 'rgba(0,183,255,0.08)' : 'transparent',
+                background: isActive ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
               }}
             >
               <div className="mono muted" style={{ fontSize: 8, marginBottom: 2 }}>{toLocalTime(entry.completedAt)}</div>
-              <div className="mono" style={{ fontSize: 10, color: '#fff', marginBottom: 4 }}>Dream #{entry.number}</div>
+              <div className="mono" style={{ fontSize: 10, color: 'var(--text)', marginBottom: 4 }}>Dream #{entry.number}</div>
               <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
                 <span className="tag" style={{ fontSize: 7 }}>{(entry.output?.proceduresCreated ?? 0) + (entry.output?.insightsCreated ?? 0)} mem</span>
                 <span className="tag" style={{ fontSize: 7 }}>{fmtDuration(entry.durationMs)}</span>
@@ -409,7 +409,7 @@ const Dream = () => {
 
       <Section title="WASH PIPELINE">
         <div style={{ position: 'relative', padding: '20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ position: 'absolute', left: '6%', right: '6%', top: '50%', height: 2, background: 'linear-gradient(90deg, rgba(0,183,255,0.2), var(--accent), var(--accent-2), var(--violet), rgba(139,92,246,0.4))', boxShadow: '0 0 10px rgba(0,183,255,0.4)' }}/>
+          <div style={{ position: 'absolute', left: '6%', right: '6%', top: '50%', height: 2, background: 'linear-gradient(90deg, color-mix(in srgb, var(--accent) 20%, transparent), var(--accent), var(--accent-2), var(--violet), rgba(139,92,246,0.4))', boxShadow: '0 0 10px color-mix(in srgb, var(--accent) 40%, transparent)' }}/>
           {pipeline.map((s, i) => {
             const nodeState = pipelineNodeState(i);
             return (
@@ -417,10 +417,10 @@ const Dream = () => {
                 <div style={{
                   width: 50, height: 50, borderRadius: '50%', margin: '0 auto',
                   border: `1.5px solid ${nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : 'var(--line-hard)'}`,
-                  boxShadow: nodeState === 'done' ? '0 0 14px rgba(16,185,129,0.35)' : nodeState === 'active' ? '0 0 18px var(--accent)' : '0 0 8px rgba(0,183,255,0.3)',
+                  boxShadow: nodeState === 'done' ? '0 0 14px rgba(16,185,129,0.35)' : nodeState === 'active' ? '0 0 18px var(--accent)' : '0 0 8px color-mix(in srgb, var(--accent) 30%, transparent)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontFamily: 'var(--mono)', fontWeight: 700,
-                  color: nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : '#fff',
+                  color: nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : 'var(--text)',
                   fontSize: 12, background: '#020617', position: 'relative', zIndex: 1,
                 }}>{i + 1}</div>
                 <div className="mono" style={{ fontSize: 10, marginTop: 8, color: nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : 'var(--text-soft)', letterSpacing: '0.06em' }}>

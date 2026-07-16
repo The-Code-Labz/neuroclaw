@@ -11,6 +11,7 @@ const NAV = [
   ]},
   { group: 'MIND', items: [
     { id: 'memory',   label: 'Memory',          icon: 'memory' },
+    { id: 'notes',    label: 'Notes',           icon: 'docs' },
   ]},
   { group: 'SYSTEM', items: [
     { id: 'connect',  label: 'Connect',         icon: 'providers' },

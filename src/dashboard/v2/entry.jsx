@@ -11,6 +11,11 @@
  *    (e.g. window.NC_DATA set in data.jsx before live-data.jsx reads it).
  */
 
+// Theme tokens — generated from themes/registry.ts (single source of truth).
+// Imported first so it's part of the entry chunk's CSS and ships as a
+// render-blocking <link> in the production build (no FOUC).
+import 'virtual:theme-tokens.css';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 

@@ -127,7 +127,7 @@ const Approvals = () => {
               const inputPreview = fmtInput(a.tool_input);
               const fullInput = typeof rawInput === 'object' ? JSON.stringify(rawInput, null, 2) : String(rawInput);
               return (
-                <div key={a.id} style={{ padding: '14px 16px', borderBottom: '1px dashed rgba(0,183,255,0.08)', display: 'grid', gridTemplateColumns: '80px 120px 100px 1fr auto', gap: 12, alignItems: 'center' }}>
+                <div key={a.id} style={{ padding: '14px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 1fr auto', gap: 12, alignItems: 'center' }}>
                   <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.created_at)}</span>
                   <span className="mono" style={{ fontSize: 11, color: 'var(--accent-2)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
                   <span className="tag amber" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
@@ -166,7 +166,7 @@ const Approvals = () => {
           <div className="mono muted" style={{ padding: 20, textAlign: 'center', fontSize: 12 }}>// no history yet</div>
         ) : (
           resolved.map((a) => (
-            <div key={a.id} style={{ padding: '10px 16px', borderBottom: '1px dashed rgba(0,183,255,0.06)', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
+            <div key={a.id} style={{ padding: '10px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
               <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.resolved_at || a.created_at)}</span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
               <span className="tag" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>

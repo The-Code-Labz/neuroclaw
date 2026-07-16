@@ -16,6 +16,7 @@ import { spawnCollect } from '../../system/spawn-collect';
 import { auditLog } from '../audit';
 import { resolveScope } from '../scopeResolver';
 import { parseName, globMatch } from '../nameParser';
+import { isRestrictedName } from '../restrictedSecrets';
 import { getStorage } from '../storage';
 import { scrubOutput } from '../scrubber';
 import { config } from '../../config';
@@ -117,6 +118,14 @@ export function buildAgentRoutes(): Hono {
     const purpose = (body.purpose ?? '').trim();
     if (!name) return c.json({ error: 'name_required' }, 400);
 
+    // Restricted secret class (§2.1 stack 3): the HTTP surface gets an UNCONDITIONAL
+    // deny — no remote MCP/bridge consumer legitimately needs a raw SSH key, and the
+    // Symbol capability cannot cross the network boundary. No capability accepted here.
+    if (isRestrictedName(name)) {
+      auditLog({ event: 'use', agent: agentName, session_id: sessionId, secret_name: name, purpose, outcome: 'denied', detail: 'secret_restricted' });
+      return c.json({ error: 'secret_restricted' }, 403);
+    }
+
     if (!resolveScope(agentName, name)) {
       auditLog({ event: 'use', agent: agentName, session_id: sessionId, secret_name: name, purpose, outcome: 'denied' });
       return c.json({ error: 'scope_denied' }, 403);
@@ -150,6 +159,14 @@ export function buildAgentRoutes(): Hono {
     if (!command) return c.json({ error: 'command_required' }, 400);
 
     for (const name of secrets) {
+      // Restricted secret class (§2.1 stack 3): unconditional HTTP deny.
+      if (isRestrictedName(name)) {
+        auditLog({
+          event: 'exec', agent: agentName, session_id: sessionId,
+          secrets_requested: secrets, purpose, outcome: 'denied', detail: `secret_restricted=${name}`,
+        });
+        return c.json({ error: 'secret_restricted', secret: name }, 403);
+      }
       if (!resolveScope(agentName, name)) {
         auditLog({
           event: 'exec', agent: agentName, session_id: sessionId,
@@ -238,6 +255,18 @@ export function buildAgentRoutes(): Hono {
     const secrets = Array.isArray(body.secrets) ? body.secrets : [];
     if (!targetMcp || secrets.length === 0) return c.json({ error: 'invalid_request' }, 400);
     if (secrets.length > 50) return c.json({ error: 'too_many_secrets', max: 50 }, 400);
+
+    // Restricted secret class (§2.1 stack 3): unconditional HTTP deny. `/inject`
+    // bypasses resolveScope entirely, so this guard is its ONLY restricted check.
+    for (const name of secrets) {
+      if (isRestrictedName(name)) {
+        auditLog({
+          event: 'inject', agent: agentName, session_id: sessionId,
+          target_mcp: targetMcp, secrets_requested: secrets, outcome: 'denied', detail: `secret_restricted=${name}`,
+        });
+        return c.json({ error: 'secret_restricted', secret: name }, 403);
+      }
+    }
 
     auditLog({
       event: 'inject_call', agent: agentName, session_id: sessionId,

@@ -1,30 +1,113 @@
+// Holdout reviewer — the task-board's review→done gate.
+//
+// This is now a thin ADAPTER: it builds a ReviewInput from an AppTask and hands
+// it to the in-process tiered review-service (pre-gate → Tier-1 → Tier-2). It is
+// the ONLY task-board entry point into review; task-manager calls this and
+// nothing else calls the service in v1.
+
+import { execFileSync } from 'child_process';
 import type { AppTask } from './task-manager';
-import { AggregateVerdict, IssueSeverity, ReviewerIssue } from './review-council';
-import { bgChatCompletion } from '../agent/openai-client';
+import { AggregateVerdict } from './review-types';
+import { reviewInput } from './review-service';
 import { getDb } from '../db';
-import { config } from '../config';
 import { logger } from '../utils/logger';
-import { logHive } from './hive-mind';
+import { RECONCILE_RE, textReadsAsReview } from './task-classification';
 
 const MAX_ARTIFACT_CHARS = 6000;
 
-function coerceSeverity(v: unknown): IssueSeverity {
-  const s = typeof v === 'string' ? v.toLowerCase() : '';
-  if (s === 'critical' || s === 'high' || s === 'medium' || s === 'low' || s === 'none') return s;
-  return 'none';
+// ── Deterministic git-reconcile gate ──────────────────────────────────────────
+// A task that claims to reconcile the git tree / merge worktrees CANNOT pass
+// review→done if `main` was never touched. This is the durable fix for the
+// "false-done" pattern where Keeper (Shorekeeper) marked a reconcile task done
+// while main's HEAD sat unchanged and every branch stayed unmerged.
+//
+// The whole review pipeline is fail-OPEN; this single gate is deliberately the
+// exception — it is a cheaply, deterministically verifiable claim, so it is
+// fail-CLOSED on a positive detection and fail-OPEN only on tooling error.
+// The RECONCILE_RE / review-marker regexes live in ./task-classification — the
+// SINGLE source of truth shared with task-manager.createTask (which now stores
+// verification_mode at creation), so the two paths can never drift.
+
+function isReconcileTask(task: AppTask): boolean {
+  const text = `${task.title} ${task.description ?? ''}`;
+  return RECONCILE_RE.test(text);
 }
 
-function coerceIssues(v: unknown): ReviewerIssue[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(raw => {
-    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    return {
-      location: typeof o.location === 'string' ? o.location : '',
-      problem:  typeof o.problem  === 'string' ? o.problem  : '',
-      fix:      typeof o.fix      === 'string' ? o.fix      : '',
-      severity: coerceSeverity(o.severity),
-    };
+/** main's HEAD commit timestamp (ISO) + short SHA, or null if git is unreadable. */
+function mainHead(): { iso: string; sha: string } | null {
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
+    const iso = execFileSync('git', ['log', '-1', '--format=%cI', 'main'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+    const sha = execFileSync('git', ['rev-parse', '--short', 'main'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+    return iso && sha ? { iso, sha } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns a BLOCKING verdict if a reconcile/merge task is being marked complete
+ *  while main's HEAD predates the task's creation (i.e. main was never touched).
+ *  Returns null to proceed to the normal review path. */
+function verifyReconcileClaim(task: AppTask): AggregateVerdict | null {
+  if (!isReconcileTask(task)) return null;
+
+  // A review-only task is *supposed* to leave main untouched. The dispatcher
+  // sets verification_mode='review' at creation; this bypasses the HEAD-moved
+  // assertion while keeping all other integrity checks.
+  if (task.verification_mode === 'review') {
+    logger.info('holdout: reconcile regex matched but verification_mode=review — skipping HEAD-moved gate', {
+      taskId: task.id,
+    });
+    return null;
+  }
+
+  // Current-text authority (ASAGI v2): if the task's CURRENT title/description
+  // reads as a review/audit/gate, bypass — regardless of the stored mode. A task
+  // auto-classified 'reconcile' at creation but later retitled to review-only
+  // must still be honored as a review (the stored mode is a stale creation-time
+  // guess; the current reading wins). This restores full parity with the pre-
+  // populate hotfix and keeps the design strictly monotonic — it can only RELAX
+  // the gate, never deadlock. An explicit dispatcher 'reconcile' whose text does
+  // NOT read as review still fail-closes below.
+  if (textReadsAsReview(task.title, task.description)) {
+    logger.info('holdout: reconcile regex matched but current text reads as review — skipping HEAD-moved gate', {
+      taskId: task.id, title: task.title, storedMode: task.verification_mode ?? null,
+    });
+    return null;
+  }
+
+  // Fail-closed: explicit 'reconcile' mode, or an untagged task whose title reads
+  // as an actual merge, still asserts main HEAD advanced during the task's life.
+  const head = mainHead();
+  if (!head) return null; // can't verify → don't block (fail-open on tooling error)
+  const createdAt = Date.parse(task.created_at);
+  const mainAt = Date.parse(head.iso);
+  if (!Number.isFinite(createdAt) || !Number.isFinite(mainAt)) return null;
+  if (mainAt >= createdAt) return null; // main advanced during the task's life → legit
+
+  const feedback =
+    `Reconcile/merge verification FAILED (deterministic gate): main HEAD ${head.sha} ` +
+    `(committed ${head.iso}) predates this task's creation (${task.created_at}). ` +
+    `main was never touched, so no merge or reconciliation actually landed. ` +
+    `Either (a) perform the merges and re-submit for review, or (b) if there was ` +
+    `genuinely nothing to merge, say so explicitly in the output and note that main ` +
+    `was intentionally left unchanged — do not report a reconcile as complete when ` +
+    `the tree is unchanged.`;
+  logger.warn('holdout: reconcile gate BLOCKED review→done (main untouched)', {
+    taskId: task.id, mainSha: head.sha, mainAt: head.iso, createdAt: task.created_at,
   });
+  const issue = {
+    location: `git main @ ${head.sha}`,
+    problem:  'Reconcile/merge task marked complete while main HEAD is unchanged since task creation — no merge actually landed.',
+    fix:      'Perform the merges (or explicitly report there was nothing to merge and that main was left unchanged), then re-submit for review.',
+    severity: 'high' as const,
+  };
+  return {
+    passed:   false,
+    verdicts: [{ reviewer: 'tier1', passed: false, severity: 'high', issues: [issue], summary: 'deterministic reconcile gate: main HEAD unchanged since task creation' }],
+    blocking: [issue],
+    feedback,
+  };
 }
 
 function buildArtifact(task: AppTask): string {
@@ -51,95 +134,30 @@ function buildArtifact(task: AppTask): string {
     : combined;
 }
 
-const SYSTEM_PROMPT = `You are a holdout reviewer. You did not implement this task. \
-Evaluate whether the produced output satisfies the original specification. \
-Do NOT consider how the task was done — only whether the result matches what was asked.
-
-Return JSON with this exact shape:
-{
-  "passed": boolean,
-  "severity": "none" | "low" | "medium" | "high" | "critical",
-  "issues": [{ "location": string, "problem": string, "fix": string, "severity": "none"|"low"|"medium"|"high"|"critical" }],
-  "summary": string
-}
-
-If there is no agent output to evaluate, return:
-{ "passed": true, "severity": "none", "issues": [], "summary": "fail-open: no artifact" }`;
-
-function failOpen(): AggregateVerdict {
-  return {
-    passed: true,
-    verdicts: [{
-      reviewer:  'completion',
-      passed:    true,
-      severity:  'none',
-      issues:    [],
-      summary:   'holdout reviewer unavailable (fail-open)',
-    }],
-    blocking: [],
-    feedback: '',
-  };
-}
-
 export async function runHoldoutReview(task: AppTask): Promise<AggregateVerdict> {
-  const artifact      = buildArtifact(task);
-  const priorFeedback = task.reviewer_feedback
-    ? `\n\nPRIOR REVIEWER FEEDBACK:\n${task.reviewer_feedback}`
-    : '';
-  const userPrompt = `SPEC:\n${task.title}\n${task.description ?? ''}${priorFeedback}\n\nAGENT OUTPUT:\n${artifact}`;
+  // Deterministic pre-gate: block a reconcile/merge "done" when main is untouched.
+  const reconcileBlock = verifyReconcileClaim(task);
+  if (reconcileBlock) return reconcileBlock;
 
-  let raw: string;
+  const artifact = buildArtifact(task);
   try {
-    // The holdout reviewer is a quality gate — keep its STRONG model on both
-    // tiers (VoidAI gpt-5.1 first, OpenRouter claude-sonnet-4 fallback), not the
-    // gemini-flash background default.
-    const resp = await bgChatCompletion({
-      model:           config.voidai.model,
-      max_tokens:      3000,
-      temperature:     0.1,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user',   content: userPrompt },
-      ],
-    }, { voidaiModel: config.voidai.model, openrouterModel: config.openrouter.model, label: 'holdout-reviewer' });
-    raw = resp.choices[0]?.message?.content ?? '';
-  } catch (err) {
-    logger.warn('holdout: LLM call failed (fail-open)', {
-      taskId: task.id,
-      error:  (err as Error).message,
+    // Task-board tasks carry no diff (see review-service §diff-acquisition) — the
+    // artifact is a narrative summary, so this routes through the prose path.
+    return await reviewInput({
+      request:       `${task.title}\n${task.description ?? ''}`,
+      artifact,
+      artifactKind:  'unknown',
+      priorFeedback: task.reviewer_feedback ?? undefined,
+      taskType:      (task as { type?: string }).type,
     });
-    return failOpen();
+  } catch (err) {
+    // reviewInput never throws, but keep a fail-open backstop.
+    logger.warn('holdout: review-service threw (fail-open)', { taskId: task.id, error: (err as Error).message });
+    return {
+      passed:   true,
+      verdicts: [{ reviewer: 'tier1', passed: true, severity: 'none', issues: [], summary: 'review-service error (fail-open)' }],
+      blocking: [],
+      feedback: '',
+    };
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    logger.warn('holdout: JSON parse failed (fail-open)', { taskId: task.id, raw });
-    return failOpen();
-  }
-
-  const obj = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
-  const verdict = {
-    reviewer: 'completion' as const,
-    passed:   obj.passed === true,
-    severity: coerceSeverity(obj.severity),
-    issues:   coerceIssues(obj.issues),
-    summary:  typeof obj.summary === 'string' ? obj.summary : '',
-  };
-
-  const blocking = verdict.issues.filter(i => i.severity === 'high' || i.severity === 'critical');
-  const passed   = verdict.passed && blocking.length === 0;
-
-  const feedback = passed
-    ? ''
-    : `### holdout review (${verdict.severity})\n${verdict.summary}\n` +
-      verdict.issues
-        .map(i => `- [${i.severity}] ${i.location || '(unspecified)'}: ${i.problem}\n  Fix: ${i.fix}`)
-        .join('\n');
-
-  logHive(passed ? 'review_passed' : 'review_failed', `holdout: Holdout review for task "${task.title}": ${passed ? 'PASSED' : `FAILED (${verdict.severity})`}`, undefined, { taskId: task.id, passed, severity: verdict.severity, issues: verdict.issues.length });
-
-  return { passed, verdicts: [verdict], blocking, feedback };
 }

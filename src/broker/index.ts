@@ -24,6 +24,7 @@ import { getStorage } from './storage';
 import { auditLog } from './audit';
 import { scrubOutput } from './scrubber';
 import { parseName } from './nameParser';
+import { assertSecretAllowed, isRestrictedName } from './restrictedSecrets';
 
 export { agentStore } from './agentToken';
 export { mintAgentToken, verifyAgentToken } from './agentToken';
@@ -36,6 +37,12 @@ function requireCtx(): { agentName: string; sessionId: string } {
 
 export async function use(name: string, purpose = ''): Promise<string> {
   const { agentName, sessionId } = requireCtx();
+  // Restricted secret class (§2.1): `use` never resolves an SSH secret — the only
+  // legitimate in-process path is `withSecrets` with the capability.
+  if (isRestrictedName(name)) {
+    auditLog({ event: 'use', agent: agentName, session_id: sessionId, secret_name: name, purpose, outcome: 'denied', detail: 'secret_restricted' });
+    throw new Error('secret_restricted');
+  }
   if (!resolveScope(agentName, name)) {
     auditLog({ event: 'use', agent: agentName, session_id: sessionId, secret_name: name, purpose, outcome: 'denied' });
     throw new Error('scope_denied');
@@ -69,6 +76,14 @@ export async function exec(opts: ExecOpts): Promise<ExecResult> {
   const timeoutMs = Math.max(1000, Math.min(opts.timeoutMs ?? 30_000, 120_000));
 
   for (const name of secrets) {
+    // Restricted secret class (§2.1): `exec` never injects an SSH secret.
+    if (isRestrictedName(name)) {
+      auditLog({
+        event: 'exec', agent: agentName, session_id: sessionId,
+        secrets_requested: secrets, purpose, outcome: 'denied', detail: `secret_restricted=${name}`,
+      });
+      throw new Error(`secret_restricted:${name}`);
+    }
     if (!resolveScope(agentName, name)) {
       auditLog({
         event: 'exec', agent: agentName, session_id: sessionId,
@@ -134,9 +149,14 @@ export async function exec(opts: ExecOpts): Promise<ExecResult> {
 export async function withSecrets<T>(
   names: string[],
   fn: (env: Record<string, string>) => Promise<T> | T,
+  capability?: unknown,
 ): Promise<T> {
   const { agentName, sessionId } = requireCtx();
   for (const name of names) {
+    // Restricted secret class (§2.1): the ONLY in-process path permitted to resolve
+    // an SSH secret — and only when the caller presents the unforgeable capability
+    // (system/ssh-connect.ts). Any other caller → SecretRestrictedError, fail-closed.
+    assertSecretAllowed(name, capability);
     if (!resolveScope(agentName, name)) throw new Error(`scope_denied:${name}`);
   }
   const env: Record<string, string> = {};

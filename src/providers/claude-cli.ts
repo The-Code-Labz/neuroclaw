@@ -10,6 +10,7 @@ import { config as appConfig } from '../config';
 import { getAgentById } from '../db';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { createStreamScrubber, scrubOutput } from '../broker/scrubber';
+import { recordGiveUp } from '../system/give-up-telemetry';
 
 function resolveCliBinary(): string | undefined {
   const cmd = config.claude.cliCommand;
@@ -113,13 +114,23 @@ function buildChildEnv(): Record<string, string | undefined> {
   // timeout → "MCP error -32001: Request timed out" while the sidecar finishes
   // fine server-side. These sidecars run ~304s (measured), so 300s was a dead
   // heat that cut them off; 420s gives headroom above the tool's ceiling.
-  if (!env.MCP_TOOL_TIMEOUT) env.MCP_TOOL_TIMEOUT = '420000';
+  //
+  // Internal agent-to-agent messages (message_agent / assign_task_to_agent) are
+  // a DIFFERENT beast: the recipient can run a full build+test turn that legit
+  // takes many minutes, and cutting the caller off at 420s just orphans the work
+  // (it keeps running; we lose the reply and have to poll). So the TOTAL ceiling
+  // is raised to 30min — long enough for a real agent turn to complete. The idle
+  // ceiling below is kept tight (hang-detection for genuinely-silent tools);
+  // agent tools stay alive under it via the heartbeat in claude-sdk.ts, which
+  // emits MCP progress every ~20s to reset the idle timer while the peer works.
+  if (!env.MCP_TOOL_TIMEOUT) env.MCP_TOOL_TIMEOUT = '1800000';
   if (!env.MCP_TIMEOUT)      env.MCP_TIMEOUT      = '120000';
   // THE binding one for silent long tools: Claude Code (2.1.x) aborts an MCP
   // tool that emits NO output for CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT ms (default
   // 300s), SEPARATE from the total above. grok/gemini/chatgpt image gen streams
   // nothing for ~304s, so the idle timer — not the total — killed every call at
-  // exactly 300s. Raise it above the tool ceiling to match the total.
+  // exactly 300s. Kept at 420s so a truly-hung non-agent tool still gets caught;
+  // agent-comms tools defeat it cooperatively via the progress heartbeat.
   if (!env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT) env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT = '420000';
   return env;
 }
@@ -184,7 +195,9 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
   let gaveUpCmd = '';
   let gaveUpCount = 0;
   let lastToolResult = '';                       // scrubbed tail of the most recent tool result
-  let failedToolCalls = 0;                        // count of is_error tool results this turn
+  let failedToolCalls = 0;                        // CUMULATIVE is_error count this turn (reporting only)
+  let recoverableReadErrors = 0;                  // self-correcting "read-before-write" hits (observability)
+  let failStreak = 0;                             // CONSECUTIVE failure streak — resets on any clean result; drives the give-up bail
   const toolSigCounts  = new Map<string, number>();
   const toolUseIdCmd   = new Map<string, string>(); // tool_use_id → command, to name a failing step
   const softTimer = config.claude.softTimeoutMs > 0
@@ -282,15 +295,36 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
           // failure (verified reliable on Bash). Count them; bail once a turn has
           // failed maxFailedToolCalls times — that's "it keeps failing".
           if (b.is_error === true) {
-            failedToolCalls++;
+            // SELF-CORRECTING model mistakes are NOT task blockers — the model just
+            // needs to adjust and retry (Read the file again, re-emit valid JSON),
+            // so they carry HALF weight toward the streak. Covers:
+            //   • read-before-write / stale-read guard (Edit/Write)
+            //   • malformed tool input (JSON parse / InputValidationError) — the
+            //     tool never even RAN, so it can't be a real failure
+            const isSelfCorrecting = typeof txt === 'string' && (
+              /has not been read yet|Read it first before|has been modified since read|Read it again/i.test(txt) ||
+              /could not be parsed as JSON|InputValidationError|InputValidation/i.test(txt)
+            );
+            failedToolCalls++;                                 // cumulative (reporting)
+            if (isSelfCorrecting) recoverableReadErrors++;     // observability
+            // CONSECUTIVE streak drives the bail: a real failure counts full, a
+            // self-correcting mistake counts half (needs ~2x to trip). Any clean
+            // result below wipes it — so only a genuine unbroken run of failures,
+            // not scattered benign errors across a productive turn, gives up.
+            failStreak += isSelfCorrecting ? 0.5 : 1;
             const fc = toolUseIdCmd.get(String(b.tool_use_id));
             if (fc) gaveUpCmd = scrubOutput(fc.slice(0, 300), scrubSecrets).scrubbed;
-            if (!gaveUp && config.claude.maxFailedToolCalls > 0 && failedToolCalls >= config.claude.maxFailedToolCalls) {
+            if (!gaveUp && config.claude.maxFailedToolCalls > 0 && failStreak >= config.claude.maxFailedToolCalls) {
               gaveUp = true;
               gaveUpKind = 'failures';
               gaveUpCount = failedToolCalls;
               abort.abort();
             }
+          } else {
+            // A clean tool result = real progress → reset the streak. This is the
+            // root-cause fix: the give-up condition means "it KEEPS failing", which
+            // is a consecutive notion, not a running total across the whole turn.
+            failStreak = 0;
           }
         }
       }
@@ -406,6 +440,22 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
       ...tools,
     ];
     const allowedTools = allowedToolPatterns.length > 0 ? allowedToolPatterns : undefined;
+    // Force browser/sidecar IMAGE-generation tools through the archiving backend
+    // wrappers (mcp__neuroclaw__{gpt_image_generate,grok_image_edit,gemini_image,…})
+    // rather than the raw sidecar tools. The raw tools return the image inline to the
+    // model but BYPASS deliverMcpImage → they never archive to the Gallery, and their
+    // local_url/path delivery channels 404 (the uploads dir isn't mounted into the
+    // sidecar container). Blocking them only affects what the MODEL may call directly;
+    // the wrappers reach the same sidecars via internal callTool, which is untouched.
+    const disallowedTools = [
+      'mcp__gpt_image__chatgpt_image_generate',
+      'mcp__gpt_image__chatgpt_image_edit',
+      'mcp__grok_web__grok_web_generate_image',
+      'mcp__gemini_web__gemini_generate_image',
+      'mcp__gemini_web__gemini_edit_image',
+      'mcp__grok_image_edit__grok_image_edit',
+      'mcp__grok_image_edit__grok_image_compose',
+    ];
     // Inject the agent's full scoped broker secret set into the Claude Agent
     // SDK child env, and prepare a scrubber for the streamed deltas.
     const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'claude-cli', buildChildEnv());
@@ -431,6 +481,7 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
         settingSources:            [],
         ...(hasMcpServers ? { mcpServers } : {}),
         ...(allowedTools ? { allowedTools } : {}),
+        ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
         ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {}),
       },
     });
@@ -496,8 +547,22 @@ async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, v
         cmd:         gaveUpCmd || undefined,
         count:       gaveUpCount || undefined,
         failedToolCalls,
+        failStreak,
+        recoverableReadErrors,
         elapsedMs,
         ...activitySnapshot(),
+      });
+      // Structured telemetry → the async give-up pattern detector clusters these
+      // across turns and proposes carve-outs. Fail-safe: never breaks the bail.
+      recordGiveUp({
+        plane:      'claude-cli',
+        kind:       gaveUpKind ?? 'unknown',
+        agentId:    opts.agentId ?? null,
+        model:      opts.model,
+        cmd:        gaveUpCmd || null,
+        count:      gaveUpCount || null,
+        failStreak,
+        output:     lastToolResult,
       });
       const lastOut = lastToolResult.trim().slice(-600);
       const hardMin = Math.round(config.claude.timeoutMs / 60000);

@@ -13,8 +13,8 @@ import { META_TOOL_NAMES, buildMetaChatCompletionTools, dispatchMetaTool } from 
 import type { ToolContext } from '../context';
 import { logger } from '../../utils/logger';
 import { logAnalytics } from '../../db';
-import { logToolCall } from '../../system/hive-mind';
 import { isRunSuperseded } from '../../system/run-ownership';
+import { invokeTool, type ToolCategory } from '../tool-middleware';
 
 export function buildOpenAiTools(ctx: ToolContext): ChatCompletionTool[] {
   // Only core tools ship upfront; everything else is reachable via
@@ -116,13 +116,17 @@ export async function dispatchOpenAiTool(
     return JSON.stringify({ ok: false, error: 'This task was reassigned to another agent or closed. Stop working on it and do not call further tools.' });
   }
 
-  // Trace: record the direct (core) tool invocation. call_tool'd tools are
-  // logged inside handleCallTool (covering both planes at one point), and
-  // meta-tools already returned above — so this fires once per real direct call.
-  logToolCall(name, validation.data, ctx);
-
+  // Unified boundary: trace (once per real direct call — call_tool'd tools and
+  // meta-tools are handled elsewhere) + output compression with retrieval
+  // exemption, all in one choke point shared by every adapter.
   try {
-    const result = await tool.handler(validation.data, ctx);
+    const result = await invokeTool({
+      name,
+      args: validation.data,
+      ctx,
+      category: (tool as { category?: ToolCategory }).category,
+      run: () => tool.handler(validation.data, ctx),
+    });
     return JSON.stringify(result);
   } catch (err) {
     return JSON.stringify({ ok: false, error: (err as Error).message });

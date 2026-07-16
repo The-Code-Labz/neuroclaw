@@ -8,6 +8,9 @@ const AgentCard = ({ a, onEdit, onDelete, onActivate, onHardDelete }) => {
       {a.temp && <div className="stripe-bg" style={{ position: 'absolute', inset: 0, opacity: 0.2 }}/>}
       <div style={{ position: 'relative' }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+          {/* NOTE: `accent` here is this agent's own custom color (per-agent,
+              not the dashboard theme's --accent) — text color intentionally
+              stays a fixed white, independent of the active theme. */}
           <div style={{ width: 46, height: 46, flex: 'none', borderRadius: 10, background: `radial-gradient(circle at 35% 30%, rgba(255,255,255,0.4), transparent 30%), radial-gradient(circle, ${accent}, rgba(0,0,0,0))`, border: `1px solid ${accent}`, boxShadow: `0 0 14px ${accent}66`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 18, color: '#fff', textShadow: `0 0 6px ${accent}`, overflow: 'hidden' }}>
             {a._raw?.avatar_url
               ? <img src={a._raw.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 10 }} />
@@ -58,7 +61,7 @@ const AgentCard = ({ a, onEdit, onDelete, onActivate, onHardDelete }) => {
           {a._raw?.chat_mode === 1 && <span className="tag cyan" style={{ fontSize: 9, padding: '1px 6px' }}>chat</span>}
         </div>
 
-        <div style={{ display: 'flex', gap: 6, paddingTop: 10, borderTop: '1px dashed rgba(0,183,255,0.1)' }}>
+        <div style={{ display: 'flex', gap: 6, paddingTop: 10, borderTop: '1px dashed color-mix(in srgb, var(--accent) 10%, transparent)' }}>
           <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, padding: '5px 6px' }} onClick={onEdit}>edit</button>
           {inactive
             ? <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, padding: '5px 6px' }} onClick={onActivate}>activate</button>
@@ -97,6 +100,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
   const [ollamaModels,     setOllamaModels]      = React.useState([]);
   const [veniceModels,     setVeniceModels]      = React.useState([]);
   const [abacusModels,     setAbacusModels]      = React.useState([]);
+  const [omnirouteModels,  setOmnirouteModels]   = React.useState([]);
   const [hermesModels,     setHermesModels]      = React.useState([
     { model_id: 'grok-4.3',                    tier: 'high', provider: 'hermes', is_available: true },
     { model_id: 'grok-4.20-multi-agent-0309',  tier: 'high', provider: 'hermes', is_available: true },
@@ -152,6 +156,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
   const [mcpServerId,  setMcpServerId]  = React.useState('');
   const [mcpToolName,  setMcpToolName]  = React.useState('');
   const [mcpInputField,setMcpInputField]= React.useState('');
+  const [optimizeTerse, setOptimizeTerse] = React.useState(false);
+  const [optimizeLeanCode, setOptimizeLeanCode] = React.useState(false);
+  const [compressLite, setCompressLite] = React.useState(false);
+  const [compressHeadroom, setCompressHeadroom] = React.useState(false);
+  const [compressRtk, setCompressRtk] = React.useState(false);
   const [pendingAvatarUrl, setPendingAvatarUrl] = React.useState(null);
   const avatarFileRef = React.useRef(null);
   const [busy,    setBusy]    = React.useState(false);
@@ -161,7 +170,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
     setModelsLoading(true);
     setModelsErr(null);
     try {
-      const [v, a, c, ag, ve, oCatalog, oLive, olLive, oc, kma, ll, gw, km, mm, ci, ab] = await Promise.all([
+      const [v, a, c, ag, ve, oCatalog, oLive, olLive, oc, kma, ll, gw, km, mm, ci, ab, omr] = await Promise.all([
         window.NC_API.get('/api/models?provider=voidai').catch(() => []),
         window.NC_API.get('/api/models?provider=anthropic').catch(() => []),
         window.NC_API.get('/api/models?provider=codex').catch(() => []),
@@ -179,6 +188,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
         window.NC_API.get('/api/models?provider=minimax').catch(() => []),
         window.NC_API.get('/api/models?provider=claude-interactive').catch(() => []),
         window.NC_API.get('/api/models?provider=abacus&includeUnavailable=0').catch(() => []),
+        window.NC_API.get('/api/models?provider=omniroute').catch(() => []),
       ]);
       setVoidaiModels(Array.isArray(v) ? v : []);
       setAnthropicModels(Array.isArray(a) ? a : []);
@@ -186,6 +196,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       if (Array.isArray(ag) && ag.length > 0) setAntigravityModels(ag);
       setVeniceModels(Array.isArray(ve) ? ve : []);
       setAbacusModels(Array.isArray(ab) ? ab : []);
+      setOmnirouteModels(Array.isArray(omr) ? omr : []);
       if (Array.isArray(oc) && oc.length > 0) setOpencodeModels(oc);
       if (Array.isArray(kma) && kma.length > 0) setKimiApiModels(kma);
       if (Array.isArray(ll)  && ll.length  > 0) setLitellmModels(ll);
@@ -262,6 +273,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       setMcpServerId(agent._raw?.mcp_server_id || '');
       setMcpToolName(agent._raw?.mcp_tool_name || '');
       setMcpInputField(agent._raw?.mcp_input_field || '');
+      setOptimizeTerse(!!agent._raw?.optimize_terse);
+      setOptimizeLeanCode(!!agent._raw?.optimize_lean_code);
+      setCompressLite(!!agent._raw?.compress_lite);
+      setCompressHeadroom(!!agent._raw?.compress_headroom);
+      setCompressRtk(!!agent._raw?.compress_rtk);
       setPendingAvatarUrl(agent._raw?.avatar_url || null);
     } else {
       setName(''); setDesc(''); setRole('specialist'); setProvider('voidai');
@@ -273,6 +289,8 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       setTtsEnabled(false); setTtsProvider('voidai'); setTtsVoice('');
       setVoiceProvider('default'); setGeminiVoice('Zephyr');
       setMcpServerId(''); setMcpToolName(''); setMcpInputField('');
+      setOptimizeTerse(false); setOptimizeLeanCode(false);
+      setCompressLite(false); setCompressHeadroom(false); setCompressRtk(false);
       setPendingAvatarUrl(null);
     }
     setErr(null);
@@ -313,6 +331,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
                       : provider === 'openrouter'  ? 'openrouter'
                       : provider === 'venice'      ? 'venice'
                       : provider === 'abacus'      ? 'abacus'
+                      : provider === 'omniroute'   ? 'omniroute'
                       : provider === 'kimi-api'    ? 'kimi-api'
                       : provider === 'kimi'        ? 'kimi'
                       : provider === 'minimax'     ? 'minimax'
@@ -334,6 +353,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
                             : provider === 'openrouter'  ? openrouterModels
                             : provider === 'venice'      ? veniceModels
                             : provider === 'abacus'      ? abacusModels
+                            : provider === 'omniroute'   ? omnirouteModels
                             : provider === 'ollama'      ? ollamaModels
                             : provider === 'hermes'      ? hermesModels
                             : provider === 'kimi-api'    ? kimiApiModels
@@ -349,6 +369,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
                             : provider === 'openrouter'  ? 'OpenRouter'
                             : provider === 'venice'      ? 'Venice'
                             : provider === 'abacus'      ? 'Abacus AI'
+                            : provider === 'omniroute'   ? 'OmniRoute'
                             : provider === 'ollama'      ? 'Ollama'
                             : provider === 'hermes'      ? 'Hermes/Grok'
                             : provider === 'kimi-api'    ? 'Kimi Code API'
@@ -387,6 +408,11 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
       gemini_live_voice:    geminiVoice,
       gemini_tools_enabled: 1,
       avatar_url:   pendingAvatarUrl !== undefined ? pendingAvatarUrl : undefined,
+      optimize_terse: optimizeTerse,
+      optimize_lean_code: optimizeLeanCode,
+      compress_lite: compressLite,
+      compress_headroom: compressHeadroom,
+      compress_rtk: compressRtk,
       ...(provider === 'mcp' ? {
         mcp_server_id:   mcpServerId || null,
         mcp_tool_name:   mcpToolName || null,
@@ -418,7 +444,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
           <div
             onClick={() => avatarFileRef.current && avatarFileRef.current.click()}
-            style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%, rgba(255,255,255,0.3), transparent 30%), radial-gradient(circle, var(--accent), rgba(0,0,0,0))', border: '2px solid var(--accent)', boxShadow: '0 0 14px var(--accent)66', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', overflow: 'hidden', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 26, color: '#fff', textShadow: '0 0 6px var(--accent)' }}
+            style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%, rgba(255,255,255,0.3), transparent 30%), radial-gradient(circle, var(--accent), rgba(0,0,0,0))', border: '2px solid var(--accent)', boxShadow: '0 0 14px var(--accent)66', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', overflow: 'hidden', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 26, color: 'var(--icon-on-accent, #fff)', textShadow: '0 0 6px var(--accent)' }}
             title="Click to upload avatar"
           >
             {pendingAvatarUrl
@@ -474,7 +500,7 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
         </div>
         <div className="field" style={{ marginTop: 10 }}><label>Description</label><input className="nc-input" value={desc} onChange={e => setDesc(e.target.value)}/></div>
         <div className="grid-responsive-sm" style={{ marginTop: 10 }}>
-          <div className="field"><label>Provider</label><select className="nc-select" value={provider} onChange={e => setProvider(e.target.value)}><option value="voidai">VoidAI (OpenAI-compatible)</option><option value="anthropic">Anthropic / Claude CLI</option><option value="claude-gateway">Claude Gateway (any model via LiteLLM)</option><option value="kimi">Kimi (native Anthropic endpoint)</option><option value="minimax">MiniMax (native Anthropic endpoint)</option><option value="claude-interactive">Claude (interactive / tmux REPL)</option><option value="codex">Codex / ChatGPT CLI</option><option value="antigravity">Antigravity (Google)</option><option value="openrouter">OpenRouter</option><option value="ollama">Ollama (Local)</option><option value="abacus">Abacus AI (media models)</option><option value="hermes">Hermes / Grok (xAI OAuth)</option><option value="litellm">LiteLLM (Proxy)</option><option value="mcp">MCP-backed (Pydantic AI / external)</option></select></div>
+          <div className="field"><label>Provider</label><select className="nc-select" value={provider} onChange={e => setProvider(e.target.value)}><option value="voidai">VoidAI (OpenAI-compatible)</option><option value="anthropic">Anthropic / Claude CLI</option><option value="claude-gateway">Claude Gateway (any model via LiteLLM)</option><option value="kimi">Kimi (native Anthropic endpoint)</option><option value="minimax">MiniMax (native Anthropic endpoint)</option><option value="claude-interactive">Claude (interactive / tmux REPL)</option><option value="codex">Codex / ChatGPT CLI</option><option value="antigravity">Antigravity (Google)</option><option value="openrouter">OpenRouter</option><option value="ollama">Ollama (Local)</option><option value="abacus">Abacus AI (media models)</option><option value="omniroute">OmniRoute (200+ providers, self-hosted)</option><option value="hermes">Hermes / Grok (xAI OAuth)</option><option value="litellm">LiteLLM (Proxy)</option><option value="mcp">MCP-backed (Pydantic AI / external)</option></select></div>
           <div className="field"><label>Model strategy</label><select className="nc-select" value={tier} onChange={e => setTier(e.target.value)}><option value="pinned">Pinned</option><option value="auto">Auto-triage</option><option value="low">Low</option><option value="mid">Mid</option><option value="high">High</option></select></div>
         </div>
         <div className="field" style={{ marginTop: 10 }}>
@@ -799,6 +825,29 @@ const AgentEditor = ({ open, agent, onClose, onSaved }) => {
             )}
           </div>
         )}
+        <div className="field" style={{ marginTop: 10 }}>
+          <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Token optimization</span>
+            <span className="muted" style={{ fontSize: 10 }}>directives + tool-output compression</span>
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: 10, border: '1px solid var(--border)', borderRadius: 6 }}>
+            {[
+              ['optimize_terse', optimizeTerse, setOptimizeTerse, 'Terse directive — minimize prose'],
+              ['optimize_lean_code', optimizeLeanCode, setOptimizeLeanCode, 'Lean code directive — YAGNI code volume'],
+              ['compress_lite', compressLite, setCompressLite, 'Lite — normalize whitespace'],
+              ['compress_headroom', compressHeadroom, setCompressHeadroom, 'Headroom — compact JSON'],
+              ['compress_rtk', compressRtk, setCompressRtk, 'RTK — collapse noisy output'],
+            ].map(([key, checked, setter, label]) => (
+              <label key={String(key)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={checked} onChange={e => setter(e.target.checked)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <div className="mono muted" style={{ fontSize: 9, marginTop: 6 }}>
+            // Retrieval results (memory, KB, uploads, vision) are always exempt from compression.
+          </div>
+        </div>
         <div className="field" style={{ marginTop: 10 }}><label>System prompt</label><textarea className="nc-input" rows={6} value={prompt} onChange={e => setPrompt(e.target.value)}/></div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
           <button className="nc-btn ghost" onClick={onClose}>Cancel</button>

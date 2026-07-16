@@ -7,6 +7,7 @@ import './page-mcp.jsx';
 import './page-skills.jsx';
 import './page-channels.jsx';
 import './page-connections.jsx';
+import './page-ssh-machines.jsx';
 
 const ConnectHub = () => (
   <SubTabs pageId="connect" tabs={[
@@ -15,6 +16,7 @@ const ConnectHub = () => (
     { id: 'skills',    label: 'Skills',    render: () => <Skills/> },
     { id: 'channels',  label: 'Channels',  render: () => <Channels/> },
     { id: 'composio',  label: 'Composio',  render: () => <Connections/> },
+    { id: 'machines',  label: 'Machines',  render: () => <SshMachines/> },
   ]}/>
 );
 

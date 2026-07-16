@@ -17,6 +17,7 @@ import { translateClaudeError } from '../utils/claudeErrorLabel';
 import { config }     from '../config';
 import { triageSubAgentModel, type SubAgentProvider } from './sub-agent-triage';
 import { getSubAgentKimiClient, getSubAgentMinimaxClient } from '../agent/subagent-clients';
+import { resolveFamilyEnabled, resolveFamilyModel } from './subagent-providers-store';
 import { isProgressOnlyOutput } from '../utils/progress-only-detector';
 import { shouldDeliverTaskUpdate, type TaskNotifyPolicy } from './task-notify-policy';
 import { getDetachedTaskLifecycleRuntime } from './detached-task-runtime';
@@ -52,7 +53,7 @@ export interface SubAgentHandle {
   model:    string;
 }
 
-// ── Provider fallback map (quota-aware routing) ────────────────────────────
+// ── Provider fallback map (quota-aware + capability-aware routing) ─────────
 // See specs/sub-agent-quota-fallback.md
 
 interface SubAgentRoute {
@@ -61,16 +62,36 @@ interface SubAgentRoute {
   family:   string;
 }
 
-// Two-provider fallback chain: kimi ↔ minimax (native gateways).
-// If the primary quota-exhausts, the other picks up; no other providers are used.
-const PROVIDER_FALLBACK_MAP: Record<string, SubAgentRoute[]> = {
-  'kimi': [
-    { provider: 'minimax', model: '', family: 'minimax' },  // model resolved at runtime
-  ],
-  'minimax': [
-    { provider: 'kimi',    model: '', family: 'kimi'    },  // model resolved at runtime
-  ],
-};
+// Which provider families exist. The fallback chain is derived dynamically
+// from whichever of these are ENABLED (key present + not explicitly disabled),
+// so a deployment that only configures one family degrades gracefully instead
+// of 401-failing the family it lacks. Adding a new sub-agent family = one entry.
+const ALL_FAMILIES: SubAgentRoute[] = [
+  { provider: 'kimi',    model: '', family: 'kimi'    },  // model resolved at runtime
+  { provider: 'minimax', model: '', family: 'minimax' },  // model resolved at runtime
+];
+
+/**
+ * A provider family is usable only if it's flagged enabled AND actually has a
+ * key. Empty key ⇒ every request 401s, so we treat it as not-configured and
+ * skip it entirely rather than burning a failover on a guaranteed failure.
+ *
+ * Resolution is delegated to the subagent-providers store — the single source
+ * of truth that layers a live dashboard override (Settings › Sub-Agents) on top
+ * of the env/key-presence default. So flipping a family off in the UI takes
+ * effect on the very next task, no restart.
+ */
+function isFamilyEnabled(family: string): boolean {
+  return resolveFamilyEnabled(family);
+}
+
+/**
+ * Dynamic fallback chain: every enabled family OTHER than the primary. Replaces
+ * the old hardcoded kimi↔minimax ping-pong so single-provider deployments work.
+ */
+function buildFallbackRoutes(primaryFamily: string): SubAgentRoute[] {
+  return ALL_FAMILIES.filter(r => r.family !== primaryFamily && isFamilyEnabled(r.family));
+}
 
 // ── Quota exhaustion cache (60s TTL, process-scoped) ──────────────────────
 
@@ -104,25 +125,38 @@ const SUB_AGENT_TOOL_INSTRUCTION_PATTERNS = [
 ];
 
 function sanitizeSystemPromptForSubAgent(prompt: string, allowedToolOverrides?: string[]): string {
-  const bashAllowed = allowedToolOverrides?.includes('bash_run') ?? false;
+  const bashAllowed     = allowedToolOverrides?.includes('bash_run') ?? false;
+  const composioAllowed = allowedToolOverrides?.includes('composio') ?? false;
   let sanitized = prompt;
   if (!bashAllowed) {
     for (const pattern of SUB_AGENT_TOOL_INSTRUCTION_PATTERNS) {
       sanitized = sanitized.replace(pattern, '[not available in text-only sub-agent mode]');
     }
   }
+  // The "may NOT ... take external (Composio) actions" clause is dropped when the
+  // parent spawned with allow_composio: true — otherwise the model self-censors
+  // and never attempts Composio even though the dispatch gate is open for it.
+  const composioClause = composioAllowed ? '' : ', or take external (Composio) actions';
+  const composioGrant = composioAllowed
+    ? '\n\nCOMPOSIO ACCESS (granted for this spawn): You MAY call Composio tools (COMPOSIO_SEARCH_TOOLS, ' +
+      'COMPOSIO_MULTI_EXECUTE_TOOL, COMPOSIO_GET_TOOL_SCHEMAS) via call_tool for READ / lookup / pagination work ' +
+      '(e.g. driving a multi-page YouTube/Gmail/Notion list loop). Do NOT invoke destructive actions ' +
+      '(delete/send/modify) — return the collected data as text and let the parent perform any mutations under review.'
+    : '';
   const toolNote =
     '\n\nTOOLS: You have the same tool surface as a main agent. Use `search_tools(query)` to find a capability, ' +
     '`get_tool_schema(name)` to inspect its parameters, then `call_tool(name, args)` to invoke it. This reaches the full ' +
     'registry, the MCP research servers (web_search, browserless_fetch, perplexity, crawl4ai, deep_research, web_research, ' +
     'browser_agent, etc.), and skills. You may NOT ' +
     'write files, run shell, persist memory (write_vault_note / save_session_summary), manage tasks / projects / skills, ' +
-    'schedule jobs, spawn further sub-agents, delegate to other agents, or take external (Composio) actions — those are ' +
+    'schedule jobs, spawn further sub-agents, delegate to other agents' + composioClause + ' — those are ' +
     'blocked for sub-agents. Do NOT attempt them: a blocked call is wasted and repeated blocked calls will end your turn ' +
     'early. Return your result as text and the parent agent performs any writes, memory persistence, or actions.' +
+    composioGrant +
     RESEARCH_DISCIPLINE;
   const note = bashAllowed
-    ? '\n\nNOTE: You are running as a sub-agent with shell access. Use Write/Edit/Bash tools directly to make changes. Broker credentials (e.g. SHARED_GITHUB_PAT, API keys) are already injected as env vars — use $SECRET_NAME directly in shell commands. Return a concise summary of what you did and which files changed.' + toolNote
+    ? '\n\nNOTE: You are running as a sub-agent with shell access. Use Write/Edit/Bash tools directly to make changes. Broker credentials (e.g. SHARED_GITHUB_PAT, API keys) are already injected as env vars — use $SECRET_NAME directly in shell commands. Return a concise summary of what you did and which files changed.' +
+      '\n\nCRITICAL — READ BEFORE EDIT: The Edit/Write tools enforce a read-before-write guard. Before you Edit or overwrite ANY existing file, you MUST call Read on that exact file first in this same turn — even if you already know its contents from context. If an Edit fails with "File has not been read yet", do NOT retry the same Edit: call Read on that file, then Edit. Never repeat a failing Edit.' + toolNote
     : '\n\nNOTE: You are a sub-agent. You cannot write to disk or run shell commands. OUTPUT CONTRACT for code tasks: return complete file content in fenced code blocks annotated with the target path (e.g. ```typescript src/foo.ts\n...\n```), stacked for multiple files — the parent applies them. For research/analysis tasks, return the actual findings/answer as text.' + toolNote;
   return sanitized + note;
 }
@@ -136,9 +170,13 @@ function truncateContext(text: string): string {
 function insertSubAgentTask(taskId: string, opts: RunSubAgentOptions, provider: string, model: string): void {
   const db = getDb();
   db.prepare(
+    // Wave-2 Item C4 (ASAGI MAJOR): subtasks start life in 'doing' via this raw
+    // INSERT — stamp doing_since or the entire subtask class is permanently
+    // invisible to Sentinel's runaway pass (which requires doing_since NOT NULL).
+    // Subtasks are the unattended, LLM-driven category most like the Canvas wedge.
     `INSERT OR IGNORE INTO tasks
-      (id, title, description, status, notify_policy, agent_id, session_id, task_source, created_at, updated_at)
-     VALUES (?, ?, ?, 'doing', ?, ?, ?, 'subtask', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`,
+      (id, title, description, status, notify_policy, agent_id, session_id, task_source, doing_since, created_at, updated_at)
+     VALUES (?, ?, ?, 'doing', ?, ?, ?, 'subtask', ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`,
   ).run(
     taskId,
     opts.task.slice(0, 120),
@@ -146,6 +184,7 @@ function insertSubAgentTask(taskId: string, opts: RunSubAgentOptions, provider: 
     opts.notifyPolicy ?? 'done_only',
     opts.parentAgentId ?? null,
     opts.parentSessionId ?? null,
+    Date.now(),
   );
 }
 
@@ -251,7 +290,7 @@ async function runOnRoute(opts: RunSubAgentOptions, route: SubAgentRoute, ctx: s
   ];
 
   const resolveModel = (r: SubAgentRoute): string =>
-    r.model || (r.provider === 'kimi' ? config.subAgent.kimi.model : config.subAgent.minimax.model);
+    r.model || resolveFamilyModel(r.family);
 
   const toolCtx: ToolContext = {
     agentId:              opts.parentAgentId ?? null,
@@ -342,11 +381,23 @@ async function executeSubAgent(opts: RunSubAgentOptions, triage: ReturnType<type
   const systemPrompt = sanitizeSystemPromptForSubAgent(rawPrompt, opts.allowedToolOverrides);
 
   const primaryRoute: SubAgentRoute = { provider: triage.provider, model: triage.model, family: triage.family };
-  const fallbacks = PROVIDER_FALLBACK_MAP[triage.family] ?? [];
-  const routes = [primaryRoute, ...fallbacks].filter(r => !isQuotaExhausted(r.family));
+  const fallbacks = buildFallbackRoutes(triage.family);
+  // Drop disabled/unconfigured families (incl. a disabled PRIMARY — e.g. a code
+  // task triaged to kimi on a MiniMax-only box routes to minimax instead), then
+  // drop any family in the 60s quota-exhaustion window.
+  const routes = [primaryRoute, ...fallbacks]
+    .filter(r => isFamilyEnabled(r.family))
+    .filter(r => !isQuotaExhausted(r.family));
 
   if (routes.length === 0) {
-    throw new Error(`sub-agent-runner: all providers quota-exhausted for task (primary: ${triage.family})`);
+    const anyEnabled = ALL_FAMILIES.some(r => isFamilyEnabled(r.family));
+    if (!anyEnabled) {
+      throw new Error(
+        'sub-agent-runner: no sub-agent provider is configured — set a key for at least one family ' +
+        '(KIMI_ANTHROPIC_KEY and/or MINIMAX_ANTHROPIC_KEY) or enable one via SUBAGENT_KIMI_ENABLED / SUBAGENT_MINIMAX_ENABLED',
+      );
+    }
+    throw new Error(`sub-agent-runner: all enabled providers quota-exhausted for task (primary: ${triage.family})`);
   }
 
   let lastError: unknown;

@@ -202,6 +202,23 @@ function pickDefaultDirection(brief: DesignBrief): Direction {
   return DIRECTIONS[0];
 }
 
+/**
+ * Guard against "stub" artifacts — a real design artifact is thousands of
+ * chars; reasoning models (e.g. MiniMax-M3) sometimes burn their token budget
+ * on hidden reasoning and emit only a scaffold with a literal "..." placeholder
+ * in <body>, which renders as a blank white page. Detect that so the caller can
+ * fail loudly instead of silently persisting an empty artifact.
+ */
+function looksLikeStub(html: string): boolean {
+  const s = html || '';
+  if (s.replace(/\s+/g, '').length < 800) return true;
+  const bodyMatch = s.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const body = bodyMatch ? bodyMatch[1] : s;
+  // Strip tags, whitespace, and ellipsis placeholders — what's left is real content.
+  const visible = body.replace(/<[^>]+>/g, '').replace(/[\s.…]+/g, '');
+  return visible.length < 24;
+}
+
 /** Pull a single HTML document out of a model response, stripping fences if any. */
 function extractHtml(raw: string): string {
   let s = (raw || '').trim();
@@ -371,6 +388,14 @@ export async function* generate(
     return;
   }
 
+  // Reject stub/empty output (the "blank page with ..." failure) — fail loudly
+  // rather than persist a blank artifact the iframe renders as a white page.
+  if (looksLikeStub(html)) {
+    logger.warn(`canvas/generate: stub artifact rejected — ${html.length} chars · model=${canvasModel()}`);
+    yield { type: 'error', payload: { message: `Model "${canvasModel()}" returned an empty/stub artifact (${html.length} chars). This usually means a reasoning model consumed its token budget — set CANVAS_MODEL to a non-reasoning HTML generator (e.g. google/gemini-3.5-flash).` } };
+    return;
+  }
+
   const ms = Date.now() - t0;
   logger.info(`canvas/generate: llm.complete ok — ${ms}ms · ${html.length} chars`);
   yield { type: 'tool.call', payload: { name: 'llm.complete', ms, ok: true, chars: html.length } };
@@ -501,6 +526,12 @@ export async function* iterate(
     html = extractHtml(raw);
   } catch (err) {
     yield { type: 'error', payload: { message: `Iteration failed: ${(err as Error).message}` } };
+    return;
+  }
+
+  if (looksLikeStub(html)) {
+    logger.warn(`canvas/iterate: stub artifact rejected — ${html.length} chars · model=${canvasModel()}`);
+    yield { type: 'error', payload: { message: `Model "${canvasModel()}" returned an empty/stub artifact (${html.length} chars) — set CANVAS_MODEL to a non-reasoning HTML generator (e.g. google/gemini-3.5-flash).` } };
     return;
   }
 

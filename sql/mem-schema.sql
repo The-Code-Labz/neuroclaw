@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NeuroClaw Memory — Supabase schema migration
--- Target: self-hosted Supabase (supabase.your-domain.com)
+-- Target: self-hosted Supabase (supabase.neurolearninglabs.com)
 -- Creates memory_index / memory_entities / memory_relationships + match_memories
 -- RPC in the EXISTING `neuroclaw_kb` schema (already exposed via PGRST_DB_SCHEMAS
 -- + granted to service_role, so NO PostgREST restart is needed this time).

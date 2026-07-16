@@ -4,11 +4,13 @@
 import './page-memory.jsx';
 import './page-dream.jsx';
 import './page-rag-docs.jsx';
+import './page-notebooks.jsx';
 
 const MemoryHub = () => (
   <SubTabs pageId="memory" tabs={[
     { id: 'memory', label: 'Memory', render: () => <Memory/> },
     { id: 'rag-docs', label: 'RAG Docs', render: () => <RAGDocs/> },
+    { id: 'notebooks', label: 'Notebooks', render: () => <Notebooks/> },
     { id: 'dream',  label: 'Dream Cycle', render: () => <Dream/> },
   ]}/>
 );

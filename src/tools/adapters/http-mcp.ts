@@ -25,6 +25,7 @@ import { findMcpRegistryTool } from './mcp-registry-adapter';
 import { dispatchComposioTool } from './composio';
 import { META_TOOL_DEFS, META_TOOL_NAMES, dispatchMetaTool } from '../meta-tools';
 import type { ToolContext } from '../context';
+import { invokeTool, type ToolCategory } from '../tool-middleware';
 
 export interface McpHttpOptions {
   /** Resolves the calling agent context (agentId, sessionId, runId) from request
@@ -167,7 +168,17 @@ export function createNeuroclawHttpMcpServer(opts: McpHttpOptions = {}): Server 
     }
 
     try {
-      const result = await tool.handler(validation.data, ctx);
+      // Unified boundary: trace + output compression w/ retrieval exemption.
+      // Previously this plane emitted NO tool_call trace (the historical gap the
+      // Step-0 wrapper closes) and skipped compression entirely — external
+      // clients (Codex CLI) now get the same treatment as the native planes.
+      const result = await invokeTool({
+        name,
+        args: validation.data,
+        ctx,
+        category: (tool as { category?: ToolCategory }).category,
+        run: () => tool.handler(validation.data, ctx),
+      });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return {

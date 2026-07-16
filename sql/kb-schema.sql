@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NeuroClaw Knowledge Base — schema migration
--- Target: self-hosted Supabase (supabase.your-domain.com)
+-- Target: self-hosted Supabase (supabase.neurolearninglabs.com)
 -- Creates the dedicated `neuroclaw_kb` schema, tables, match RPCs,
 -- service_role grants, and indexes. Idempotent: safe to re-run.
 --

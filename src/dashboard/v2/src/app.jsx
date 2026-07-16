@@ -28,6 +28,53 @@ const MobileBottomNav = ({ active, setActive }) => {
   );
 };
 
+// ── Update-available banner ─────────────────────────────────────────────────
+// Polls /api/version?remote=1 once on mount. When the origin has a newer stable
+// tag than this checkout, shows a dismissible banner telling the operator to run
+// ./update.sh (see README › Updating). Dismissal is remembered per-version so it
+// stops nagging until the *next* release. Fails silent/offline — never blocks UI.
+const UpdateBanner = () => {
+  const [info, setInfo] = React.useState(null);
+  const [dismissed, setDismissed] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const d = await window.NC_API.get('/api/version?remote=1');
+        if (!alive || !d || !d.updateAvailable || !d.latest) return;
+        if (localStorage.getItem('nc_update_dismissed') === d.latest) setDismissed(true);
+        setInfo(d);
+      } catch { /* offline / no remote — stay quiet */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!info || dismissed) return null;
+  const dismiss = () => {
+    try { localStorage.setItem('nc_update_dismissed', info.latest); } catch { /* ignore */ }
+    setDismissed(true);
+  };
+  return (
+    <div className="update-banner" role="status" style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '10px 14px', marginBottom: 16, borderRadius: 8,
+      background: 'rgba(0, 200, 120, 0.10)',
+      border: '1px solid rgba(0, 200, 120, 0.35)', fontSize: 13,
+    }}>
+      <Icon name="refresh" size={18} />
+      <div style={{ flex: 1 }}>
+        <strong>Update available — {info.latest}</strong>
+        <span className="muted" style={{ marginLeft: 8 }}>
+          you're on {info.currentTag || info.version}. Run <code>./update.sh</code> to upgrade.
+        </span>
+      </div>
+      <button onClick={dismiss} title="Dismiss until next release"
+        style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: 0.7, color: 'inherit', fontSize: 18, lineHeight: 1 }}>
+        ×
+      </button>
+    </div>
+  );
+};
+
 // ── Per-page code-splitting (Dashboard v3 §3.4) ─────────────────────────────
 // Page modules have NO default export — they are side-effect modules that set a
 // window global (e.g. window.Overview). So a bare React.lazy(() => import()) is
@@ -67,9 +114,10 @@ const PAGES = {
   chat:        { label: 'Chat',            cmp: lazyPage(() => import('./page-chat.jsx'),         'Chat')        },
   agents:      { label: 'Agents',          cmp: lazyPage(() => import('./page-agents-hub.jsx'),   'AgentsHub')   }, // Agents · Comms · Hive Mind
   tasks:       { label: 'Mission Control', cmp: lazyPage(() => import('./page-tasks-hub.jsx'),    'TasksHub')    }, // Tasks · Automation
-  studio:      { label: 'Studio',          cmp: lazyPage(() => import('./page-studio.jsx'),       'Studio')      }, // Canvas · NeuroLab · Terminal · Neuro Room
+  studio:      { label: 'Studio',          cmp: lazyPage(() => import('./page-studio.jsx'),       'Studio')      }, // Canvas · NeuroLab · Terminal · Neuro Room · Gallery
   // ── MIND ──
   memory:      { label: 'Memory',          cmp: lazyPage(() => import('./page-memory-hub.jsx'),   'MemoryHub')   }, // Memory · Vault · Dream
+  notes:       { label: 'Notes',           cmp: lazyPage(() => import('./page-notes.jsx'),        'Notes')       }, // Shared notepad — agents write markdown, user reads/copies
   // ── SYSTEM ──
   connect:     { label: 'Connect',         cmp: lazyPage(() => import('./page-connect-hub.jsx'),  'ConnectHub')  }, // Providers · MCP · Skills · Channels · Composio
   security:    { label: 'Security',        cmp: lazyPage(() => import('./page-security.jsx'),     'Security')    }, // Sentinel · Approvals · Secrets
@@ -80,9 +128,6 @@ const PAGES = {
 };
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "accent": "#00b7ff",
-  "accent2": "#00f5d4",
-  "violet": "#a78bfa",
   "scanlines": false,
   "gridOverlay": false,
   "density": "comfy",
@@ -113,13 +158,13 @@ const CommandPalette = ({ open, onClose, setActive }) => {
       <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: 560, maxHeight: '70vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon name="cmd" size={14} className="neonc"/>
-          <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="type a command or page..." style={{ flex: 1, background: 'transparent', border: 0, outline: 0, color: '#fff', fontFamily: 'var(--mono)', fontSize: 13 }}/>
+          <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="type a command or page..." style={{ flex: 1, background: 'transparent', border: 0, outline: 0, color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 13 }}/>
           <span className="blink neonc">▌</span>
         </div>
         <div style={{ overflow: 'auto', maxHeight: '50vh' }}>
           {filtered.map((it, i) => (
-            <div key={i} onClick={it.do} className="mono" style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', cursor: 'pointer', borderBottom: '1px dashed rgba(0,183,255,0.06)', fontSize: 12 }}
-                 onMouseOver={e => e.currentTarget.style.background = 'rgba(0,183,255,0.08)'}
+            <div key={i} onClick={it.do} className="mono" style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', cursor: 'pointer', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', fontSize: 12 }}
+                 onMouseOver={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 8%, transparent)'}
                  onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
               <span><span className={`tag ${it.kind === 'goto' ? 'blue' : 'cyan'}`} style={{ fontSize: 9, marginRight: 8 }}>{it.kind}</span>{it.label}</span>
               <span className="muted" style={{ fontSize: 10 }}>{it.hint}</span>
@@ -145,6 +190,7 @@ const REDIRECTS = {
   // Memory
   vault:     'memory/vault',
   dream:     'memory/dream',
+  notebooks: 'memory/notebooks',
   // Agents
   comms:     'agents/comms',
   hivemind:  'agents/hivemind',
@@ -155,6 +201,7 @@ const REDIRECTS = {
   neurolab:  'studio/neurolab',
   terminal:  'studio/terminal',
   neuroroom: 'studio/neuroroom',
+  gallery:   'studio/gallery',
   // Connect
   providers:   'connect/providers',
   mcp:         'connect/mcp',
@@ -299,14 +346,6 @@ const App = () => {
     }
   }, [serverConfig]);
 
-  React.useEffect(() => {
-    const r = document.documentElement;
-    // Write the new token names (canonical) plus legacy aliases for unmigrated styles.
-    r.style.setProperty('--accent', tweaks.accent);
-    r.style.setProperty('--accent-2', tweaks.accent2);
-    r.style.setProperty('--violet', tweaks.violet);
-  }, [tweaks.accent, tweaks.accent2, tweaks.violet]);
-
   const Page = PAGES[active]?.cmp || PAGES.overview.cmp;
   const label = PAGES[active]?.label || 'Overview';
 
@@ -325,6 +364,7 @@ const App = () => {
         <Sidebar active={active} setActive={setActive} collapsed={collapsed} setCollapsed={setCollapsed}/>
         <TopBar activeLabel={label} onCmd={() => setCmd(true)}/>
         <main className="main" style={{ padding: tweaks.density === 'compact' ? 14 : 22 }}>
+          <UpdateBanner/>
           <PageErrorBoundary key={active}>
             <React.Suspense fallback={<div className="mono muted" style={{ padding: 32, opacity: 0.6 }}>loading…</div>}>
               <Page/>
@@ -340,11 +380,9 @@ const App = () => {
       <MobileBottomNav active={active} setActive={setActive} />
 
       <window.TweaksPanel title="NEUROCLAW · TWEAKS">
-        <window.TweakSection title="Theme">
-          <window.TweakColor label="Primary neon" value={tweaks.accent} onChange={v => setTweak('accent', v)}/>
-          <window.TweakColor label="Secondary neon" value={tweaks.accent2} onChange={v => setTweak('accent2', v)}/>
-          <window.TweakColor label="Violet" value={tweaks.violet} onChange={v => setTweak('violet', v)}/>
-        </window.TweakSection>
+        {/* Theme/accent controls removed — superseded by themes/registry.ts
+            (page-settings.jsx ThemesTab). Inline-style overrides here used to
+            stomp the registry's :root[data-theme] rules on every App mount. */}
         <window.TweakSection title="FX">
           <window.TweakToggle label="Scanlines" value={tweaks.scanlines} onChange={v => setTweak('scanlines', v)}/>
           <window.TweakToggle label="Grid overlay" value={tweaks.gridOverlay} onChange={v => setTweak('gridOverlay', v)}/>

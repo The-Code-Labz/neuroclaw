@@ -10,6 +10,7 @@
 import type { SecretType } from './nameParser';
 import { getStorage } from './storage';
 import { parseName, normalizeAgentPrefix } from './nameParser';
+import { isRestrictedName } from './restrictedSecrets';
 import { auditLog } from './audit';
 import { getCanonicalPrefix } from './agentRegistry';
 import { getAgentById } from '../db';
@@ -117,8 +118,9 @@ function auditUse(
  * Resolve a credential by service + type, scoped to the named agent.
  *
  * Tries <PREFIX>_SVC_TYPE, then SHARED_SVC_TYPE, then NEUROCLAW_SVC_TYPE.
- * Every candidate is in-scope for this agent by construction, so this
- * function never returns `denied` — only `ok`, `fallback`, or `missing`.
+ * Every candidate is in-scope for this agent by construction, so this function
+ * returns `denied` ONLY for the restricted SSH secret class (§2.1) — otherwise
+ * `ok`, `fallback`, or `missing`.
  *
  * DB-free: pass an already-resolved `agentName` + `prefix`. `getStorage()`
  * is the only external dependency (swap it in tests via `setStorage`).
@@ -131,6 +133,12 @@ export async function resolveCredentialForName(
   fallback?: string,
 ): Promise<ResolveOutcome> {
   const service = normalizeAgentPrefix(spec.service);
+  // Restricted secret class (SSH spec §2.1 stack 4): never compose+resolve an
+  // SSH-service credential through this path. Dead today, guarded pre-emptively.
+  if (service === 'SSH') {
+    auditUse(agentName, null, `${prefix ?? 'SHARED'}_${service}_${spec.type}`, purpose, 'denied', 'secret_restricted');
+    return { outcome: 'denied', name: `${prefix ?? 'SHARED'}_${service}_${spec.type}` };
+  }
   const candidates: string[] = [];
   if (prefix) candidates.push(`${prefix}_${service}_${spec.type}`);
   candidates.push(`SHARED_${service}_${spec.type}`, `NEUROCLAW_${service}_${spec.type}`);
@@ -187,6 +195,13 @@ export async function resolveByNameForName(
   if (!parsed) {
     auditUse(agentName, null, name, purpose, 'error', 'invalid name shape');
     return { outcome: 'missing', attempted: [name] };
+  }
+  // Restricted secret class (SSH spec §2.1): the bash_run/skill secrets[] injector
+  // may NEVER resolve an SSH-service secret. Deny on the requested name before any
+  // scope check or storage read — this is the exfil-defense chokepoint for stack 1.
+  if (isRestrictedName(name)) {
+    auditUse(agentName, null, name, purpose, 'denied', 'secret_restricted');
+    return { outcome: 'denied', name };
   }
   if (!inScope(prefix, parsed.scope)) {
     auditUse(agentName, null, name, purpose, 'denied', 'scope denied');

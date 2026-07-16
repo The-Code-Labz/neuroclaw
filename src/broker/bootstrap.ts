@@ -189,6 +189,46 @@ export const SECRET_REGISTRY: SecretRegistryEntry[] = [
   // ── Inngest (durable job queue) — NOTE: Infisical keys are spelled INGEST_* ─
   { brokerNames: ['INGEST_EVENT_KEY',   'SHARED_INGEST_EVENT_KEY'],   envVar: 'INNGEST_EVENT_KEY' },
   { brokerNames: ['INGEST_SIGNING_KEY', 'SHARED_INGEST_SIGNING_KEY'], envVar: 'INNGEST_SIGNING_KEY' },
+
+  // ── Cloudflare R2 (Media gallery object storage). S3-compatible; the endpoint
+  // is derived from the account id (https://<account>.r2.cloudflarestorage.com),
+  // so no separate endpoint secret is needed. Values are .trim()'d on inject,
+  // which also strips the trailing newline the bucket name was pasted with.
+  { brokerNames: ['R2_ACCOUNT_ID',        'SHARED_R2_ACCOUNT_ID'],        envVar: 'R2_ACCOUNT_ID' },
+  { brokerNames: ['R2_ACCESS_KEY_ID',     'SHARED_R2_ACCESS_KEY_ID'],     envVar: 'R2_ACCESS_KEY_ID' },
+  { brokerNames: ['R2_SECRET_ACCESS_KEY', 'SHARED_R2_SECRET_ACCESS_KEY'], envVar: 'R2_SECRET_ACCESS_KEY' },
+  { brokerNames: ['R2_BUCKET_NAME',       'SHARED_R2_BUCKET_NAME'],       envVar: 'R2_BUCKET_NAME' },
+
+  // ── MinIO (NeuroArchive — long-term reusable asset store). Self-hosted,
+  // S3-compatible. Requires forcePathStyle:true (MinIO, unlike R2/AWS, needs
+  // path-style addressing unless a wildcard DNS/virtual-host setup exists).
+  { brokerNames: ['MINIO_ENDPOINT',    'SHARED_MINIO_ENDPOINT'],    envVar: 'MINIO_ENDPOINT' },
+  { brokerNames: ['MINIO_ACCESS_KEY',  'SHARED_MINIO_ACCESS_KEY'],  envVar: 'MINIO_ACCESS_KEY' },
+  { brokerNames: ['MINIO_SECRET_KEY',  'SHARED_MINIO_SECRET_KEY'],  envVar: 'MINIO_SECRET_KEY' },
+  { brokerNames: ['MINIO_BUCKET_NAME', 'SHARED_MINIO_BUCKET_NAME'], envVar: 'MINIO_BUCKET_NAME' },
+
+  // ── Media job providers (async image/video/music). Keys live in the broker
+  // only; hydrated into process.env at boot so config.kie/config.fal read them
+  // like any other provider. Never written to .env.
+  { brokerNames: ['KIE_API_KEY', 'SHARED_KIE_API_KEY'], envVar: 'KIE_API_KEY' },
+  { brokerNames: ['FAL_API_KEY', 'SHARED_FAL_API_KEY'], envVar: 'FAL_API_KEY' },
+  // fal balance (usage panel) is ADMIN-key gated — a SEPARATE key from the queue
+  // key above. Optional; when present the fal.ai usage panel lights up.
+  { brokerNames: ['FAL_ADMIN_API_KEY', 'SHARED_FAL_ADMIN_API_KEY', 'SHARED_FAL_ADMIN_KEY'], envVar: 'FAL_ADMIN_API_KEY' },
+
+  // ── Canva MCP (official, per-user OAuth 2.1 + PKCE — see mcp/canva-oauth.ts).
+  // CLIENT_ID/SECRET are static (from DCR self-registration against
+  // https://mcp.canva.com/register, one-time, done by an operator). The
+  // ACCESS/REFRESH/EXPIRES entries are LIVE credentials written back to the
+  // broker by canva-oauth.ts after the operator completes the browser
+  // consent flow (and on every subsequent refresh) — the broker stays the
+  // source of truth across restarts, same contract as every other secret
+  // here, just with a non-human writer.
+  { brokerNames: ['CANVA_CLIENT_ID',        'SHARED_CANVA_CLIENT_ID'],        envVar: 'CANVA_CLIENT_ID' },
+  { brokerNames: ['CANVA_CLIENT_SECRET',    'SHARED_CANVA_CLIENT_SECRET'],    envVar: 'CANVA_CLIENT_SECRET' },
+  { brokerNames: ['CANVA_ACCESS_TOKEN',     'SHARED_CANVA_ACCESS_TOKEN'],     envVar: 'CANVA_ACCESS_TOKEN' },
+  { brokerNames: ['CANVA_REFRESH_TOKEN',    'SHARED_CANVA_REFRESH_TOKEN'],    envVar: 'CANVA_REFRESH_TOKEN' },
+  { brokerNames: ['CANVA_TOKEN_EXPIRES_AT', 'SHARED_CANVA_TOKEN_EXPIRES_AT'], envVar: 'CANVA_TOKEN_EXPIRES_AT' },
 ];
 
 /**

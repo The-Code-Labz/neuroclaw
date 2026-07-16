@@ -7,6 +7,12 @@ import './page-neurolab.jsx';
 import './page-terminal.jsx';
 import './page-neuroroom.jsx';
 import './page-interactive.jsx';
+import './page-imagegen.jsx';
+import './page-editor.jsx';
+import './page-photopea.jsx';
+import './page-gallery.jsx';
+import './page-media.jsx';
+import './page-backlot.jsx';
 
 const Studio = () => (
   <SubTabs pageId="studio" tabs={[
@@ -15,6 +21,12 @@ const Studio = () => (
     { id: 'terminal',    label: 'Terminal',    render: () => <Terminal/> },
     { id: 'neuroroom',   label: 'Neuro Room',  render: () => <NeuroRoom/> },
     { id: 'interactive', label: 'Interactive', render: () => <Interactive/> },
+    { id: 'imagegen',    label: 'Generate',    render: () => <ImageGen/> },
+    { id: 'editor',      label: 'Editor',      render: () => <ImageEditor/> },
+    { id: 'photopea',    label: 'Photopea',    render: () => <Photopea/> },
+    { id: 'gallery',     label: 'Gallery',     render: () => <Gallery/> },
+    { id: 'media',       label: 'Media',       render: () => <Media/> },
+    { id: 'backlot',     label: 'Backlot',     render: () => <Backlot/> },
   ]}/>
 );
 

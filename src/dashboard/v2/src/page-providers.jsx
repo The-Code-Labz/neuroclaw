@@ -184,7 +184,7 @@ const Providers = () => {
               const promptPrice = m.pricing?.prompt ? (parseFloat(m.pricing.prompt) * 1000).toFixed(4) : '—';
               const completionPrice = m.pricing?.completion ? (parseFloat(m.pricing.completion) * 1000).toFixed(4) : '—';
               return (
-                <div key={m.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '80px 1fr 100px 100px 100px', gap: 10, padding: '8px 16px', borderBottom: '1px dashed rgba(0,183,255,0.05)', fontSize: 11, alignItems: 'center' }}>
+                <div key={m.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '80px 1fr 100px 100px 100px', gap: 10, padding: '8px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 5%, transparent)', fontSize: 11, alignItems: 'center' }}>
                   <span className={tone} style={{ fontWeight: 600 }}>{m.tier.toUpperCase()}</span>
                   <span style={{ color: 'var(--text)', cursor: 'pointer' }} onClick={() => { navigator.clipboard.writeText(m.id); }} title="Click to copy">{m.id}</span>
                   <span className="muted" style={{ fontSize: 10 }}>{m.context_length ? (m.context_length / 1000).toFixed(0) + 'K' : '—'}</span>
@@ -215,7 +215,7 @@ const Providers = () => {
             const tone = m.tier === 'high' ? 'amberc' : m.tier === 'mid' ? 'neon2' : 'neonc';
             const provider = displayProviders.find(p => p.id === normalizeProvider(m.provider));
             return (
-              <div key={m.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '110px 60px 1fr 80px 110px 110px', gap: 10, padding: '8px 16px', borderBottom: '1px dashed rgba(0,183,255,0.05)', fontSize: 11, alignItems: 'center' }}>
+              <div key={m.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '110px 60px 1fr 80px 110px 110px', gap: 10, padding: '8px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 5%, transparent)', fontSize: 11, alignItems: 'center' }}>
                 <span className="muted" style={{ fontSize: 10 }}>{provider?.name || m.provider || 'VoidAI'}</span>
                 <span className={tone}>{m.tier.toUpperCase()}</span>
                 <span style={{ color: 'var(--text)' }}>{m.model_id}</span>
@@ -234,8 +234,8 @@ const Providers = () => {
           <span>AGENT</span><span>PROVIDER</span><span>MODEL</span><span>TOOLS</span><span>RAW</span><span>STATUS</span>
         </div>
         {AGENTS.filter(a => !a.temp).map(a => (
-          <div key={a.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '12px 16px', borderBottom: '1px dashed rgba(0,183,255,0.06)', fontSize: 11, alignItems: 'center' }}>
-            <span style={{ color: '#fff' }}>@{a.name}</span>
+          <div key={a.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '12px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', fontSize: 11, alignItems: 'center' }}>
+            <span style={{ color: 'var(--text)' }}>@{a.name}</span>
             <span className="neonc">{a.provider}</span>
             <span style={{ color: 'var(--text-soft)' }}>{a.model}</span>
             <span style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>{a.caps.slice(0,3).map(c => <span key={c} className="tag" style={{ fontSize: 8, padding: '0 4px' }}>{c}</span>)}</span>

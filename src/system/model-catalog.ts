@@ -12,7 +12,7 @@ import { logger } from '../utils/logger';
 // name pattern unless the user has explicitly pinned an override.
 
 export type ModelTier = 'low' | 'mid' | 'high';
-export const MODEL_PROVIDERS = ['voidai', 'anthropic', 'codex', 'antigravity', 'openrouter', 'ollama', 'kimi', 'minimax', 'claude-interactive', 'litellm', 'claude-gateway', 'abacus'] as const;
+export const MODEL_PROVIDERS = ['voidai', 'anthropic', 'codex', 'antigravity', 'openrouter', 'ollama', 'kimi', 'minimax', 'claude-interactive', 'litellm', 'claude-gateway', 'abacus', 'omniroute'] as const;
 export type ModelProvider = typeof MODEL_PROVIDERS[number];
 
 export interface ModelCatalogRow {
@@ -244,6 +244,7 @@ export async function refreshCatalog(provider: ModelProvider = 'voidai'): Promis
   if (provider === 'litellm')       return refreshLiteLlm();
   if (provider === 'claude-gateway') return refreshGatewayModels();
   if (provider === 'abacus')        return refreshAbacus();
+  if (provider === 'omniroute')     return refreshOmniRoute();
   return { added: 0, updated: 0, missing: 0 };
 }
 
@@ -427,6 +428,27 @@ async function refreshAbacus(): Promise<{ added: number; updated: number; missin
     modelIds = [config.abacus.model].filter(Boolean);
   }
   return upsertSeen('abacus', modelIds, false, {}, meta);
+}
+
+async function refreshOmniRoute(): Promise<{ added: number; updated: number; missing: number }> {
+  // OmniRoute is a self-hosted, OpenAI-compatible gateway — /v1/models lists the
+  // routing aliases (auto/best-*, oc/*-free, etc.). It's a local service, so a
+  // failed listing just means the gateway is offline: seed the configured default
+  // alias so the picker isn't empty rather than treating it as an error.
+  const { getOmniRouteClient } = await import('../agent/omniroute-client');
+  const fallback = [config.omniroute.model].filter(Boolean);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await getOmniRouteClient().models.list();
+    const data = Array.isArray(result?.data) ? result.data : Array.isArray(result) ? result : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const modelIds = data.map((m: any) => String(m?.id ?? m?.model ?? '')).filter(Boolean).filter(isChatCapable);
+    if (modelIds.length === 0) return upsertSeen('omniroute', fallback);
+    return upsertSeen('omniroute', modelIds);
+  } catch (err) {
+    logger.warn('model-catalog: OmniRoute /v1/models failed (gateway offline?)', { error: (err as Error).message });
+    return upsertSeen('omniroute', fallback);
+  }
 }
 
 async function refreshOllama(): Promise<{ added: number; updated: number; missing: number }> {

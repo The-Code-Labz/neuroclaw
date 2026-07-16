@@ -68,7 +68,7 @@ export async function update(input: UserProfilerInput): Promise<void> {
           },
         ],
         temperature: 0.2,
-      }, { label: 'user-profiler' });
+      }, { label: 'user-profiler', preferGemini: true });
       const raw = resp.choices[0]?.message?.content ?? '{}';
       dimensions = (JSON.parse(raw) as { dimensions?: UserDimension[] }).dimensions ?? [];
     } catch (err) {

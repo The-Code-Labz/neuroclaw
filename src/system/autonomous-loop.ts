@@ -27,6 +27,7 @@ import { getTasks, getTaskById, updateTask, type AppTask } from './task-manager'
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
 import { config } from '../config';
+import { healMemoryStats, candidateFixes } from './self-heal/heal-loop';
 
 export interface AutonomousOptions {
   /** Cap on tasks worked before the loop stops and reports back. */
@@ -47,7 +48,7 @@ export interface AutonomousOptions {
   triggeredBy:             string;
 }
 
-type TaskOutcome = 'done' | 'failed' | 'timeout' | 'rejected';
+type TaskOutcome = 'done' | 'failed' | 'blocked' | 'timeout' | 'rejected';
 type StopReason  = 'boardEmpty' | 'maxTasks' | 'deadline' | 'failureStreak' | 'manual' | 'error';
 
 interface WorkedTask {
@@ -112,6 +113,7 @@ async function waitForTerminal(taskId: string, timeoutMs: number): Promise<TaskO
       if (!t)                    return 'failed';   // archived/deleted mid-run
       if (t.status === 'done')   return 'done';
       if (t.status === 'failed') return 'failed';
+      if (t.status === 'blocked') return 'blocked';
       if (t.status === 'doing' || t.status === 'review') {
         sawActive = true;
       } else if (t.status === 'todo' && sawActive) {
@@ -157,6 +159,26 @@ function buildReport(reason: StopReason): string {
     lines.push('**Did not finish:**');
     for (const w of failed) lines.push(`- ${w.title} — _@${w.agent}_ (${w.outcome})`);
   }
+
+  // Read-only self-heal telemetry: show what injection WOULD inject before it's armed.
+  try {
+    const stats = healMemoryStats();
+    lines.push('');
+    lines.push(`**Self-heal memory** — ${stats.total} signature(s) observed · ${stats.learned} learned · ${stats.observing} observing · ${stats.demoted} demoted.`);
+    const candidates = candidateFixes();
+    if (candidates.length) {
+      lines.push('');
+      lines.push('**Candidate fixes (injection would use these if SELF_HEAL_FIX_INJECTION=true):**');
+      for (const c of candidates) {
+        const ready = c.distinct_sessions >= config.selfHeal.trustHitCount && c.verify_fail === 0;
+        lines.push(`- \`${c.signature}\` — ${c.error_class} in ${c.module_ident} · pass ${c.verify_pass} / fail ${c.verify_fail} · ${c.distinct_sessions} distinct session(s) · ${ready ? '**TRUSTED**' : 'prior'}`);
+        lines.push(`  > ${c.verified_fix.split('\n')[0].slice(0, 160)}`);
+      }
+    }
+  } catch (err) {
+    logger.warn('autonomous-loop: self-heal telemetry failed (non-fatal)', { error: String(err) });
+  }
+
   lines.push('');
   lines.push('_Review the completed tasks in Mission Control and approve or send back. Run autonomous mode again to continue._');
   return lines.join('\n');
@@ -232,7 +254,9 @@ async function drive(): Promise<void> {
       // dispatched here often have a null agent_id (assignee was free text like
       // "User"), so without this the result write is silently skipped and the
       // task gets stranded in 'doing'.
-      if (next.agent_id !== agent.id) updateTask(next.id, { agent_id: agent.id });
+      // Write-site #3 — sync assignee alongside agent_id so the card/monitors
+      // don't strand a stale "User" label on a task we just took ownership of.
+      if (next.agent_id !== agent.id) updateTask(next.id, { agent_id: agent.id, assignee: agent.name });
       enqueueJob('agent_task', {
         taskId:          next.id,
         agentId:         agent.id,
@@ -250,12 +274,12 @@ async function drive(): Promise<void> {
         logHive('autonomous_task_done', `Autonomous: "${next.title}" → done (by ${agent.name})`, agent.id, { taskId: next.id });
       } else {
         // The stop-guard exists to catch SYSTEMIC breakage (dead provider, bad
-        // creds), so only 'timeout'/'failed' (couldn't run) escalate the streak.
-        // 'rejected' means the task ran and the reviewer ran — the system is
-        // healthy, the work just didn't pass — so it resets the streak. This
-        // lets an unlimited run drain a board of mixed-quality tasks instead of
+        // creds), so only 'timeout'/'failed'/'blocked' (couldn't run / storm-broken)
+        // escalate the streak. 'rejected' means the task ran and the reviewer ran —
+        // the system is healthy, the work just didn't pass — so it resets the streak.
+        // This lets an unlimited run drain a board of mixed-quality tasks instead of
         // stopping after 3 quality-bounces in a row.
-        if (outcome === 'timeout' || outcome === 'failed') state.consecutiveFailures++;
+        if (outcome === 'timeout' || outcome === 'failed' || outcome === 'blocked') state.consecutiveFailures++;
         else state.consecutiveFailures = 0;
         logHive('autonomous_task_failed', `Autonomous: "${next.title}" → ${outcome} (by ${agent.name})`, agent.id, { taskId: next.id, outcome });
       }

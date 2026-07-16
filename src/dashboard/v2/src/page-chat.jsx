@@ -1031,11 +1031,11 @@ const Chat = () => {
             <div key={s.id} onClick={() => setActiveSession(s.id)} className="chat-sess-row" style={{
               padding: '10px 14px',
               borderLeft: `2px solid ${activeSession === s.id ? 'var(--accent)' : 'transparent'}`,
-              background: activeSession === s.id ? 'rgba(0,183,255,0.08)' : 'transparent',
-              borderBottom: '1px dashed rgba(0,183,255,0.06)',
+              background: activeSession === s.id ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
+              borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
               cursor: 'pointer',
             }}>
-              <div className="mono" style={{ fontSize: 11, color: activeSession === s.id ? '#fff' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+              <div className="mono" style={{ fontSize: 11, color: activeSession === s.id ? 'var(--text)' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', gap: 6 }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
                 {s.active && <span className="dot cyan pulse"/>}
               </div>
@@ -1070,7 +1070,7 @@ const Chat = () => {
             <Icon name="sessions" size={15}/>
           </button>
           <div className="chat-thread-title" style={{ flex: 1, minWidth: 0 }}>
-            <div className="mono" style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session?.title || 'New chat'}</div>
+            <div className="mono" style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session?.title || 'New chat'}</div>
             <div className="mono muted" style={{ fontSize: 10, marginTop: 2, display: 'flex', gap: 10 }}>
               <span>{messages.length} msgs</span>
               <span>·</span>
@@ -1113,7 +1113,7 @@ const Chat = () => {
             if (m.kind === 'user') {
               return (
                 <div key={i} style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
-                  <div style={{ maxWidth: '70%', padding: '10px 14px', background: 'linear-gradient(180deg, rgba(0,183,255,0.18), rgba(0,183,255,0.08))', border: '1px solid rgba(0,183,255,0.4)', borderRadius: '8px 8px 2px 8px' }}>
+                  <div style={{ maxWidth: '70%', padding: '10px 14px', background: 'linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), color-mix(in srgb, var(--accent) 8%, transparent))', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)', borderRadius: '8px 8px 2px 8px' }}>
                     <div style={{ display: 'flex', gap: 8, fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--accent-2)', marginBottom: 4, alignItems: 'center' }}>
                       <span>@{m.who}</span><span className="muted">·</span><span className="muted">{m.t}</span>
                       {m.slashSkill && <span className="tag cyan" style={{ fontSize: 9, padding: '1px 5px' }}>/{m.slashSkill}</span>}
@@ -1121,16 +1121,16 @@ const Chat = () => {
                     {((m.attachments?.length || 0) + (m.docs?.length || 0)) > 0 && (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
                         {(m.attachments || []).map((a, ai) => (
-                          <img key={ai} src={a.url} alt={a.name} style={{ height: 48, borderRadius: 4, border: '1px solid rgba(0,183,255,0.3)' }} />
+                          <img key={ai} src={a.url} alt={a.name} style={{ height: 48, borderRadius: 4, border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' }} />
                         ))}
                         {(m.docs || []).map((d, di) => (
-                          <span key={di} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(0,183,255,0.2)', borderRadius: 4, padding: '2px 6px', fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--accent-2)' }}>
+                          <span key={di} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)', borderRadius: 4, padding: '2px 6px', fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--accent-2)' }}>
                             📄 {d}
                           </span>
                         ))}
                       </div>
                     )}
-                    <div style={{ fontFamily: 'var(--mono)', fontSize: 13, color: '#fff', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{m.body}</div>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--text)', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{m.body}</div>
                   </div>
                 </div>
               );
@@ -1140,7 +1140,7 @@ const Chat = () => {
             const agentAvatarUrl = agentRecord?._raw?.avatar_url || null;
             return (
               <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-                <div style={{ width: 32, height: 32, flex: 'none', borderRadius: 6, background: isTemp ? 'radial-gradient(circle, rgba(139,92,246,0.55), rgba(139,92,246,0.1))' : 'radial-gradient(circle, rgba(0,183,255,0.55), rgba(0,183,255,0.05))', border: `1px solid ${isTemp ? 'rgba(139,92,246,0.6)' : 'var(--line-hard)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, overflow: 'hidden' }}>
+                <div style={{ width: 32, height: 32, flex: 'none', borderRadius: 6, background: isTemp ? 'radial-gradient(circle, rgba(139,92,246,0.55), rgba(139,92,246,0.1))' : 'radial-gradient(circle, color-mix(in srgb, var(--accent) 55%, transparent), color-mix(in srgb, var(--accent) 5%, transparent))', border: `1px solid ${isTemp ? 'rgba(139,92,246,0.6)' : 'var(--line-hard)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, overflow: 'hidden' }}>
                   {agentAvatarUrl
                     ? <img src={agentAvatarUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     : (m.agent || '?')[0].toUpperCase()}
@@ -1159,7 +1159,7 @@ const Chat = () => {
                     )}
                   </div>
                   {m.body === '' && m.streaming && (m.activityLog?.length ?? 0) > 0 && (
-                    <div style={{ borderLeft: '2px solid rgba(0,183,255,0.2)', paddingLeft: 8, marginBottom: 4 }}>
+                    <div style={{ borderLeft: '2px solid color-mix(in srgb, var(--accent) 20%, transparent)', paddingLeft: 8, marginBottom: 4 }}>
                       {m.activityLog.map((entry, ei) => (
                         <div key={ei} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0', fontFamily: 'var(--mono)', fontSize: 10, color: entry.done ? 'rgba(255,255,255,0.25)' : 'var(--accent)' }}>
                           <span style={{ width: 14, textAlign: 'center', display: 'inline-block', animation: entry.done ? 'none' : 'spin 0.8s linear infinite' }}>
@@ -1220,7 +1220,7 @@ const Chat = () => {
                   {(m.agentFiles || []).map((f, i) => (
                     <div key={i} style={{ display: 'flex', flexDirection: 'column', marginTop: '6px', maxWidth: '340px' }}>
                       {f.caption && (
-                        <div style={{ fontSize: '12px', color: '#bbb', marginBottom: '4px' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--text-soft)', marginBottom: '4px' }}>
                           {f.caption}
                         </div>
                       )}
@@ -1234,12 +1234,12 @@ const Chat = () => {
                         <span style={{ fontSize: '22px', flexShrink: 0 }}>{agentFileIcon(f.mime)}</span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{
-                            color: '#e0e0e0', fontSize: '12px', fontWeight: 600,
+                            color: 'var(--text)', fontSize: '12px', fontWeight: 600,
                             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                           }}>
                             {f.filename}
                           </div>
-                          <div style={{ color: '#666', fontSize: '10px', marginTop: '2px' }}>
+                          <div style={{ color: 'var(--muted)', fontSize: '10px', marginTop: '2px' }}>
                             {agentFileMimeLabel(f.mime)} · {agentFileFormatBytes(f.size)}
                           </div>
                         </div>
@@ -1302,7 +1302,7 @@ const Chat = () => {
                              onMouseDown={e => { e.preventDefault(); acceptSlash(c.name); }}
                              className="mono"
                              style={{ padding: '6px 10px', fontSize: 11, cursor: 'pointer', borderRadius: 2, display: 'flex', justifyContent: 'space-between', gap: 12 }}
-                             onMouseOver={e => e.currentTarget.style.background = 'rgba(0,183,255,0.10)'}
+                             onMouseOver={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 10%, transparent)'}
                              onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
                           <span><span style={{ color: 'var(--accent, #7c7cff)' }}>/{c.name}</span>{c.description && <span className="muted" style={{ fontSize: 10, marginLeft: 6 }}>— {c.description}</span>}</span>
                           <span className="muted" style={{ fontSize: 10 }}>built-in</span>
@@ -1318,7 +1318,7 @@ const Chat = () => {
                              onMouseDown={e => { e.preventDefault(); acceptSlash(s.name); }}
                              className="mono"
                              style={{ padding: '6px 10px', fontSize: 11, cursor: 'pointer', borderRadius: 2, display: 'flex', justifyContent: 'space-between', gap: 12 }}
-                             onMouseOver={e => e.currentTarget.style.background = 'rgba(0,183,255,0.10)'}
+                             onMouseOver={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 10%, transparent)'}
                              onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
                           <span><span className="neonc">/{s.name}</span>{s.description && <span className="muted" style={{ fontSize: 10, marginLeft: 6 }}>— {s.description}</span>}</span>
                           <span className="muted" style={{ fontSize: 10 }}>{s.source}</span>
@@ -1358,7 +1358,7 @@ const Chat = () => {
                 rows={1}
                 style={{
                   width: '100%', background: 'transparent', border: 0, outline: 0,
-                  color: '#fff', fontFamily: 'var(--mono)', fontSize: 13,
+                  color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 13,
                   opacity: streaming ? 0.5 : 1, resize: 'none', lineHeight: 1.5,
                   minHeight: 36, maxHeight: 140, overflowY: 'auto',
                 }}
@@ -1428,7 +1428,7 @@ const Chat = () => {
           <div className="label-tiny" style={{ marginBottom: 8 }}>TOOL CALLS</div>
           {tools.length === 0 && <div className="mono muted" style={{ fontSize: 10 }}>// none in this turn</div>}
           {tools.map((t, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed rgba(0,183,255,0.08)' }}>
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)' }}>
               <div className="mono" style={{ fontSize: 11 }}>
                 <div className="neonc">{t.name}</div>
                 <div className="muted" style={{ fontSize: 10 }}>{(t.input || '').slice(0, 40)}</div>

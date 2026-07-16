@@ -179,6 +179,14 @@ const delay = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
 // timeout, so surface it so the caller can pick a faster model).
 function isTransientAbacusError(msg: string, status?: number): boolean {
   if (/unknown parameter|invalid model|supported values are|invalid image config param|invalid \w+ for /i.test(msg)) return false;
+  // Content-moderation / safety rejections are PERMANENT for this prompt — the
+  // model's safety filter flagged it, so retrying the identical prompt can never
+  // clear it. The moderation text literally ends with "Please try again with a
+  // different prompt", which the transient regex below would otherwise misread as
+  // a retryable "please try again" and burn two backoff retries (+ compute points)
+  // on a doomed request. gpt_image2 (OpenAI's filter) trips this most; nano_banana2
+  // hits the "not allowed by our safety system" variant. Surface it immediately.
+  if (/sensitive content|not allowed by (?:our |the )?safety|safety system|content that is not allowed|content policy|content[_ ]policy[_ ]violation|different prompt/i.test(msg)) return false;
   if (status === 429 || (typeof status === 'number' && status >= 500)) return true;
   return /temporary error|please try again|try again later|overloaded|over capacity|rate limit|too many requests|service unavailable|econnreset|socket hang ?up/i.test(msg);
 }
@@ -239,6 +247,11 @@ export async function generateAbacusMedia(req: AbacusMediaRequest): Promise<Abac
         logger.warn('abacus-media: transient error, retrying after backoff', { model: req.model, attempt: transientUsed, waitMs: wait, error: msg.slice(0, 120) });
         await delay(wait);
         continue;
+      }
+      // Give a clear, actionable message for safety-filter rejections (common on
+      // gpt_image2 / nano_banana2) rather than a raw API dump the user can't act on.
+      if (/sensitive content|not allowed by (?:our |the )?safety|safety system|content that is not allowed|content policy|different prompt/i.test(msg)) {
+        throw new Error(`${req.model} declined this prompt — its safety filter flagged the content. Try rephrasing, or use a model with a lighter filter (nano_banana2, flux_pro).`);
       }
       throw new Error(`Abacus media request failed (${req.model}): ${msg.slice(0, 240)}`);
     }
