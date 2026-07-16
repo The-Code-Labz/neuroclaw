@@ -19,6 +19,7 @@ function pushToHiveRing(ev: HiveEvent): void {
     'llm_error', 'llm_auth_error', 'llm_rate_limit', 'llm_server_error',
     'tool_error', 'mcp_probe_failed', 'mcp_agent_call_failed',
     'background_task_failed', 'dream_cycle_failed', 'review_failed',
+    'review_failopen_risky',
   ]);
   if (errorActions.has(ev.action)) {
     if (errorRing.length >= HIVE_RING_SIZE) errorRing.shift();
@@ -82,6 +83,10 @@ export type HiveAction =
   | 'mcp_agent_call_failed'
   | 'review_passed'
   | 'review_failed'
+  | 'review_degraded_no_diff'
+  | 'review_failopen_risky'
+  | 'self_heal_storm'
+  | 'self_heal_learned'
   | 'browser_action'
   | 'web_search'
   | 'provider_cooldown_set'
@@ -97,7 +102,9 @@ export type HiveAction =
   | 'task_monitor_alert'
   | 'sentinel_check_in'
   | 'sentinel_reassign'
+  | 'sentinel_same_agent_retry'
   | 'sentinel_blocked'
+  | 'sentinel_runaway'
   | 'archivist_extracted'
   | 'agent_thought'
   | 'tool_result'
@@ -157,7 +164,15 @@ export type HiveAction =
   | 'autonomous_task_failed'
   | 'autonomous_stopped'
   | 'task_claimed'
-  | 'task_self_updated';
+  | 'task_self_updated'
+  // Durable synchronous agent hand-off recovery (src/system/handoff-recovery.ts)
+  | 'handoff_recovered'
+  | 'handoff_orphaned'
+  // SSH machine connections (see src/system/ssh-connect.ts, pending-confirmation.ts)
+  | 'ssh_confirm_requested'
+  | 'ssh_confirm_resolved'
+  | 'ssh_invocation'
+  | 'ssh_alert';
 
 export interface HiveEvent {
   id:         string;

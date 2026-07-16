@@ -63,6 +63,14 @@ const QUOTA_PROVIDERS = [
   { key: 'codex',       label: 'Codex CLI',   color: 'var(--violet)', endpoint: '/api/providers/codex/usage',     style: 'windows' },
   { key: 'minimax',     label: 'MiniMax',     color: '#f59e0b',     endpoint: '/api/providers/minimax/usage',     style: 'windows' },
   { key: 'kimi',        label: 'Kimi',        color: '#a78bfa',     endpoint: '/api/providers/kimi/usage',        style: 'windows' },
+  { key: 'grok',        label: 'Grok CLI',   color: '#f4f4f5',     endpoint: '/api/providers/grok/usage',        style: 'windows' },
+  { key: 'openrouter',  label: 'OpenRouter', color: '#60a5fa',     endpoint: '/api/providers/openrouter/usage',  style: 'windows' },
+  { key: 'voidai',      label: 'VoidAI',     color: '#c084fc',     endpoint: '/api/providers/voidai/usage',      style: 'windows' },
+  { key: 'kie',         label: 'KIE AI',     color: '#2dd4bf',     endpoint: '/api/providers/kie/usage',          style: 'windows' },
+  { key: 'fal',         label: 'fal.ai',     color: '#f472b6',     endpoint: '/api/providers/fal/usage',          style: 'windows' },
+  { key: 'venice',      label: 'Venice',     color: '#fb7185',     endpoint: '/api/providers/venice/usage',       style: 'windows' },
+  { key: 'abacus',      label: 'Abacus',     color: '#818cf8',     endpoint: '/api/providers/abacus/usage',       style: 'windows' },
+  { key: 'openart',     label: 'OpenArt',    color: '#fbbf24',     endpoint: '/api/providers/openart/usage',      style: 'windows' },
 ];
 
 function QuotaPanel({ providerCfg }) {
@@ -71,10 +79,21 @@ function QuotaPanel({ providerCfg }) {
 
   React.useEffect(() => {
     if (!providerCfg.endpoint) { setLoading(false); return; }  // note-only panel (e.g. Kimi)
-    window.NC_API.get(providerCfg.endpoint)
-      .then(d => setData(d))
-      .catch(() => setData({ ok: false, error: 'fetch failed' }))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let retry = null;
+    // Some providers (Grok CLI) drive a slow tmux PTY on a cold cache and blow
+    // past NC_API's 10s fetch timeout. The backend still finishes and caches the
+    // result, so on failure we retry once ~16s later to pick up the warm cache.
+    const attempt = (isRetry) => window.NC_API.get(providerCfg.endpoint)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
+      .catch(() => {
+        if (cancelled) return;
+        if (!isRetry) { retry = setTimeout(() => attempt(true), 16000); return; }
+        setData({ ok: false, error: 'fetch failed' });
+        setLoading(false);
+      });
+    attempt(false);
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
   }, [providerCfg.endpoint]);
 
   const color = providerCfg.color;
@@ -118,6 +137,7 @@ function QuotaPanel({ providerCfg }) {
                   )}
                 </div>
               ))}
+              {data.note && <span className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>{data.note}</span>}
               {data.plan && <span className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>{data.plan}</span>}
             </div>
           ) : (
@@ -316,7 +336,7 @@ const Usage = () => {
                       cursor: 'pointer',
                       transition: 'background 0.1s',
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,183,255,0.04)'}
+                    onMouseEnter={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 4%, transparent)'}
                     onMouseLeave={e => e.currentTarget.style.background = ''}
                   >
                     <span className="mono" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 7 }}>

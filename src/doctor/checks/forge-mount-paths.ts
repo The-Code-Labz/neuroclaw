@@ -1,7 +1,7 @@
 // forge.mount-paths — sanity-check the Forge skill's config surface.
 //
 // The Forge skill at .claude/skills/forge/ uses Oracle's account via
-// FORGE_EMAIL / FORGE_PASSWORD env, talks to forge-backend.your-domain.com,
+// FORGE_EMAIL / FORGE_PASSWORD env, talks to forge-backend.neurolearninglabs.com,
 // and (in some deployments) caches the JWT at ~/.forge_jwt. There is no
 // hard-coded mount-path registry in this repo today, so this check is best-
 // effort: it verifies the forge.py script exists and that creds are set.

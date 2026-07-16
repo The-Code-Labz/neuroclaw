@@ -19,14 +19,7 @@ venv/
 env/
 **/.venv/
 **/venv/
-
-# ---------- Removed from repo (kept local-only, not tracked) ----------
-# Pydantic AI agent stack — moved off the main repo; run separately if needed.
-/pydantic-agents/
-# Docker orchestration script for the (now-removed) pydantic-agents stack.
-/docker-start-all.sh
-# Supabase Edge Function for text humanization — moved off the main repo.
-/supabase/functions/humanize-text/
+pydantic-agents/.venv/
 
 # ---------- Secrets & env files ----------
 .env
@@ -72,6 +65,7 @@ service-account*.json
 *.db-journal
 *.sqlite
 *.sqlite3
+compression-telemetry.json
 backups/
 cache/
 hyperframes/
@@ -79,6 +73,9 @@ hyperframes/
 # ---------- Logs & runtime ----------
 *.log
 logs/
+pydantic-agents/image_agent/outputs/
+pydantic-agents/chatgpt_image_agent/outputs/
+pydantic-agents/chatgpt_image_agent/profile/
 .canvas-projects/
 .DS_Store
 Thumbs.db
@@ -104,14 +101,21 @@ GEMINI.md
 .codex/
 .codex/**tmp/audio/
 
-# ---------- Local dev scratch / agent working dirs (never publish) ----------
-.planning/
+# Local diagnostic dumps (contain live tokens — never commit)
+forge_api_gateway_inspection.json
+forge_api_gateway_inspection.redacted.json
+forge_api_gateway_http_responses_raw.md
+# Agent-generated product scaffolds (own repos / node_modules)
 forge/
 projects/
-forge_api_gateway_*
-*.redacted.json
 
-# ---------- Embedded foreign repo / nested runtime uploads ----------
-huashu-design/
-src/dashboard/v2/uploads/
-**/uploads/
+# Built dashboard bundles (regenerable)
+src/dashboard/v4/dist/
+# Scratch rescue dir
+.wip-rescue/
+
+# one-time image backfill ledger
+scripts/.backfill-images-state.json
+
+# Runtime forensic/agent export artifacts (workspace-exempt bucket, never commit)
+_shared/

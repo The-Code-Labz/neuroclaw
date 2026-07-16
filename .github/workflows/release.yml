@@ -1,0 +1,96 @@
+name: Release
+
+# Auto-cuts a git tag + GitHub Release whenever the VERSION file changes on main.
+# This closes the producer loop for the consumer update path (./update.sh tracks
+# the stable-tag channel — see README › Updating). Bumping VERSION in a commit to
+# main is the single action that publishes a new stable release; no manual tagging.
+#
+# Flow:
+#   1. VERSION changes on main  →  this workflow fires.
+#   2. It reads the version, checks a v<version> tag doesn't already exist.
+#   3. Extracts the matching section from CHANGELOG.md for the release notes.
+#   4. Creates the tag and a GitHub Release. Consumers' update.sh then sees the
+#      new tag on `git fetch --tags` and offers the upgrade.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "VERSION"
+
+permissions:
+  contents: write # required to create tags + releases
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag & Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history + existing tags
+
+      - name: Read VERSION
+        id: ver
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$VERSION" ]; then
+            echo "VERSION file is empty — aborting." >&2
+            exit 1
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION '$VERSION' is not semver X.Y.Z — aborting." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag does not already exist
+        id: exists
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — nothing to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract changelog section
+        if: steps.exists.outputs.skip == 'false'
+        id: notes
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          NOTES_FILE="$(mktemp)"
+          if [ -f CHANGELOG.md ]; then
+            # Grab the block under the "## [X.Y.Z]" (or "## X.Y.Z") heading,
+            # stopping at the next "## " heading.
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[?" ver "\\]?" { grab=1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          fi
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf "Release v%s. See CHANGELOG.md for details." "$VERSION" > "$NOTES_FILE"
+          fi
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag & GitHub Release
+        if: steps.exists.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "${{ steps.notes.outputs.file }}" \
+            --verify-tag

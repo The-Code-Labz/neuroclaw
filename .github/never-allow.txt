@@ -1,0 +1,35 @@
+# never-allow.txt — THIRD, UNCONDITIONAL gate. Independent of allowlist.txt.
+#
+# Rationale (2026-07-16 sanitizer audit, requested after the PR #6 incident
+# review): the audit found sanitize.sh + allowlist.txt were NOT regressed —
+# every one of the 6 dispatches that day correctly stripped .gemini/ and
+# scripts/ from the sanitized snapshot (see PR #6's diff: 291 .gemini/ + 29
+# scripts/ entries are all `removed`, none `added` — the pipeline was about
+# to DELETE a pre-existing, unrelated public-main exposure from 2026-07-05,
+# not create a new one). No code bug existed.
+#
+# But the near-miss is real: allowlist.txt is a single human-edited file. A
+# future PR could add ".gemini" or "scripts" to it by mistake (fat-finger,
+# bad merge, stale copy-paste) and the PRIMARY gate would silently accept it
+# — same class of bug the 2026-07-15 real-tree audit caught 4x under the old
+# denylist model. This file is a second, independently-maintained list that
+# sanitize.sh checks UNCONDITIONALLY after the allowlist+denylist passes,
+# regardless of what allowlist.txt says and regardless of STRICT_ALLOWLIST.
+# To ever let one of these paths into a public snapshot, a human must edit
+# BOTH allowlist.txt AND this file — a single mis-edit can no longer leak.
+#
+# One top-level name per line. Adding an entry here always wins over
+# allowlist.txt. Removing an entry requires the same per-path human review
+# standard as promoting something in allowlist.txt.
+
+.gemini
+scripts
+pydantic-agents
+packages
+huashu-design
+infra
+integrations
+skills
+secrets
+credentials
+.planning

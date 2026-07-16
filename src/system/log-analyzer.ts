@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb, insertDowntimeEvent, closeDowntimeEvent, getOpenDowntimeEvent } from '../db';
 import { readRecentLogLines, logger } from '../utils/logger';
+import { detectGiveUpPatterns } from './give-up-telemetry';
 
 const CURSOR_KEY = 'log_analyzer_last_run_at';
 const RUN_INTERVAL_MS = 5 * 60 * 1000;
@@ -225,6 +226,9 @@ function runAnalysis(): void {
     detectErrorSpikes(since);
     detectDiscordOffline(since);
     detectProviderFailures(since);
+    // Async, self-contained (own 24h window + dedup). Fire-and-forget so a slow
+    // task-file never blocks the synchronous downtime detectors above.
+    void detectGiveUpPatterns();
     setLastRunAt(new Date().toISOString());
   } catch (err) {
     logger.warn('log-analyzer: run failed', { err: err instanceof Error ? err.message : err });

@@ -12,6 +12,7 @@ interface StuckTaskRow {
   title:             string;
   description:       string | null;
   agent_id:          string | null;
+  session_id:        string | null;
   assignee:          string;
   failure_count:     number;
   max_retries:       number;
@@ -44,7 +45,7 @@ async function recoverOrphanedTasks(): Promise<void> {
 
   for (const task of orphaned) {
     try {
-      updateTask(task.id, { status: 'todo', agent_id: null });
+      updateTask(task.id, { status: 'todo', agent_id: null, assignee: 'User' });
       logHive('orphaned_doing_task_requeued', `task-watchdog: Task "${task.title}" reset to todo — agent ${task.previous_agent_id} is inactive/deleted`, undefined, { taskId: task.id, previousAgentId: task.previous_agent_id, source: 'watchdog' });
       logger.info(`task-watchdog: orphaned task "${task.title}" (${task.id}) reset — previous agent ${task.previous_agent_id}`);
     } catch (err) {
@@ -62,7 +63,7 @@ async function recoverStuckTasks(): Promise<void> {
   // (space sorts below 'T'), so fresh tasks were yanked back to 'todo' with a
   // failure_count bump and force-failed after 3 watchdog cycles.
   const stuck = db.prepare(`
-    SELECT t.id, t.title, t.description, t.agent_id, t.assignee, t.failure_count,
+    SELECT t.id, t.title, t.description, t.agent_id, t.session_id, t.assignee, t.failure_count,
            t.max_retries, t.last_heartbeat_at,
            a.name AS agent_name, a.status AS agent_status
     FROM tasks t
@@ -77,7 +78,7 @@ async function recoverStuckTasks(): Promise<void> {
       )
   `).all(STUCK_THRESHOLD_MS) as StuckTaskRow[];
 
-  const live = stuck.filter(t => isTaskLive({ id: t.id, agent_id: t.agent_id, last_heartbeat_at: t.last_heartbeat_at }));
+  const live = stuck.filter(t => isTaskLive({ id: t.id, agent_id: t.agent_id, session_id: t.session_id, last_heartbeat_at: t.last_heartbeat_at }));
   const dead = stuck.filter(t => !live.includes(t));
   if (live.length > 0) logger.info(`task-watchdog: skipped ${live.length} live task(s) past 2h threshold (still heartbeating)`);
 

@@ -202,6 +202,27 @@ function initSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_comms_notes_agent      ON comms_notes(agent_id);
     CREATE INDEX IF NOT EXISTS idx_comms_notes_ref        ON comms_notes(ref_message_id);
 
+    -- v2.x: agent_notes — the shared Notepad. Long-form MARKDOWN documents any
+    -- agent can create and append to at any time, read/copied by the human in the
+    -- Notes tab. Purpose: escape Discord's message-length limit — an agent keeps
+    -- appending to one note to build a single continuous document. Distinct from
+    -- comms_notes (short, comms-channel scoped): these are durable notepads.
+    CREATE TABLE IF NOT EXISTS agent_notes (
+      id          TEXT PRIMARY KEY,
+      title       TEXT NOT NULL DEFAULT 'Untitled note',
+      content     TEXT NOT NULL DEFAULT '',
+      author      TEXT NOT NULL DEFAULT 'agent',
+      agent_id    TEXT REFERENCES agents(id),
+      pinned      INTEGER NOT NULL DEFAULT 0,
+      archived    INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_notes_recent   ON agent_notes(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_notes_pinned   ON agent_notes(pinned);
+    CREATE INDEX IF NOT EXISTS idx_agent_notes_archived ON agent_notes(archived);
+
     -- v2.x: agent_user_messages — messages from agents to the human user.
     --   kind = 'info' | 'question' | 'alert' | 'update' controls display styling.
     --   read_at and dismissed_at track user interaction state.
@@ -222,6 +243,104 @@ function initSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_user_messages_recent   ON agent_user_messages(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_user_messages_unread   ON agent_user_messages(read_at) WHERE read_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_agent_user_messages_agent    ON agent_user_messages(from_agent_id);
+
+    -- v2.x: agent_media — the Media gallery (Studio › Media). One row per piece
+    -- of generated media (image/video/audio) that lives in S3-compatible object
+    -- storage (Cloudflare R2). The bytes live in R2 under object_key; this row is
+    -- provenance + index. The dashboard streams playback via short-lived presigned
+    -- URLs derived from object_key, so nothing here is a public link. Any agent can
+    -- register media (register_media tool) or generation tools auto-register.
+    CREATE TABLE IF NOT EXISTS agent_media (
+      id          TEXT PRIMARY KEY,
+      kind        TEXT NOT NULL DEFAULT 'image'
+                  CHECK(kind IN ('image','video','audio')),
+      title       TEXT NOT NULL DEFAULT '',
+      prompt      TEXT NOT NULL DEFAULT '',
+      object_key  TEXT NOT NULL,              -- key within the R2 bucket
+      mime_type   TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size        INTEGER NOT NULL DEFAULT 0, -- bytes
+      source_tool TEXT NOT NULL DEFAULT '',   -- which tool/model produced it
+      author      TEXT NOT NULL DEFAULT 'agent',
+      agent_id    TEXT REFERENCES agents(id),
+      session_id  TEXT,
+      archived    INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_media_recent   ON agent_media(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_media_kind     ON agent_media(kind);
+    CREATE INDEX IF NOT EXISTS idx_agent_media_archived ON agent_media(archived);
+
+    -- v3.x: archive_items — NeuroArchive long-term reusable asset store (MinIO).
+    -- Distinct from agent_media (ephemeral R2 Media gallery). Objects are kept
+    -- indefinitely; bucket versioning provides overwrite/delete protection.
+    CREATE TABLE IF NOT EXISTS archive_items (
+      id              TEXT PRIMARY KEY,
+      category        TEXT NOT NULL DEFAULT 'other'
+                      CHECK(category IN ('video','image','audio','broll','code','document','other')),
+      title           TEXT NOT NULL DEFAULT '',
+      description     TEXT NOT NULL DEFAULT '',
+      tags            TEXT NOT NULL DEFAULT '[]',   -- JSON array, e.g. ["b-roll","city","night"]
+      object_key      TEXT NOT NULL,                -- key within the MinIO archive bucket
+      mime_type       TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size            INTEGER NOT NULL DEFAULT 0,   -- bytes
+      checksum_sha256 TEXT NOT NULL DEFAULT '',     -- integrity check on ingest + re-verify
+      source_tool     TEXT NOT NULL DEFAULT '',
+      author          TEXT NOT NULL DEFAULT 'agent',
+      agent_id        TEXT REFERENCES agents(id),
+      session_id      TEXT,
+      pinned          INTEGER NOT NULL DEFAULT 0,   -- pin frequently reused items
+      archived        INTEGER NOT NULL DEFAULT 0,   -- soft-delete flag
+      created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      last_used_at    TEXT                          -- bump on every fetch/download
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_archive_recent   ON archive_items(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_archive_category ON archive_items(category);
+    CREATE INDEX IF NOT EXISTS idx_archive_archived ON archive_items(archived);
+
+    -- v2.x: subagent_providers — per-family dashboard override for which sub-agent
+    -- provider families (kimi/minimax/…) are usable for routing. One row per
+    -- family that has been explicitly toggled in the UI. Absence of a row means
+    -- "no override" → fall back to the env/key-presence default in config.subAgent.
+    -- This exists so an operator can enable/disable a family live from Settings ›
+    -- Sub-Agents WITHOUT editing .env or restarting — the runner reads this on
+    -- every task. A family with no API key can never be enabled regardless.
+    CREATE TABLE IF NOT EXISTS subagent_providers (
+      family      TEXT PRIMARY KEY,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
+    -- Self-healing loop failure-memory (Hermes learn stage). One row per distinct
+    -- failure SIGNATURE (error-class + normalized message + phase + module ident).
+    -- This is the SOURCE OF TRUTH for learned fixes; a human-readable copy is
+    -- mirrored into the vault on each newly-verified learn (audit only).
+    --
+    -- Invariants enforced by failure-memory.ts, NOT the schema:
+    --   • 'recoverable'-class + 'vcs'-phase failures are NEVER inserted (noise).
+    --   • verified_fix is only set once Verify re-confirms the original symptom
+    --     is gone (Verify GATES Learn). observations accrue before that.
+    --   • confidence = a stored fix is only blind-trusted at hit_count>=2 with
+    --     100% prior verify success; below that it is a PRIOR, not an auto-inject.
+    CREATE TABLE IF NOT EXISTS self_heal_memory (
+      signature       TEXT PRIMARY KEY,
+      phase           TEXT NOT NULL,            -- review | tool | exec | task | infra
+      error_class     TEXT NOT NULL,
+      module_ident    TEXT,                     -- coarse module/fn identity (collision guard)
+      sample_msg      TEXT,                      -- scrubbed representative message
+      observations    INTEGER NOT NULL DEFAULT 1,
+      verify_pass     INTEGER NOT NULL DEFAULT 0,
+      verify_fail     INTEGER NOT NULL DEFAULT 0,
+      verify_sessions TEXT NOT NULL DEFAULT '[]', -- capped JSON array of distinct session/run ids
+      verified_fix    TEXT,                      -- the guidance that made Verify pass
+      status          TEXT NOT NULL DEFAULT 'observing', -- observing | learned | demoted
+      first_seen      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      last_seen       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      last_verified   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_self_heal_phase  ON self_heal_memory(phase);
+    CREATE INDEX IF NOT EXISTS idx_self_heal_status ON self_heal_memory(status);
 
     -- v1.4: long-term memory index. Mirrors notes that live in NeuroVault MCP.
     -- One row per memory; vault_note_id/vault_path point at the canonical copy.
@@ -474,6 +593,48 @@ function initSchema(database: Database.Database): void {
       created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
       updated_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+
+    -- Agent-generated image archive. The image BYTES live in the Supabase
+    -- 'agent-images' private bucket (durable, off-box); this table is the
+    -- queryable metadata index that powers the gallery. One row per image an
+    -- agent's generation tool produced, with the ORIGINAL prompt. created_at
+    -- is epoch ms. storage_path is the object key within the bucket.
+    CREATE TABLE IF NOT EXISTS agent_images (
+      id           TEXT PRIMARY KEY,
+      bucket       TEXT NOT NULL DEFAULT 'agent-images',
+      storage_path TEXT NOT NULL,
+      prompt       TEXT NOT NULL DEFAULT '',
+      alt          TEXT NOT NULL DEFAULT '',
+      caption      TEXT,
+      source_tool  TEXT NOT NULL DEFAULT '',
+      agent_id     TEXT,
+      agent_name   TEXT NOT NULL DEFAULT '',
+      session_id   TEXT,
+      run_id       TEXT,
+      mime         TEXT NOT NULL DEFAULT 'image/png',
+      bytes        INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      model        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_images_created ON agent_images(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_images_agent   ON agent_images(agent_id);
+
+    -- Codex app-server persistent thread registry.
+    -- Non-ephemeral Codex threads survive a \`codex app-server\` child-process
+    -- restart on disk under ~/.codex/sessions/, but we need a durable map from
+    -- our (session_id, agent_id) pair back to the thread_id. The tool_fingerprint
+    -- gates rebuilds: only an actual add/remove of a tool name forces a fresh
+    -- thread/start; prompt/model changes ride the per-turn thread/resume override.
+    CREATE TABLE IF NOT EXISTS codex_threads (
+      session_id       TEXT NOT NULL,
+      agent_id         TEXT NOT NULL DEFAULT '',
+      thread_id        TEXT NOT NULL,
+      tool_fingerprint TEXT NOT NULL,
+      last_used_at     TEXT NOT NULL,
+      created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      PRIMARY KEY (session_id, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_codex_threads_last_used ON codex_threads(last_used_at);
   `);
   // Durable chat-document attachments (PDF/DOCX/EPUB/HTML uploaded via dashboard
   // or Discord). The attachment-registry keeps a hot in-memory cache, but this
@@ -496,6 +657,16 @@ function initSchema(database: Database.Database): void {
       parsed_stats    TEXT,
       parsed_at       INTEGER,
       parse_error     TEXT,
+      -- spec: uploaded-document-handling-overhaul — decouple RAW-file lifecycle
+      -- from PARSED-content lifecycle. storage_* point at the Supabase 'chat-docs'
+      -- bucket object; raw_expires_at drives the raw-only prune. parsed_markdown +
+      -- doc_chunks (pgvector) persist INDEPENDENTLY and are never dropped by the
+      -- raw-file sweep. parse_status/parse_attempts drive the background re-parse.
+      storage_bucket  TEXT,
+      storage_path    TEXT,
+      raw_expires_at  INTEGER,
+      parse_status    TEXT,
+      parse_attempts  INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_chat_attachments_session ON chat_attachments(session_id, created_at);
@@ -523,6 +694,38 @@ function initSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_session_uploads_session ON session_uploads(session_id, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_uploads_hash ON session_uploads(session_id, content_hash);
   `);
+
+  // v4.1: durable synchronous agent hand-off recovery (message_agent / execute_now).
+  // Write-ahead recovery record so a restart can harvest a peer turn's output from
+  // its child session instead of re-running it. Terminal rows are pruned by the
+  // handoff-archivist after HANDOFF_RECOVERY_TTL_DAYS.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS handoff_recovery (
+      id                  TEXT PRIMARY KEY,
+      caller_session_id   TEXT,
+      caller_agent_id     TEXT,
+      caller_run_id       TEXT,
+      target_agent_id     TEXT NOT NULL,
+      target_session_id   TEXT NOT NULL,
+      message             TEXT NOT NULL,
+      source              TEXT NOT NULL CHECK(source IN ('message_agent', 'execute_now')),
+      agent_message_id    TEXT,
+      task_id             TEXT,
+      parent_handoff_id   TEXT REFERENCES handoff_recovery(id),
+      depth               INTEGER NOT NULL DEFAULT 0,
+      status              TEXT NOT NULL DEFAULT 'running'
+                          CHECK(status IN ('running', 'done', 'failed', 'orphaned')),
+      response            TEXT,
+      error               TEXT,
+      created_at          TEXT NOT NULL,
+      heartbeat_at        INTEGER NOT NULL,
+      completed_at        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_handoff_recovery_poll    ON handoff_recovery(status, heartbeat_at);
+    CREATE INDEX IF NOT EXISTS idx_handoff_recovery_target  ON handoff_recovery(target_session_id);
+    CREATE INDEX IF NOT EXISTS idx_handoff_recovery_parent  ON handoff_recovery(parent_handoff_id);
+  `);
+
   logger.info('Database schema initialized');
 }
 
@@ -546,6 +749,12 @@ function runMigrations(database: Database.Database): void {
     // WS1: provider-reported prompt-cache hits per call. Lets the usage page
     // show whether the stable-prefix work is actually producing cache reads.
     'ALTER TABLE model_spend ADD COLUMN cached_input_tokens INTEGER DEFAULT 0',
+    // Studio Phase 1: per-call USD cost for image generation and other non-token spend.
+    'ALTER TABLE model_spend ADD COLUMN cost_usd REAL DEFAULT 0',
+    // Abacus compute-point metering: Abacus has no usage API, so we record its
+    // per-call reported compute points (resp.usage.compute_points_used) into the
+    // durable spend ledger and sum them over the billing cycle. See abacus-usage.ts.
+    'ALTER TABLE model_spend ADD COLUMN compute_points INTEGER DEFAULT 0',
     'ALTER TABLE model_catalog ADD COLUMN price_overridden INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE agents ADD COLUMN area_id TEXT',
     "ALTER TABLE agents ADD COLUMN skills TEXT DEFAULT '[]'",
@@ -899,6 +1108,10 @@ function runMigrations(database: Database.Database): void {
   'ALTER TABLE agents ADD COLUMN max_turns_soft INTEGER',
   'ALTER TABLE agents ADD COLUMN max_turns_hard INTEGER',
   "ALTER TABLE agents ADD COLUMN workload_profile TEXT DEFAULT 'normal'",
+  // Token-optimization directives (spec 2026-07-10, Component A). Opt-in per
+  // agent; default OFF so prose/user-facing agents keep their normal voice.
+  'ALTER TABLE agents ADD COLUMN optimize_terse INTEGER DEFAULT 0',
+  'ALTER TABLE agents ADD COLUMN optimize_lean_code INTEGER DEFAULT 0',
   // Per-session override (rare — used when a single conversation needs a
   // bigger budget than the agent's default).
   'ALTER TABLE sessions ADD COLUMN max_turns_override INTEGER',
@@ -970,9 +1183,259 @@ function runMigrations(database: Database.Database): void {
   // and pin flag. title_source drives the auto-titler's "never clobber a manual rename" guard.
   "ALTER TABLE sessions ADD COLUMN title_source TEXT DEFAULT 'default'",
   'ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0',
+
+  // spec: uploaded-document-handling-overhaul — raw/parsed lifecycle decouple.
+  // storage_* reference the Supabase 'chat-docs' bucket object (raw file, 24h TTL
+  // touch-to-extend); parsed_markdown + doc_chunks persist independently. The raw
+  // prune clears storage_path/bytes/raw_expires_at only — never the parsed cols.
+  'ALTER TABLE chat_attachments ADD COLUMN storage_bucket TEXT',
+  'ALTER TABLE chat_attachments ADD COLUMN storage_path TEXT',
+  'ALTER TABLE chat_attachments ADD COLUMN raw_expires_at INTEGER',
+  'ALTER TABLE chat_attachments ADD COLUMN parse_status TEXT',
+  'ALTER TABLE chat_attachments ADD COLUMN parse_attempts INTEGER NOT NULL DEFAULT 0',
+  'CREATE INDEX IF NOT EXISTS idx_chat_attachments_raw_expires ON chat_attachments(raw_expires_at)',
+  'CREATE INDEX IF NOT EXISTS idx_chat_attachments_parse_status ON chat_attachments(parse_status)',
+
+  // spec: ssh-machine-connections — agent SSH capability + machine registry.
+  // Per-agent ssh_enabled mirrors exec_enabled (DB-driven capability gate).
+  // ssh_machines holds METADATA ONLY — the private key/password lives in the
+  // broker as SHARED_SSH_<name>_KEY / _PASSWORD; secret_name references it and
+  // is resolved at call time via broker.withSecrets (never enters agent ctx).
+  // host_fingerprint is TOFU-pinned on first connect (refuse + alert on mismatch).
+  'ALTER TABLE agents ADD COLUMN ssh_enabled INTEGER DEFAULT 0',
+  // Fresh DBs get the full §11.1 schema; existing dormant DBs are brought up via
+  // the idempotent ADD COLUMN block below (ALTER, not DROP/recreate — ASAGI).
+  `CREATE TABLE IF NOT EXISTS ssh_machines (
+     id                     TEXT PRIMARY KEY,
+     name                   TEXT NOT NULL,
+     host                   TEXT NOT NULL,
+     port                   INTEGER NOT NULL DEFAULT 22,
+     username               TEXT NOT NULL,
+     auth_method            TEXT NOT NULL DEFAULT 'key',
+     secret_name            TEXT NOT NULL,
+     passphrase_secret_name TEXT,
+     host_fingerprint       TEXT,
+     fingerprint_status     TEXT NOT NULL DEFAULT 'pending_verification',
+     sensitivity            TEXT NOT NULL DEFAULT 'low',
+     allowed_agents         TEXT NOT NULL DEFAULT '[]',
+     disabled               INTEGER NOT NULL DEFAULT 0,
+     legacy_algos           INTEGER NOT NULL DEFAULT 0,
+     jump_host              TEXT,
+     tags                   TEXT DEFAULT '[]',
+     notes                  TEXT,
+     last_connected_at      TEXT,
+     created_at             TEXT NOT NULL,
+     updated_at             TEXT NOT NULL
+   )`,
+  // §11.1 decouple/hardening columns — idempotent ADD COLUMN (swallow-on-duplicate).
+  // allowed_agents is the fail-closed containment layer; sensitivity drives confirm-before-run.
+  `ALTER TABLE ssh_machines ADD COLUMN passphrase_secret_name TEXT`,
+  `ALTER TABLE ssh_machines ADD COLUMN fingerprint_status TEXT NOT NULL DEFAULT 'pending_verification'`,
+  `ALTER TABLE ssh_machines ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'low'`,
+  `ALTER TABLE ssh_machines ADD COLUMN allowed_agents TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE ssh_machines ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE ssh_machines ADD COLUMN legacy_algos INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE ssh_machines ADD COLUMN jump_host TEXT`,
+  'CREATE INDEX IF NOT EXISTS idx_ssh_machines_name ON ssh_machines(name)',
+  // §11.3 ssh_audit — dedicated typed/indexed forensic table (hive_mind blob is wrong shape).
+  `CREATE TABLE IF NOT EXISTS ssh_audit (
+     id                 TEXT PRIMARY KEY,
+     ts                 TEXT NOT NULL,
+     agent_id           TEXT,
+     session_id         TEXT,
+     task_id            TEXT,
+     delegation_chain   TEXT,
+     machine_id         TEXT,
+     host               TEXT,
+     port               INTEGER,
+     auth_method        TEXT,
+     fingerprint_result TEXT,
+     command_scrubbed   TEXT,
+     exit_code          INTEGER,
+     stdout_bytes       INTEGER,
+     stderr_bytes       INTEGER,
+     duration_ms        INTEGER,
+     outcome            TEXT,
+     exec_id            TEXT
+   )`,
+  'CREATE INDEX IF NOT EXISTS idx_ssh_audit_ts ON ssh_audit(ts)',
+  'CREATE INDEX IF NOT EXISTS idx_ssh_audit_machine ON ssh_audit(machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_ssh_audit_outcome ON ssh_audit(outcome)',
+  'CREATE INDEX IF NOT EXISTS idx_ssh_audit_fingerprint ON ssh_audit(fingerprint_result)',
+  // §4.3 pending_confirmations — ONE shared block-until-human primitive (critical-run + TOFU-pin).
+  `CREATE TABLE IF NOT EXISTS pending_confirmations (
+     id           TEXT PRIMARY KEY,
+     kind         TEXT NOT NULL,
+     subject_ref  TEXT,
+     agent_id     TEXT,
+     session_id   TEXT,
+     payload      TEXT,
+     status       TEXT NOT NULL DEFAULT 'pending',
+     created_at   TEXT NOT NULL,
+     expires_at   TEXT NOT NULL,
+     resolved_at  TEXT,
+     resolved_by  TEXT
+   )`,
+  'CREATE INDEX IF NOT EXISTS idx_pending_conf_status ON pending_confirmations(status)',
+  // spec: native-notebook-rag — ephemeral per-session "active notebook" pointer.
+  // NOT authoritative: every notebook tool accepts an explicit notebook_id and
+  // falls back to this pointer only when omitted. The notebook corpus itself
+  // lives in Supabase (neuroclaw_kb.doc_notebooks / doc_notebook_sources).
+  `CREATE TABLE IF NOT EXISTS doc_notebook_context (
+     session_id   TEXT PRIMARY KEY,
+     notebook_id  TEXT NOT NULL,
+     updated_at   TEXT NOT NULL
+   )`,
+
+  // Studio Phase 1 — server-side spend circuit breaker state.
+  // These tables are enforcement state, NOT a parallel meter; actual provider
+  // spend continues to flow through model_spend / src/infra/*-usage.ts.
+  `CREATE TABLE IF NOT EXISTS spend_in_flight (
+     id          TEXT PRIMARY KEY,
+     user_id     TEXT NOT NULL,
+     tool        TEXT NOT NULL,
+     model       TEXT,
+     started_at  INTEGER NOT NULL,
+     est_usd     REAL DEFAULT 0
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_in_flight_user    ON spend_in_flight(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_in_flight_started ON spend_in_flight(started_at)`,
+  `CREATE TABLE IF NOT EXISTS spend_counters (
+     scope    TEXT NOT NULL,            -- 'user' | 'global'
+     user_id  TEXT NOT NULL,
+     window   TEXT NOT NULL,            -- 'burst' | 'day'
+     bucket   TEXT NOT NULL,            -- burst=timestamp/window ; day=YYYY-MM-DD
+     calls    INTEGER NOT NULL DEFAULT 0,
+     usd      REAL NOT NULL DEFAULT 0,
+     updated_at INTEGER NOT NULL,
+     PRIMARY KEY (scope, user_id, window, bucket)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_counters_user_window ON spend_counters(user_id, window, bucket)`,
+  `CREATE TABLE IF NOT EXISTS spend_breaker_trips (
+     id            TEXT PRIMARY KEY,
+     user_id       TEXT NOT NULL,
+     reason        TEXT NOT NULL,
+     spend_at_trip REAL NOT NULL DEFAULT 0,
+     created_at    INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_breaker_trips_created ON spend_breaker_trips(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_spend_breaker_trips_user    ON spend_breaker_trips(user_id)`,
+
+  // Sub-agent provider selection (Settings › Sub-Agents): per-family live
+  // overrides for the MODEL and provider ENDPOINT (base URL), layered on top of
+  // the env defaults in config.subAgent.<family>. NULL = "no override, use the
+  // env default". The API KEY is deliberately NOT stored here — keys stay in
+  // Live .env / the broker; base_url only repoints which OpenAI-compatible
+  // endpoint the family's existing key authenticates against. Resolved by
+  // subagent-providers-store on every task, so changes take effect with no restart.
+  `ALTER TABLE subagent_providers ADD COLUMN model TEXT`,
+  `ALTER TABLE subagent_providers ADD COLUMN base_url TEXT`,
+
+  // v4.1: durable synchronous agent hand-off recovery table for existing DBs.
+  `CREATE TABLE IF NOT EXISTS handoff_recovery (
+    id                  TEXT PRIMARY KEY,
+    caller_session_id   TEXT,
+    caller_agent_id     TEXT,
+    caller_run_id       TEXT,
+    target_agent_id     TEXT NOT NULL,
+    target_session_id   TEXT NOT NULL,
+    message             TEXT NOT NULL,
+    source              TEXT NOT NULL CHECK(source IN ('message_agent', 'execute_now')),
+    agent_message_id    TEXT,
+    task_id             TEXT,
+    parent_handoff_id   TEXT REFERENCES handoff_recovery(id),
+    depth               INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT 'running'
+                        CHECK(status IN ('running', 'done', 'failed', 'orphaned')),
+    response            TEXT,
+    error               TEXT,
+    created_at          TEXT NOT NULL,
+    heartbeat_at        INTEGER NOT NULL,
+    completed_at        TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_handoff_recovery_poll    ON handoff_recovery(status, heartbeat_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_handoff_recovery_target  ON handoff_recovery(target_session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_handoff_recovery_parent  ON handoff_recovery(parent_handoff_id)`,
+
+  // Compression Phase 1 — per-agent engine toggles (nullable → inherit global).
+  'ALTER TABLE agents ADD COLUMN compress_lite INTEGER DEFAULT NULL',
+  'ALTER TABLE agents ADD COLUMN compress_headroom INTEGER DEFAULT NULL',
+  'ALTER TABLE agents ADD COLUMN compress_rtk INTEGER DEFAULT NULL',
+
+  // Self-heal Phase 2: distinct-session verification gate. Capped JSON array
+  // of session/run ids that produced a verify_pass, so trusted-fix promotion
+  // requires corroboration from multiple autonomous runs, not one flapping run.
+  `ALTER TABLE self_heal_memory ADD COLUMN verify_sessions TEXT NOT NULL DEFAULT '[]'`,
+
+  // ── Mission-Control Wave 2 ────────────────────────────────────────────────
+  // Item D — first-class task dependency edges (blocked_by DAG). Join table,
+  // not a JSON column: indexable both directions (cycle checks + "what does X
+  // block" cascades), no read-modify-write races. Empty table = today's
+  // behavior exactly (the claim/transition gate never fires), so fully
+  // backward-compatible with no backfill.
+  `CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id       TEXT NOT NULL,   -- the dependent (blocked) task
+    depends_on_id TEXT NOT NULL,   -- the blocker (must be 'done' first)
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (task_id, depends_on_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_task_deps_task    ON task_dependencies(task_id)',
+  'CREATE INDEX IF NOT EXISTS idx_task_deps_blocker ON task_dependencies(depends_on_id)',
+
+  // Item E — routine coalescing key. Set ONLY on tasks a cron 'create_task'
+  // routine spawns (NULL for everything else). Lets a routine keep at most one
+  // outstanding open instance per key instead of stampeding the board.
+  'ALTER TABLE tasks ADD COLUMN routine_key TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_tasks_routine_key ON tasks(routine_key)',
+
+  // Item C4 — immutable todo→doing start stamp (epoch ms). Distinct from
+  // last_heartbeat_at (moves every 20s → useless for elapsed) and updated_at.
+  // Set on the todo→doing edge, cleared on any exit from doing. Feeds Sentinel's
+  // runaway pass (a task can't be "runaway" without a stable start time).
+  'ALTER TABLE tasks ADD COLUMN doing_since INTEGER',
+
+  // spec: gallery-model-capture-display — the model actually used to generate
+  // an archived image (e.g. 'flux-2-pro', 'gemini-3.1-flash-image'). NULL means
+  // "never captured" (pre-migration rows / uploads), distinct from the string
+  // 'unknown' the backfill script uses when it can't confidently correlate one.
+  'ALTER TABLE agent_images ADD COLUMN model TEXT',
   ];
   for (const sql of alters) {
     try { database.exec(sql); } catch { /* column already exists */ }
+  }
+
+  // spec: uploaded-document-handling-overhaul — Stage-1 correctness (A.S.A.G.I review).
+  // (Catch 2) The shared alters loop above swallows EVERY error silently, so a
+  //   non-"duplicate" ALTER failure would be invisible and downstream code would
+  //   assume columns that don't exist. PRAGMA table_info is the deterministic
+  //   existence check — assert the 5 raw/parsed-decouple columns actually landed
+  //   and log loudly if any is missing instead of letting it fail closed-silent.
+  // (Catch 1) One-shot legacy backfill: existing rows predate parse_status (the
+  //   ALTER leaves them NULL). Mark already-parsed rows 'done' and unparsed legacy
+  //   rows 'skipped' — both terminal — so the background re-parse pipeline never
+  //   wakes thousands of dead pre-migration rows. New funnel rows are inserted
+  //   'pending' explicitly. `WHERE parse_status IS NULL` makes it idempotent.
+  try {
+    const cols = new Set(
+      (database.prepare('PRAGMA table_info(chat_attachments)').all() as Array<{ name: string }>)
+        .map((c) => c.name),
+    );
+    const required = ['storage_bucket', 'storage_path', 'raw_expires_at', 'parse_status', 'parse_attempts'];
+    const missing = required.filter((c) => !cols.has(c));
+    if (missing.length) {
+      logger.error('migration: chat_attachments raw/parsed columns missing — an ALTER was swallowed', { missing });
+    } else {
+      database.prepare(`
+        UPDATE chat_attachments
+           SET parse_status = CASE
+             WHEN parsed_markdown IS NOT NULL AND parsed_markdown != '' THEN 'done'
+             ELSE 'skipped'
+           END
+         WHERE parse_status IS NULL
+      `).run();
+    }
+  } catch (err) {
+    logger.warn('migration: chat_attachments Stage-1 backfill failed', { error: (err as Error).message });
   }
 
   // v3.x: one-time backfill of sessions.source from legacy title/external_id
@@ -1033,6 +1496,78 @@ function runMigrations(database: Database.Database): void {
     `);
   } catch (err) {
     logger.warn('workload_profile seed skipped', { err: String(err) });
+  }
+
+  // Token-optimization directive seed (spec 2026-07-10, Component A). Runs ONCE
+  // — guarded by a config_items marker so a user who later toggles flags off is
+  // never re-stomped on the next boot. Defaults chosen from the live roster:
+  //   terse: pure code/build agents only (verbosity costs output tokens; their
+  //          answers are code+commands, not conversation).
+  //   lean_code: code builders + infra-as-code agents that emit YAML / compose /
+  //          migrations / workflows. User-facing & prose agents get NEITHER.
+  try {
+    const marker = database
+      .prepare("SELECT value FROM config_items WHERE key = 'seed:optimize_directives_v1'")
+      .get() as { value: string } | undefined;
+    if (!marker) {
+      database.exec(`
+        UPDATE agents
+           SET optimize_terse = 1
+         WHERE name IN ('Jarvis','A.S.A.G.I','F.R.I.D.A.Y')
+      `);
+      database.exec(`
+        UPDATE agents
+           SET optimize_lean_code = 1
+         WHERE name IN (
+           'Jarvis','A.S.A.G.I','F.R.I.D.A.Y','Lucius',
+           'Angelina','Raphtalia','Shorekeeper','Mayumi Saegusa',
+           'Rossweisse','Yukina Himeragi','Liese Sherlock'
+         )
+      `);
+      database
+        .prepare("INSERT OR REPLACE INTO config_items (key, value, description) VALUES (?, ?, ?)")
+        .run('seed:optimize_directives_v1', new Date().toISOString(),
+             'One-time token-optimization directive seed (Component A). Do not delete — its presence blocks re-seeding.');
+      logger.info('token-opt: seeded optimize directives for code/infra agents');
+    }
+  } catch (err) {
+    logger.warn('optimize_directives seed skipped', { err: String(err) });
+  }
+
+  // Token-optimization directive seed v2 (2026-07-14). ADDITIVE fill for the
+  // infra/backend agents the v1 seed missed — RAG/memory, network/DNS, identity
+  // and static-publishing engineers whose output is config/migrations/records,
+  // not conversation. Separate marker so it runs ONCE and never re-stomps a user
+  // who toggles a flag off afterward; the `AND optimize_lean_code = 0` guard is a
+  // second belt so we only flip agents still at the default.
+  //   - Only `lean_code` is added here (safe/additive: minimum-code / YAGNI).
+  //   - `terse` is deliberately NOT widened — it reshapes an agent's output
+  //     voice, so it stays scoped to the pure code-emitting agents from v1
+  //     (Jarvis / A.S.A.G.I / F.R.I.D.A.Y).
+  //   - Tool-output compression (lite / headroom / rtk) needs no per-agent seed:
+  //     it is ON globally (config.optimize.engines) and every agent inherits it
+  //     via a NULL compress_* column, with retrieval/memory/KB/vision hard-exempt.
+  try {
+    const markerV2 = database
+      .prepare("SELECT value FROM config_items WHERE key = 'seed:optimize_directives_v2'")
+      .get() as { value: string } | undefined;
+    if (!markerV2) {
+      database.exec(`
+        UPDATE agents
+           SET optimize_lean_code = 1
+         WHERE name IN (
+           'Jibril','Rei Miyamoto','Nonaka Yuki','Mio Naruse'
+         )
+           AND optimize_lean_code = 0
+      `);
+      database
+        .prepare("INSERT OR REPLACE INTO config_items (key, value, description) VALUES (?, ?, ?)")
+        .run('seed:optimize_directives_v2', new Date().toISOString(),
+             'One-time token-optimization directive seed v2 (infra/backend lean_code fill). Do not delete — its presence blocks re-seeding.');
+      logger.info('token-opt: seeded v2 lean_code directives for infra/backend agents');
+    }
+  } catch (err) {
+    logger.warn('optimize_directives v2 seed skipped', { err: String(err) });
   }
 
   // Backfill the FTS5 index for memory_index rows that pre-date v1.7. The
@@ -1099,6 +1634,23 @@ function runMigrations(database: Database.Database): void {
     ).run();
   } catch (err) {
     logger.warn('migration: task_source backfill failed', { error: (err as Error).message });
+  }
+
+  // spec: task-attribution-sentinel — sync assignee to the real doer for legacy
+  // rows where an agent is assigned but the label is still the default 'User'.
+  // No marker needed: all four producer write-sites now sync assignee to agent_id,
+  // so "agent_id set AND assignee='User'" is unreproducible going forward — the
+  // WHERE clause is self-limiting to legacy rows on every boot.
+  try {
+    database.prepare(`
+      UPDATE tasks
+      SET assignee = (SELECT name FROM agents WHERE agents.id = tasks.agent_id)
+      WHERE agent_id IS NOT NULL
+        AND (assignee IS NULL OR assignee = 'User')
+        AND EXISTS (SELECT 1 FROM agents WHERE agents.id = tasks.agent_id)
+    `).run();
+  } catch (err) {
+    logger.warn('migration: assignee attribution backfill failed', { error: (err as Error).message });
   }
 
   // v2.x → v3.x: extend job_queue CHECK to include the newer job types.
@@ -1390,6 +1942,21 @@ function runMigrations(database: Database.Database): void {
     }
   } catch (err) {
     logger.warn('tasks status-extension migration skipped', { err: String(err) });
+  }
+  // spec: review-vs-reconcile-gate-fix — deterministic gate discriminator.
+  // Set-once-at-creation by the dispatcher. 'reconcile' asserts main HEAD moved;
+  // 'review' bypasses that assertion because a review is supposed to leave main
+  // untouched. NULL/absent keeps the existing outer regex gate behavior.
+  try {
+    const hasVerificationMode = (database.prepare(
+      "SELECT COUNT(*) as c FROM pragma_table_info('tasks') WHERE name='verification_mode'"
+    ).get() as { c: number }).c;
+    if (!hasVerificationMode) {
+      database.exec(`ALTER TABLE tasks ADD COLUMN verification_mode TEXT CHECK(verification_mode IS NULL OR verification_mode IN ('reconcile','review'));`);
+      logger.info('Tasks migration: added verification_mode discriminator');
+    }
+  } catch (err) {
+    logger.warn('tasks verification_mode migration skipped', { err: String(err) });
   }
 }
 
@@ -1813,6 +2380,37 @@ When delegating to other agents use ask_alfred or spawn_agent. When searching me
       logger.info('Seeded VeniceImage agent (Venice-backed)');
     }
   }
+
+  // Canva — official Canva MCP (remote, per-user OAuth). Seeded once DCR
+  // client credentials exist (config.canva.configured); the row is HONEST
+  // about auth state — it will sit at status='error'/0 cached tools until an
+  // operator completes the browser consent flow via GET /api/oauth/canva/start,
+  // at which point canva-oauth.ts writes a fresh bearer header and re-probes.
+  // No dedicated persona agent seeded here: the generic MCP-registry adapter
+  // (tools/adapters/mcp-registry-adapter.ts) already merges every cached
+  // remote tool as mcp__canva__<tool> into ALL agents' toolsets once the
+  // server has tools_count > 0 — that's the intended exposure surface for a
+  // ~25-tool server, not a single wrapper persona.
+  if (config.canva.configured) {
+    const existingCanvaServer = database.prepare(
+      "SELECT id FROM mcp_servers WHERE name = 'canva'"
+    ).get() as { id: string } | undefined;
+
+    const headers = config.canva.hasToken
+      ? { Authorization: `Bearer ${process.env.CANVA_ACCESS_TOKEN}` }
+      : null;
+
+    if (!existingCanvaServer) {
+      // Use the audited helper (not a raw INSERT) so this seed emits the same
+      // 'mcp_server_created' audit trail as an operator-created server.
+      createMcpServer({ name: 'canva', url: config.canva.mcpUrl, transport: 'http', headers, enabled: true });
+      logger.info('Seeded canva MCP server', { hasToken: config.canva.hasToken });
+    } else if (config.canva.hasToken) {
+      // Only overwrite headers on boot if we actually have a token cached in
+      // env — never clobber an operator-set header with an empty one.
+      updateMcpServer(existingCanvaServer.id, { url: config.canva.mcpUrl, headers });
+    }
+  }
 }
 
 // ── Agent CRUD ───────────────────────────────────────────────────────────────
@@ -1833,6 +2431,7 @@ export interface AgentRecord {
   expires_at:          string | null;
   provider:            string;
   exec_enabled:        number;
+  ssh_enabled:         number;            // 0/1 — may this agent use ssh_run/upload/download
   chat_mode:           number;            // 0/1 — plain-completion mode (no tools/skills/MCP)
   model_tier:          string;
   area_id:             string | null;
@@ -1863,6 +2462,14 @@ export interface AgentRecord {
   max_turns_soft:      number | null;
   max_turns_hard:      number | null;
   workload_profile:    string;            // 'light' | 'normal' | 'heavy' | 'marathon'
+  // Token-optimization directives (spec 2026-07-10, Component A). Opt-in per
+  // agent; default OFF so user-facing/prose agents keep their normal voice.
+  optimize_terse:      number;            // 0/1 — minimum-prose output directive (caveman-derived)
+  optimize_lean_code:  number;            // 0/1 — minimum-code / YAGNI directive (ponytail-derived)
+  // Compression Phase 1 engine toggles (null = inherit global default).
+  compress_lite:       number | null;
+  compress_headroom:   number | null;
+  compress_rtk:        number | null;
   created_at:          string;
   updated_at:          string;
 }
@@ -2288,6 +2895,11 @@ export function createAgentRecord(
     mcp_server_id?: string | null;
     mcp_tool_name?: string | null;
     mcp_input_field?: string | null;
+    optimize_terse?: boolean;
+    optimize_lean_code?: boolean;
+    compress_lite?: boolean | null;
+    compress_headroom?: boolean | null;
+    compress_rtk?: boolean | null;
   } = {},
 ): AgentRecord {
   const id = randomUUID();
@@ -2320,6 +2932,21 @@ export function createAgentRecord(
     opts.mcp_tool_name ?? null,
     opts.mcp_input_field ?? 'query',
   );
+  if (
+    opts.optimize_terse !== undefined ||
+    opts.optimize_lean_code !== undefined ||
+    opts.compress_lite !== undefined ||
+    opts.compress_headroom !== undefined ||
+    opts.compress_rtk !== undefined
+  ) {
+    updateAgentRecord(id, {
+      optimize_terse: opts.optimize_terse,
+      optimize_lean_code: opts.optimize_lean_code,
+      compress_lite: opts.compress_lite,
+      compress_headroom: opts.compress_headroom,
+      compress_rtk: opts.compress_rtk,
+    });
+  }
   logAudit('agent_created', 'agent', id, { name, provider, exec_enabled: !!opts.exec_enabled });
   invalidateAgentsCache();
   return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRecord;
@@ -2337,6 +2964,7 @@ export function updateAgentRecord(
     status?: string;
     provider?: string;
     exec_enabled?: boolean;
+    ssh_enabled?: boolean;
     chat_mode?: boolean;
     model_tier?: string;
     skills?: string[];
@@ -2356,6 +2984,11 @@ export function updateAgentRecord(
     mcp_input_field?: string | null;
     spawn_exempt?:    boolean;
     avatar_url?:      string | null;
+    optimize_terse?:     boolean;
+    optimize_lean_code?: boolean;
+    compress_lite?:      boolean | null;
+    compress_headroom?:  boolean | null;
+    compress_rtk?:       boolean | null;
   },
 ): void {
   const sets: string[] = ["updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"];
@@ -2370,6 +3003,7 @@ export function updateAgentRecord(
   if (fields.status        !== undefined) { sets.push('status = ?');        params.push(fields.status); }
   if (fields.provider      !== undefined) { sets.push('provider = ?');      params.push(fields.provider); }
   if (fields.exec_enabled  !== undefined) { sets.push('exec_enabled = ?');  params.push(fields.exec_enabled ? 1 : 0); }
+  if (fields.ssh_enabled   !== undefined) { sets.push('ssh_enabled = ?');   params.push(fields.ssh_enabled ? 1 : 0); }
   if (fields.chat_mode     !== undefined) { sets.push('chat_mode = ?');     params.push(fields.chat_mode ? 1 : 0); }
   if (fields.model_tier    !== undefined) { sets.push('model_tier = ?');    params.push(fields.model_tier); }
   if (fields.skills        !== undefined) { sets.push('skills = ?');        params.push(JSON.stringify(fields.skills)); }
@@ -2422,6 +3056,11 @@ export function updateAgentRecord(
   if (fields.mcp_input_field !== undefined) { sets.push('mcp_input_field = ?'); params.push(fields.mcp_input_field); }
   if (fields.spawn_exempt    !== undefined) { sets.push('spawn_exempt = ?');    params.push(fields.spawn_exempt ? 1 : 0); }
   if (fields.avatar_url      !== undefined) { sets.push('avatar_url = ?');      params.push(fields.avatar_url); }
+  if (fields.optimize_terse     !== undefined) { sets.push('optimize_terse = ?');     params.push(fields.optimize_terse ? 1 : 0); }
+  if (fields.optimize_lean_code !== undefined) { sets.push('optimize_lean_code = ?'); params.push(fields.optimize_lean_code ? 1 : 0); }
+  if (fields.compress_lite     !== undefined) { sets.push('compress_lite = ?');     params.push(fields.compress_lite === null ? null : fields.compress_lite ? 1 : 0); }
+  if (fields.compress_headroom !== undefined) { sets.push('compress_headroom = ?'); params.push(fields.compress_headroom === null ? null : fields.compress_headroom ? 1 : 0); }
+  if (fields.compress_rtk      !== undefined) { sets.push('compress_rtk = ?');      params.push(fields.compress_rtk === null ? null : fields.compress_rtk ? 1 : 0); }
 
   if (sets.length === 1) return;
   params.push(id);
@@ -2440,6 +3079,254 @@ export function deactivateAgent(id: string): { ok: boolean; reason?: string } {
 
 export function activateAgent(id: string): void {
   updateAgentRecord(id, { status: 'active' });
+}
+
+// ── SSH machine registry (spec: ssh-machine-connections) ───────────────────
+// METADATA ONLY. The private key / password lives in the broker as
+// SHARED_SSH_<name>_KEY / _PASSWORD; secret_name references it. host_fingerprint
+// is TOFU-pinned on first connect. Never store credential VALUES here.
+export interface SshMachineRow {
+  id:                     string;
+  name:                   string;
+  host:                   string;
+  port:                   number;
+  username:               string;
+  auth_method:            string;   // 'key' | 'password'
+  secret_name:            string;   // broker secret name holding the key/password
+  passphrase_secret_name: string | null; // optional broker secret for key passphrase
+  host_fingerprint:       string | null; // sha256, append-only (TOFU-pinned)
+  fingerprint_status:     string;   // 'pending_verification' | 'verified' | 'mismatch'
+  sensitivity:            string;   // 'low' | 'high' | 'critical'
+  allowed_agents:         string;   // JSON array of agent IDs (fail-closed empty)
+  disabled:               number;   // 0/1 quarantine flag
+  legacy_algos:           number;   // 0/1 weak-kex opt-in
+  jump_host:              string | null; // nullable v2 bastion stub
+  tags:                   string;   // JSON array
+  notes:                  string | null;
+  last_connected_at:      string | null;
+  created_at:             string;
+  updated_at:             string;
+}
+
+export function listSshMachines(): SshMachineRow[] {
+  return getDb().prepare('SELECT * FROM ssh_machines ORDER BY name COLLATE NOCASE').all() as SshMachineRow[];
+}
+
+export function getSshMachine(id: string): SshMachineRow | undefined {
+  return getDb().prepare('SELECT * FROM ssh_machines WHERE id = ?').get(id) as SshMachineRow | undefined;
+}
+
+export function getSshMachineByName(name: string): SshMachineRow | undefined {
+  return getDb().prepare('SELECT * FROM ssh_machines WHERE name = ? COLLATE NOCASE').get(name) as SshMachineRow | undefined;
+}
+
+export function createSshMachine(opts: {
+  name: string; host: string; port?: number; username: string;
+  auth_method?: string; secret_name: string; tags?: string[]; notes?: string | null;
+  passphrase_secret_name?: string | null; sensitivity?: string;
+  allowed_agents?: string[]; legacy_algos?: boolean; jump_host?: string | null;
+}): SshMachineRow {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const auth = opts.auth_method === 'password' ? 'password' : 'key';
+  const sens = ['low', 'high', 'critical'].includes(opts.sensitivity ?? '') ? opts.sensitivity! : 'low';
+  getDb().prepare(
+    `INSERT INTO ssh_machines
+       (id, name, host, port, username, auth_method, secret_name, passphrase_secret_name,
+        fingerprint_status, sensitivity, allowed_agents, disabled, legacy_algos, jump_host,
+        tags, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_verification', ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, opts.name, opts.host, opts.port ?? 22, opts.username, auth,
+    opts.secret_name, opts.passphrase_secret_name ?? null,
+    sens, JSON.stringify(opts.allowed_agents ?? []), opts.legacy_algos ? 1 : 0,
+    opts.jump_host ?? null, JSON.stringify(opts.tags ?? []), opts.notes ?? null, now, now,
+  );
+  logAudit('ssh_machine_created', 'ssh_machine', id, {
+    name: opts.name, host: opts.host, auth_method: auth, sensitivity: sens,
+  });
+  return getSshMachine(id)!;
+}
+
+export function updateSshMachine(id: string, fields: {
+  name?: string; host?: string; port?: number; username?: string;
+  auth_method?: string; secret_name?: string; tags?: string[]; notes?: string | null;
+  host_fingerprint?: string | null; last_connected_at?: string | null;
+  passphrase_secret_name?: string | null; fingerprint_status?: string; sensitivity?: string;
+  allowed_agents?: string[]; disabled?: boolean; legacy_algos?: boolean; jump_host?: string | null;
+}): void {
+  const sets: string[] = ['updated_at = ?'];
+  const params: unknown[] = [new Date().toISOString()];
+  if (fields.name                   !== undefined) { sets.push('name = ?');                   params.push(fields.name); }
+  if (fields.host                   !== undefined) { sets.push('host = ?');                   params.push(fields.host); }
+  if (fields.port                   !== undefined) { sets.push('port = ?');                   params.push(fields.port); }
+  if (fields.username               !== undefined) { sets.push('username = ?');               params.push(fields.username); }
+  if (fields.auth_method            !== undefined) { sets.push('auth_method = ?');            params.push(fields.auth_method === 'password' ? 'password' : 'key'); }
+  if (fields.secret_name            !== undefined) { sets.push('secret_name = ?');            params.push(fields.secret_name); }
+  if (fields.passphrase_secret_name !== undefined) { sets.push('passphrase_secret_name = ?'); params.push(fields.passphrase_secret_name); }
+  if (fields.tags                   !== undefined) { sets.push('tags = ?');                   params.push(JSON.stringify(fields.tags)); }
+  if (fields.notes                  !== undefined) { sets.push('notes = ?');                  params.push(fields.notes); }
+  if (fields.host_fingerprint       !== undefined) { sets.push('host_fingerprint = ?');       params.push(fields.host_fingerprint); }
+  if (fields.fingerprint_status     !== undefined) { sets.push('fingerprint_status = ?');     params.push(fields.fingerprint_status); }
+  if (fields.sensitivity            !== undefined) { sets.push('sensitivity = ?');            params.push(['low','high','critical'].includes(fields.sensitivity) ? fields.sensitivity : 'low'); }
+  if (fields.allowed_agents         !== undefined) { sets.push('allowed_agents = ?');         params.push(JSON.stringify(fields.allowed_agents)); }
+  if (fields.disabled               !== undefined) { sets.push('disabled = ?');               params.push(fields.disabled ? 1 : 0); }
+  if (fields.legacy_algos           !== undefined) { sets.push('legacy_algos = ?');           params.push(fields.legacy_algos ? 1 : 0); }
+  if (fields.jump_host              !== undefined) { sets.push('jump_host = ?');              params.push(fields.jump_host); }
+  if (fields.last_connected_at      !== undefined) { sets.push('last_connected_at = ?');      params.push(fields.last_connected_at); }
+  if (sets.length === 1) return;
+  params.push(id);
+  getDb().prepare(`UPDATE ssh_machines SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  // Redact secret-shaped fields from the audit detail (names only, never values).
+  logAudit('ssh_machine_updated', 'ssh_machine', id, {
+    ...fields, host_fingerprint: fields.host_fingerprint ? '<pinned>' : fields.host_fingerprint,
+  });
+}
+
+export function deleteSshMachine(id: string): { ok: boolean } {
+  const r = getDb().prepare('DELETE FROM ssh_machines WHERE id = ?').run(id);
+  if (r.changes > 0) logAudit('ssh_machine_deleted', 'ssh_machine', id, {});
+  return { ok: r.changes > 0 };
+}
+
+// ─── ssh_audit (§11.3) — typed/indexed forensic store for §9.1 alerting ──────
+export interface SshAuditRow {
+  id:                 string;
+  ts:                 string;
+  agent_id:           string | null;
+  session_id:         string | null;
+  task_id:            string | null;
+  delegation_chain:   string | null;
+  machine_id:         string | null;
+  host:               string | null;
+  port:               number | null;
+  auth_method:        string | null;
+  fingerprint_result: string | null; // 'match' | 'first-seen-pending' | 'mismatch-blocked'
+  command_scrubbed:   string | null;
+  exit_code:          number | null;
+  stdout_bytes:       number | null;
+  stderr_bytes:       number | null;
+  duration_ms:        number | null;
+  outcome:            string | null; // success|auth-fail|fingerprint-mismatch|denied-no-grant|denied-gate|error
+  exec_id:            string | null;
+}
+
+export function insertSshAudit(row: Partial<Omit<SshAuditRow, 'id' | 'ts'>> & { id?: string; ts?: string; outcome?: string | null }): string {
+  const id = row.id ?? randomUUID();
+  const ts = row.ts ?? new Date().toISOString();
+  getDb().prepare(
+    `INSERT INTO ssh_audit
+       (id, ts, agent_id, session_id, task_id, delegation_chain, machine_id, host, port,
+        auth_method, fingerprint_result, command_scrubbed, exit_code, stdout_bytes,
+        stderr_bytes, duration_ms, outcome, exec_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, ts, row.agent_id ?? null, row.session_id ?? null, row.task_id ?? null,
+    row.delegation_chain ?? null, row.machine_id ?? null, row.host ?? null, row.port ?? null,
+    row.auth_method ?? null, row.fingerprint_result ?? null, row.command_scrubbed ?? null,
+    row.exit_code ?? null, row.stdout_bytes ?? null, row.stderr_bytes ?? null,
+    row.duration_ms ?? null, row.outcome ?? null, row.exec_id ?? null,
+  );
+  return id;
+}
+
+/** Recent ssh_audit rows, optionally filtered by machine/outcome — feeds §9.1 alerting + the Machines tab. */
+export function querySshAudit(opts: { machineId?: string; outcome?: string; sinceIso?: string; limit?: number } = {}): SshAuditRow[] {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (opts.machineId) { where.push('machine_id = ?'); params.push(opts.machineId); }
+  if (opts.outcome)   { where.push('outcome = ?');    params.push(opts.outcome); }
+  if (opts.sinceIso)  { where.push('ts >= ?');        params.push(opts.sinceIso); }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  params.push(Math.min(Math.max(opts.limit ?? 100, 1), 1000));
+  return getDb().prepare(`SELECT * FROM ssh_audit ${clause} ORDER BY ts DESC LIMIT ?`).all(...params) as SshAuditRow[];
+}
+
+// ─── pending_confirmations (§4.3) — ONE shared block-until-human primitive ────
+export interface PendingConfirmationRow {
+  id:          string;
+  kind:        string;  // 'ssh_critical_run' | 'ssh_tofu_pin'
+  subject_ref: string | null;
+  agent_id:    string | null;
+  session_id:  string | null;
+  payload:     string | null; // JSON
+  status:      string;  // 'pending' | 'approved' | 'denied' | 'expired'
+  created_at:  string;
+  expires_at:  string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export function createPendingConfirmation(opts: {
+  kind: string; subjectRef?: string | null; agentId?: string | null;
+  sessionId?: string | null; payload?: unknown; ttlMs?: number;
+}): PendingConfirmationRow {
+  const id = randomUUID();
+  const now = Date.now();
+  const created = new Date(now).toISOString();
+  const expires = new Date(now + (opts.ttlMs ?? 10 * 60_000)).toISOString(); // §4.3 default ~10 min
+  getDb().prepare(
+    `INSERT INTO pending_confirmations
+       (id, kind, subject_ref, agent_id, session_id, payload, status, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+  ).run(
+    id, opts.kind, opts.subjectRef ?? null, opts.agentId ?? null, opts.sessionId ?? null,
+    opts.payload !== undefined ? JSON.stringify(opts.payload) : null, created, expires,
+  );
+  return getPendingConfirmation(id)!;
+}
+
+export function getPendingConfirmation(id: string): PendingConfirmationRow | undefined {
+  return getDb().prepare('SELECT * FROM pending_confirmations WHERE id = ?').get(id) as PendingConfirmationRow | undefined;
+}
+
+export function listPendingConfirmations(): PendingConfirmationRow[] {
+  return getDb().prepare(
+    `SELECT * FROM pending_confirmations WHERE status = 'pending' ORDER BY created_at ASC`,
+  ).all() as PendingConfirmationRow[];
+}
+
+/** Approve/deny a pending confirmation. Only transitions rows still in 'pending' (idempotent, race-safe). */
+export function resolvePendingConfirmation(id: string, status: 'approved' | 'denied', by: string): { ok: boolean } {
+  const r = getDb().prepare(
+    `UPDATE pending_confirmations SET status = ?, resolved_at = ?, resolved_by = ?
+      WHERE id = ? AND status = 'pending'`,
+  ).run(status, new Date().toISOString(), by, id);
+  return { ok: r.changes > 0 };
+}
+
+/** Fail-closed sweep: mark still-pending rows past their TTL as expired. Returns count expired. */
+export function expireStalePendingConfirmations(): number {
+  const r = getDb().prepare(
+    `UPDATE pending_confirmations SET status = 'expired', resolved_at = ?
+      WHERE status = 'pending' AND expires_at < ?`,
+  ).run(new Date().toISOString(), new Date().toISOString());
+  return r.changes;
+}
+
+// ── Notebook active-context pointer (spec: native-notebook-rag) ────────────
+// Ephemeral per-session "current notebook". Not authoritative — every notebook
+// tool takes an explicit notebook_id and only falls back here when omitted.
+export function setActiveNotebook(sessionId: string, notebookId: string): void {
+  if (!sessionId) return;
+  getDb().prepare(
+    `INSERT INTO doc_notebook_context (session_id, notebook_id, updated_at)
+       VALUES (?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET notebook_id = excluded.notebook_id, updated_at = excluded.updated_at`,
+  ).run(sessionId, notebookId, new Date().toISOString());
+}
+
+export function getActiveNotebook(sessionId: string): string | null {
+  if (!sessionId) return null;
+  const row = getDb().prepare(
+    'SELECT notebook_id FROM doc_notebook_context WHERE session_id = ?',
+  ).get(sessionId) as { notebook_id?: string } | undefined;
+  return row?.notebook_id ?? null;
+}
+
+export function clearActiveNotebook(sessionId: string): void {
+  if (!sessionId) return;
+  getDb().prepare('DELETE FROM doc_notebook_context WHERE session_id = ?').run(sessionId);
 }
 
 /**
@@ -4234,6 +5121,11 @@ export interface AgentTaskPayload {
   agentName:       string;
   taskTitle:       string;
   taskDescription: string;
+  /** L3 same-agent retry: force a brand-new work session instead of resuming the
+   *  task's existing agent_task session. Prevents a late-waking zombie run and the
+   *  retry (which share agent_id, so stillOwner() passes for both) from interleaving
+   *  writes into one shared conversation. Worst case degrades to a duplicate row. */
+  freshSession?:   boolean;
 }
 
 export interface TtsPayload {
@@ -4409,6 +5301,14 @@ export function claimNextTaskForAgent(
       'archived = 0',
       "task_source = 'dashboard'",
       '(agent_id IS NULL OR agent_id = @agentId)',
+      // Wave-2 Item D: never claim a task with an unmet blocker. A blocker is
+      // "unmet" unless it is 'done' (a cancelled blocker still blocks — releasing
+      // downstream work requires an explicit dependency-edge cleanup).
+      `NOT EXISTS (
+        SELECT 1 FROM task_dependencies d
+        JOIN tasks bt ON bt.id = d.depends_on_id
+        WHERE d.task_id = tasks.id AND bt.status NOT IN ('done')
+      )`,
     ];
     if (opts?.projectId) filters.push('project_id = @projectId');
     if (opts?.feature)   filters.push('feature = @feature');
@@ -4427,13 +5327,90 @@ export function claimNextTaskForAgent(
     const res = db.prepare(
       `UPDATE tasks
        SET status = 'doing', agent_id = ?, session_id = COALESCE(?, session_id), last_heartbeat_at = ?,
-           updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+           doing_since = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE id = ? AND status = 'todo'`,
-    ).run(agentId, opts?.sessionId ?? null, Date.now(), next.id);
+    ).run(agentId, opts?.sessionId ?? null, Date.now(), Date.now(), next.id);
     if (res.changes === 0) return; // someone else claimed it first
     claimed = db.prepare('SELECT * FROM tasks WHERE id = ?').get(next.id) as Record<string, unknown>;
   }).immediate();
   return claimed;
+}
+
+// ── Task dependency edges (Wave-2 Item D) ───────────────────────────────────
+
+/** Count of a task's blockers that are not yet 'done'. 0 = clear to run.
+ *  Drives both the claim/transition gate and the "⛔ blocked by N" badge. */
+export function unmetBlockerCount(taskId: string): number {
+  return (getDb().prepare(
+    `SELECT COUNT(*) AS n FROM task_dependencies d
+     JOIN tasks bt ON bt.id = d.depends_on_id
+     WHERE d.task_id = ? AND bt.status NOT IN ('done')`,
+  ).get(taskId) as { n: number }).n;
+}
+
+/** Blocker task ids this task depends on. */
+export function getTaskDependencies(taskId: string): string[] {
+  return (getDb().prepare(
+    'SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY created_at ASC',
+  ).all(taskId) as { depends_on_id: string }[]).map(r => r.depends_on_id);
+}
+
+/** Dependent task ids that this task blocks (reverse edge). */
+export function getTaskDependents(dependsOnId: string): string[] {
+  return (getDb().prepare(
+    'SELECT task_id FROM task_dependencies WHERE depends_on_id = ? ORDER BY created_at ASC',
+  ).all(dependsOnId) as { task_id: string }[]).map(r => r.task_id);
+}
+
+/** Would adding edge (taskId depends_on dependsOnId) create a cycle? DFS from
+ *  dependsOnId over existing edges; if it reaches taskId, the edge closes a loop. */
+function edgeWouldCycle(db: Database.Database, taskId: string, dependsOnId: string): boolean {
+  const stack = [dependsOnId];
+  const seen = new Set<string>();
+  const stmt = db.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ?');
+  while (stack.length) {
+    const cur = stack.pop()!;
+    if (cur === taskId) return true;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const r of stmt.all(cur) as { depends_on_id: string }[]) stack.push(r.depends_on_id);
+  }
+  return false;
+}
+
+/** Add a blocker edge: taskId is blocked until dependsOnId is 'done'. Rejects
+ *  self-edges, cycles, and unknown/archived tasks. Wrapped in an IMMEDIATE
+ *  transaction so two concurrent adds can't jointly form a cycle. */
+export function addTaskDependency(taskId: string, dependsOnId: string): { ok: boolean; error?: string } {
+  if (taskId === dependsOnId) return { ok: false, error: 'a task cannot depend on itself' };
+  const db = getDb();
+  let result: { ok: boolean; error?: string } = { ok: true };
+  db.transaction(() => {
+    const t = db.prepare('SELECT id FROM tasks WHERE id = ? AND archived = 0').get(taskId);
+    const b = db.prepare('SELECT id FROM tasks WHERE id = ? AND archived = 0').get(dependsOnId);
+    if (!t) { result = { ok: false, error: `task "${taskId}" not found` }; return; }
+    if (!b) { result = { ok: false, error: `blocker "${dependsOnId}" not found` }; return; }
+    if (edgeWouldCycle(db, taskId, dependsOnId)) {
+      result = { ok: false, error: 'dependency would create a cycle' }; return;
+    }
+    db.prepare(
+      'INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)',
+    ).run(taskId, dependsOnId);
+  }).immediate();
+  return result;
+}
+
+/** Remove a single blocker edge. */
+export function removeTaskDependency(taskId: string, dependsOnId: string): void {
+  getDb().prepare(
+    'DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_id = ?',
+  ).run(taskId, dependsOnId);
+}
+
+/** Drop ALL blocker edges for a task (the intentional "release downstream after
+ *  cancelling an upstream blocker" path — see D2 cancelled-blocker note). */
+export function clearTaskDependencies(taskId: string): void {
+  getDb().prepare('DELETE FROM task_dependencies WHERE task_id = ?').run(taskId);
 }
 
 export function completeJob(id: string, result: string): void {
@@ -4516,6 +5493,40 @@ export function markTtsDelivered(deliveryKey: string): void {
   ensureTtsDeliveriesTable();
   getDb().prepare('INSERT OR IGNORE INTO tts_deliveries (delivery_key, created_at) VALUES (?, ?)')
     .run(deliveryKey, new Date().toISOString());
+}
+
+// ── Hand-off delivery ledger (idempotent recovered-result delivery) ─────────
+// A single recovery sweep can encounter a nested hand-off chain (A→B→C) more
+// than once: recovering C cascades through B and A, and then the sweep later
+// iterates B directly. This ledger guarantees a recovered result is delivered
+// into a target session exactly once, mirroring the tts_deliveries pattern.
+let _handoffDeliveriesReady = false;
+function ensureHandoffDeliveriesTable(): void {
+  if (_handoffDeliveriesReady) return;
+  getDb().prepare(`
+    CREATE TABLE IF NOT EXISTS handoff_deliveries (
+      handoff_id        TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      created_at        TEXT NOT NULL,
+      PRIMARY KEY (handoff_id, target_session_id)
+    )
+  `).run();
+  _handoffDeliveriesReady = true;
+}
+
+export function wasHandoffDelivered(handoffId: string, targetSessionId: string): boolean {
+  ensureHandoffDeliveriesTable();
+  return !!getDb()
+    .prepare('SELECT 1 FROM handoff_deliveries WHERE handoff_id = ? AND target_session_id = ?')
+    .get(handoffId, targetSessionId);
+}
+
+export function markHandoffDelivered(handoffId: string, targetSessionId: string): boolean {
+  ensureHandoffDeliveriesTable();
+  const result = getDb()
+    .prepare('INSERT OR IGNORE INTO handoff_deliveries (handoff_id, target_session_id, created_at) VALUES (?, ?, ?)')
+    .run(handoffId, targetSessionId, new Date().toISOString());
+  return result.changes > 0;
 }
 
 /**
@@ -4924,6 +5935,12 @@ export interface ChatAttachmentRow {
   parsed_stats:    string | null;
   parsed_at:       number | null;
   parse_error:     string | null;
+  // spec: uploaded-document-handling-overhaul — raw/parsed lifecycle decouple.
+  storage_bucket:  string | null;
+  storage_path:    string | null;
+  raw_expires_at:  number | null;
+  parse_status:    string | null;   // pending | done | failed
+  parse_attempts:  number;
   created_at:      number;
 }
 
@@ -4980,6 +5997,61 @@ export function updateChatAttachmentParse(id: string, fields: {
 
 export function refreshChatAttachmentCreatedAt(id: string, ts: number): void {
   getDb().prepare('UPDATE chat_attachments SET created_at = ? WHERE id = ?').run(ts, id);
+}
+
+// ── uploaded-document-handling-overhaul: raw/parsed lifecycle decouple ──────────
+
+/** Record the Supabase bucket location + raw-file TTL for an attachment. */
+export function updateChatAttachmentStorage(id: string, fields: {
+  storageBucket?: string; storagePath?: string; rawExpiresAt?: number;
+  parseStatus?: string; parseAttempts?: number;
+}): void {
+  getDb().prepare(
+    `UPDATE chat_attachments
+        SET storage_bucket = COALESCE(@storageBucket, storage_bucket),
+            storage_path   = COALESCE(@storagePath,   storage_path),
+            raw_expires_at = COALESCE(@rawExpiresAt,   raw_expires_at),
+            parse_status   = COALESCE(@parseStatus,    parse_status),
+            parse_attempts = COALESCE(@parseAttempts,  parse_attempts)
+      WHERE id = @id`
+  ).run({
+    id,
+    storageBucket: fields.storageBucket ?? null,
+    storagePath:   fields.storagePath   ?? null,
+    rawExpiresAt:  fields.rawExpiresAt   ?? null,
+    parseStatus:   fields.parseStatus    ?? null,
+    parseAttempts: fields.parseAttempts  ?? null,
+  });
+}
+
+/** Touch a raw file's TTL — bump raw_expires_at forward on reference so active
+ *  documents don't get swept while a conversation is still using them. */
+export function touchChatAttachmentRawTtl(id: string, expiresAt: number): void {
+  getDb().prepare('UPDATE chat_attachments SET raw_expires_at = ? WHERE id = ?').run(expiresAt, id);
+}
+
+/** Rows whose RAW file has expired but whose PARSED content is retained. The
+ *  caller deletes the bucket object + clears raw-only columns; parsed_markdown
+ *  and doc_chunks are left intact (the core no-data-loss guarantee). */
+export function listExpiredRawAttachments(nowMs: number, limit = 200): Array<{ id: string; storage_bucket: string | null; storage_path: string | null }> {
+  return getDb().prepare(
+    `SELECT id, storage_bucket, storage_path
+       FROM chat_attachments
+      WHERE raw_expires_at IS NOT NULL AND raw_expires_at < ?
+        AND (storage_path IS NOT NULL OR bytes IS NOT NULL)
+      ORDER BY raw_expires_at ASC
+      LIMIT ?`
+  ).all(nowMs, limit) as Array<{ id: string; storage_bucket: string | null; storage_path: string | null }>;
+}
+
+/** Clear ONLY the raw-file columns (bucket object bytes) after the object is
+ *  deleted from storage. Parsed markdown + parse metadata are preserved. */
+export function clearChatAttachmentRaw(id: string): void {
+  getDb().prepare(
+    `UPDATE chat_attachments
+        SET bytes = NULL, storage_path = NULL, raw_expires_at = NULL
+      WHERE id = ?`
+  ).run(id);
 }
 
 export function pruneChatAttachments(maxAgeMs: number): number {
@@ -5055,4 +6127,76 @@ export function sumSessionUploadBytes(sessionId: string): number {
 export function deleteSessionUploadsBySession(sessionId: string): number {
   const r = getDb().prepare('DELETE FROM session_uploads WHERE session_id = ?').run(sessionId);
   return r.changes ?? 0;
+}
+
+// ── Agent image archive (metadata index; bytes live in Supabase bucket) ───────
+
+export interface AgentImageRecord {
+  id:           string;
+  bucket:       string;
+  storage_path: string;
+  prompt:       string;
+  alt:          string;
+  caption:      string | null;
+  source_tool:  string;
+  agent_id:     string | null;
+  agent_name:   string;
+  session_id:   string | null;
+  run_id:       string | null;
+  mime:         string;
+  bytes:        number;
+  created_at:   number;
+  model:        string | null;
+}
+
+export function recordAgentImage(rec: Omit<AgentImageRecord, 'created_at' | 'model'> & { created_at?: number; model?: string | null }): void {
+  getDb().prepare(`
+    INSERT INTO agent_images
+      (id, bucket, storage_path, prompt, alt, caption, source_tool,
+       agent_id, agent_name, session_id, run_id, mime, bytes, created_at, model)
+    VALUES
+      (@id, @bucket, @storage_path, @prompt, @alt, @caption, @source_tool,
+       @agent_id, @agent_name, @session_id, @run_id, @mime, @bytes, @created_at, @model)
+  `).run({
+    ...rec,
+    caption:    rec.caption ?? null,
+    agent_id:   rec.agent_id ?? null,
+    session_id: rec.session_id ?? null,
+    run_id:     rec.run_id ?? null,
+    created_at: rec.created_at ?? Date.now(),
+    model:      rec.model ?? null,
+  });
+}
+
+export function listAgentImages(opts?: {
+  limit?: number; offset?: number; agentId?: string; sessionId?: string;
+}): AgentImageRecord[] {
+  const limit  = Math.min(Math.max(opts?.limit ?? 60, 1), 200);
+  const offset = Math.max(opts?.offset ?? 0, 0);
+  const where: string[] = [];
+  const params: Record<string, unknown> = { limit, offset };
+  if (opts?.agentId)   { where.push('agent_id = @agentId');     params.agentId = opts.agentId; }
+  if (opts?.sessionId) { where.push('session_id = @sessionId'); params.sessionId = opts.sessionId; }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return getDb().prepare(`
+    SELECT * FROM agent_images
+    ${clause}
+    ORDER BY created_at DESC
+    LIMIT @limit OFFSET @offset
+  `).all(params) as AgentImageRecord[];
+}
+
+export function countAgentImages(opts?: { agentId?: string; sessionId?: string }): number {
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (opts?.agentId)   { where.push('agent_id = @agentId');     params.agentId = opts.agentId; }
+  if (opts?.sessionId) { where.push('session_id = @sessionId'); params.sessionId = opts.sessionId; }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const row = getDb().prepare(`SELECT COUNT(*) AS n FROM agent_images ${clause}`).get(params) as { n: number };
+  return row?.n ?? 0;
+}
+
+export function getAgentImage(id: string): AgentImageRecord | null {
+  const row = getDb().prepare(`SELECT * FROM agent_images WHERE id = ?`).get(id) as AgentImageRecord | undefined;
+  return row ?? null;
 }

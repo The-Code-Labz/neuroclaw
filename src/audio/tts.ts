@@ -261,7 +261,7 @@ class AsyncSemaphore {
 
 const chatterboxSem = new AsyncSemaphore(1);
 
-// Chatterbox TTS — internal service at chatterbox.internal.your-domain.com.
+// Chatterbox TTS — internal service at chatterbox.internal.neurolearninglabs.com.
 // Two-step synthesis: POST /api/generate → JSON with audio URL → GET audio bytes.
 // No API key required for the internal instance; CHATTERBOX_API_KEY is optional
 // for deployments that add bearer auth in front of the service.

@@ -143,6 +143,55 @@ systemctl disable neuroclaw-dashboard
 
 ---
 
+## Updating
+
+New features land in the public repo over time. Pull them in with one command:
+
+```bash
+./update.sh
+```
+
+This updates to the latest **stable release** (a tagged `vX.Y.Z`), rebuilds the
+server and dashboard, and restarts the service. It is safe by design:
+
+- **Your data and config are never touched.** `.env`, your databases (`*.db`),
+  `backups/`, `workspaces/`, and build output (`dist/`) are gitignored, so an
+  update cannot overwrite your secrets or data.
+- **Uncommitted local edits are protected.** If you've changed tracked files,
+  the updater stops and asks whether to stash them — it never force-resets over
+  your work.
+- **Schema migrations run automatically** on the next boot; there's no manual
+  migration step.
+- **New config keys are reported, not written.** If a release adds required
+  `.env` variables, the updater prints exactly which ones you need to set (it
+  never edits your `.env` for you).
+
+### Options
+
+```bash
+./update.sh --check              # preview what an update would change; apply nothing
+CHANNEL=edge ./update.sh         # track the tip of the main branch instead of stable tags
+./update.sh --rollback <SHA>     # return to a previous commit (printed after each update)
+```
+
+- **stable** (default) — follows tagged releases. Predictable, and every update
+  prints a rollback command.
+- **edge** — follows the latest commit on the main branch. Newest features,
+  less battle-tested.
+
+### Checking the version
+
+The running version and update availability are exposed at:
+
+```bash
+curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:3141/api/version
+curl -H "Authorization: Bearer $DASHBOARD_TOKEN" "http://localhost:3141/api/version?remote=1"   # also checks origin for a newer release
+```
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for what changed in each release.
+
+---
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |

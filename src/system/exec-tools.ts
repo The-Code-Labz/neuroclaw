@@ -365,3 +365,120 @@ export async function fsSearch(opts: FsSearchOpts): Promise<{ ok: boolean; match
     rg.on('close', () => { if (!fellBack) finish(); });
   });
 }
+
+// ── Tool: fs_edit (single-occurrence find/replace, mirrors nclaw-cli's editFile) ─
+
+export interface FsEditOpts {
+  path:       string;
+  oldString:  string;
+  newString:  string;
+  agentId?:   string;
+  sessionId?: string;
+}
+
+export interface FsEditResult {
+  ok:    boolean;
+  path:  string;
+  diff?: { path: string; before: string; after: string; mode: 'overwrite' };
+  error?: string;
+}
+
+export async function fsEdit(opts: FsEditOpts): Promise<FsEditResult> {
+  const target = resolveAgentPath(opts.path, opts.agentId, opts.sessionId);
+  try {
+    checkFsBoundary(target);
+    const before = await fsp.readFile(target, 'utf8');
+    const occurrences = before.split(opts.oldString).length - 1;
+    if (occurrences === 0) return { ok: false, path: target, error: 'oldString not found in file' };
+    if (occurrences > 1) return { ok: false, path: target, error: `oldString is ambiguous; found ${occurrences} matches` };
+    const after = before.replace(opts.oldString, opts.newString);
+    await fsp.writeFile(target, after, 'utf8');
+    logAudit('exec_run', 'exec', undefined, { tool: 'fs_edit', path: target, agentId: opts.agentId });
+    return { ok: true, path: target, diff: { path: target, before, after, mode: 'overwrite' } };
+  } catch (err) {
+    return { ok: false, path: target, error: (err as Error).message };
+  }
+}
+
+// ── Tool: glob (dependency-free glob → RegExp matcher over a recursive walk) ─
+
+export interface GlobOpts {
+  pattern:    string;
+  path?:      string;
+  agentId?:   string;
+  sessionId?: string;
+}
+
+export interface GlobResult {
+  ok:        boolean;
+  files:     string[];
+  truncated?: boolean;
+  error?:    string;
+}
+
+const GLOB_WALK_IGNORE = new Set(['node_modules', '.git', 'dist', 'build']);
+const GLOB_WALK_CAP    = 5000;
+const GLOB_RESULT_CAP  = 200;
+
+/** Convert a small subset of glob syntax (`**`, `*`, `?`) to a RegExp anchored
+ *  against a `/`-joined relative path. Intentionally dependency-free — avoids
+ *  pulling in fast-glob/minimatch just for this one tool. */
+function globToRegExp(pattern: string): RegExp {
+  let re = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        if (pattern[i + 2] === '/') { re += '(?:.*/)?'; i += 2; }
+        else { re += '.*'; i += 1; }
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if ('.+^${}()|[]\\'.includes(c)) {
+      re += '\\' + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp('^' + re + '$');
+}
+
+async function walkFiles(dir: string, out: string[], limit: number): Promise<void> {
+  if (out.length >= limit) return;
+  let entries: import('fs').Dirent[];
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
+  catch { return; }
+  for (const e of entries) {
+    if (out.length >= limit) return;
+    if (GLOB_WALK_IGNORE.has(e.name) || e.name.startsWith('.')) continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) await walkFiles(full, out, limit);
+    else if (e.isFile()) out.push(full);
+  }
+}
+
+export async function globFiles(opts: GlobOpts): Promise<GlobResult> {
+  const base = opts.path
+    ? resolveAgentPath(opts.path, opts.agentId, opts.sessionId)
+    : path.resolve(defaultExecCwd(opts.agentId, opts.sessionId));
+  try {
+    checkFsBoundary(base);
+    const all: string[] = [];
+    await walkFiles(base, all, GLOB_WALK_CAP);
+    const matcher = globToRegExp(opts.pattern);
+    const matched = all
+      .map(f => path.relative(base, f))
+      .filter(rel => matcher.test(rel))
+      .sort();
+    logAudit('exec_run', 'exec', undefined, { tool: 'glob', pattern: opts.pattern, path: base, count: matched.length, agentId: opts.agentId });
+    return {
+      ok: true,
+      files: matched.slice(0, GLOB_RESULT_CAP),
+      ...(matched.length > GLOB_RESULT_CAP ? { truncated: true } : {}),
+    };
+  } catch (err) {
+    return { ok: false, files: [], error: (err as Error).message };
+  }
+}

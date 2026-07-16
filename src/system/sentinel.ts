@@ -11,7 +11,7 @@
 import { randomUUID } from 'crypto';
 import {
   getDb, getAllAgents, getAgentById,
-  getAlfredAgent, getSentinelAgent, enqueueJob,
+  getAlfredAgent, getSentinelAgent, enqueueJob, bumpFailureCount,
   type AgentRecord,
 } from '../db';
 import { logHive } from './hive-mind';
@@ -20,11 +20,16 @@ import { logger } from '../utils/logger';
 import { translateClaudeError } from '../utils/claudeErrorLabel';
 import { sendAlert } from './alert-dispatcher';
 import { isTaskLive } from './task-liveness';
+import { classifyFailure } from './failure-classifier';
+import { stopStream } from './stream-control';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const INTERVAL_MS    = parseInt(process.env.SENTINEL_INTERVAL_SEC  ?? '60',  10) * 1000;
 const STALE_MINUTES  = parseInt(process.env.SENTINEL_STALE_MINUTES ?? '15',  10);
+// Archon-inspired: route stale-task escalation on the failure CAUSE, not just
+// the clock. Off → today's uniform ladder for every task.
+const CLASSIFY_FAILURES = process.env.SENTINEL_FAILURE_CLASSIFY !== 'false';
 const SENTINEL_MODEL = process.env.SENTINEL_MODEL?.trim()
   || process.env.HEARTBEAT_MODEL?.trim()
   || 'gpt-4o-mini';
@@ -47,6 +52,39 @@ const USE_LIVENESS = process.env.SENTINEL_USE_LIVENESS_READ !== 'false';
 const ESCALATION_COOLDOWN_MS = parseInt(
   process.env.SENTINEL_ESCALATION_COOLDOWN_MS ?? String(15 * 60_000), 10,
 );
+
+// ── Wave-2 Item C3 · runaway hard-stop ──────────────────────────────────────────
+// The stale pass catches DEAD tasks (!isTaskLive). The runaway pass is its strict
+// complement: a task that is ALIVE (heartbeating) but has been in 'doing' past a
+// wall-clock budget — the "heartbeating-but-wedged" case the stale pass can't see
+// (the Canvas-470s hang: the 20s job heartbeat fires regardless of LLM progress,
+// so a wedged single generation stays 'live' forever). It interrupts the live run
+// via stopStream(session_id) — which chains into the backbone's abort controller
+// (Item C1) — then parks the row at 'blocked' with agent_id=null so the zombie
+// run's success path can't overwrite it (stillOwner()=false in job-worker).
+//
+// DEFAULT OFF. Ships inert until (a) one real interrupt is verified in-server and
+// (b) the constant ordering (absoluteMaxMs<budget<WEDGED_JOB_CAP_MS) is confirmed.
+const RUNAWAY_ENABLED = process.env.SENTINEL_RUNAWAY_ENABLED === 'true';
+// Budget must sit between absoluteMaxMs (25m, backbone graceful bail) and
+// WEDGED_JOB_CAP_MS (35m, blunt force-fail) — Sentinel gets the middle slot.
+const RUNAWAY_BUDGET_MS = parseInt(
+  process.env.SENTINEL_RUNAWAY_BUDGET_MS ?? String(30 * 60_000), 10,
+);
+
+// Per-agent override AGENT_RUNAWAY_BUDGET_<NAME> (ms), mirroring the Wave-1
+// token-budget resolver. Name is upper-cased with non-alphanumerics → '_'.
+function resolveRunawayBudget(agentName: string | null): number {
+  if (agentName) {
+    const key = 'AGENT_RUNAWAY_BUDGET_' + agentName.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    const raw = process.env[key];
+    if (raw && raw.trim()) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  }
+  return RUNAWAY_BUDGET_MS;
+}
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -147,13 +185,13 @@ function updateState(taskId: string, patch: Partial<Omit<SentinelTaskState, 'id'
 
 function taskWasActedOn(taskId: string, beforeUpdatedAt: string): boolean {
   const row = getDb().prepare(
-    'SELECT status, updated_at, agent_id, last_heartbeat_at FROM tasks WHERE id = ?',
-  ).get(taskId) as { status: string; updated_at: string; agent_id: string | null; last_heartbeat_at: number | null } | undefined;
+    'SELECT status, updated_at, agent_id, session_id, last_heartbeat_at FROM tasks WHERE id = ?',
+  ).get(taskId) as { status: string; updated_at: string; agent_id: string | null; session_id: string | null; last_heartbeat_at: number | null } | undefined;
   if (!row) return false;
   if (row.status !== 'doing') return true;
   if (row.updated_at !== beforeUpdatedAt) return true;
   // A task that has become live again (agent resumed work) counts as acted-on.
-  if (isTaskLive({ id: taskId, agent_id: row.agent_id, last_heartbeat_at: row.last_heartbeat_at })) return true;
+  if (isTaskLive({ id: taskId, agent_id: row.agent_id, session_id: row.session_id, last_heartbeat_at: row.last_heartbeat_at })) return true;
   return false;
 }
 
@@ -164,8 +202,11 @@ interface StaleTask {
   title:             string;
   description:       string | null;
   agent_id:          string | null;
+  session_id:        string | null;
   updated_at:        string;
   last_heartbeat_at: number | null;
+  last_error:        string | null;
+  failure_count:     number;
 }
 
 function findStaleTasks(): StaleTask[] {
@@ -173,7 +214,8 @@ function findStaleTasks(): StaleTask[] {
   // 'dashboard' tasks are ever monitored; 'subtask', 'background', and any
   // future source are excluded by construction.
   const rows = getDb().prepare(`
-    SELECT id, title, description, agent_id, updated_at, last_heartbeat_at FROM tasks
+    SELECT id, title, description, agent_id, session_id, updated_at, last_heartbeat_at,
+           last_error, failure_count FROM tasks
     WHERE status = 'doing'
       AND datetime(updated_at) < datetime('now', ?)
       AND task_source = 'dashboard'
@@ -181,7 +223,74 @@ function findStaleTasks(): StaleTask[] {
 
   if (!USE_LIVENESS) return rows; // kill-switch: legacy behavior
   // Drop any task that is actually being worked on right now.
-  return rows.filter(t => !isTaskLive({ id: t.id, agent_id: t.agent_id, last_heartbeat_at: t.last_heartbeat_at }));
+  return rows.filter(t => !isTaskLive({ id: t.id, agent_id: t.agent_id, session_id: t.session_id, last_heartbeat_at: t.last_heartbeat_at }));
+}
+
+// ── Runaway task finder (Wave-2 Item C3) ────────────────────────────────────────
+
+interface RunawayTask {
+  id:                string;
+  title:             string;
+  agent_id:          string | null;
+  session_id:        string | null;
+  doing_since:       number | null;
+  last_heartbeat_at: number | null;
+  failure_count:     number;
+}
+
+// Strictly complementary to findStaleTasks: LIVE tasks (heartbeat fresh) that
+// have been in 'doing' past their wall-clock budget. NO task_source allowlist —
+// unlike the stale pass, this deliberately covers subtask/background work too,
+// since those unattended LLM runs are the categories most prone to wedging.
+function findRunawayTasks(): RunawayTask[] {
+  const rows = getDb().prepare(`
+    SELECT id, title, agent_id, session_id, doing_since, last_heartbeat_at, failure_count
+    FROM tasks
+    WHERE status = 'doing' AND doing_since IS NOT NULL
+  `).all() as RunawayTask[];
+  const now = Date.now();
+  return rows.filter(t => {
+    // Only LIVE tasks — a dead task is the stale pass's job (no double-processing).
+    if (!isTaskLive({ id: t.id, agent_id: t.agent_id, session_id: t.session_id, last_heartbeat_at: t.last_heartbeat_at })) return false;
+    const budget = resolveRunawayBudget(t.agent_id ? getAgentById(t.agent_id)?.name ?? null : null);
+    return (now - (t.doing_since ?? now)) > budget;
+  });
+}
+
+async function processRunawayTask(task: RunawayTask): Promise<boolean> {
+  // Reuse the escalation cooldown map so one runaway can't spam across scans.
+  if (inCooldown(task.id)) return false;
+
+  const agent      = task.agent_id ? getAgentById(task.agent_id) : null;
+  const budgetMs   = resolveRunawayBudget(agent?.name ?? null);
+  const elapsedMin = Math.round((Date.now() - (task.doing_since ?? Date.now())) / 60_000);
+  const budgetMin  = Math.round(budgetMs / 60_000);
+
+  // 1. Interrupt the live run. stopStream chains into the backbone abort (C1),
+  //    killing a wedged single generation at the HTTP layer. Returns false if no
+  //    stream was registered (a plane that doesn't wire it) — the row-park below
+  //    still protects the task's status either way.
+  const interrupted = task.session_id ? stopStream(task.session_id) : false;
+
+  // 2. Park the row: blocked + agent_id=null. Nulling the owner makes
+  //    stillOwner()=false in job-worker._runAgentTask, so when the zombie run
+  //    finally resolves it can NOT overwrite this 'blocked' back to review/done.
+  const reason = `runaway: exceeded ${budgetMin}m runtime budget (ran ~${elapsedMin}m), interrupted by Sentinel`;
+  updateTask(task.id, { status: 'blocked', agent_id: null, last_error: reason });
+
+  // 3. Telemetry + cooldown.
+  bumpFailureCount(task.id);
+  markEscalated(task.id);
+  logHive('sentinel_runaway', `sentinel: interrupted runaway task "${task.title}" (~${elapsedMin}m > ${budgetMin}m budget)`, getSentinelAgent()?.id, { taskId: task.id, elapsedMin, budgetMin, interrupted });
+  logger.warn('sentinel: runaway task interrupted + blocked', { taskId: task.id, elapsedMin, budgetMin, interrupted, agentName: agent?.name ?? null });
+  sendAlert({
+    severity: 'warn',
+    source:   'sentinel',
+    title:    `Sentinel interrupted runaway task "${task.title}"`,
+    body:     `Task ran ~${elapsedMin}m (budget ${budgetMin}m) while still live — interrupted and parked at 'blocked'. Reply to continue from where it stopped.`,
+    dedupKey: `sentinel_runaway_${task.id}`,
+  }).catch(err => logger.warn('sentinel: sendAlert failed', { error: (err as Error).message }));
+  return true;
 }
 
 // ── Escalation steps ──────────────────────────────────────────────────────────
@@ -273,6 +382,64 @@ async function requestReassignment(task: StaleTask, state: SentinelTaskState): P
   const sentinelAgent = getSentinelAgent();
   const alfred = getAlfredAgent();
 
+  // L3 — same-agent retry FIRST. A stalled task is usually a transient job crash,
+  // not a wrong-specialist problem. Give the ORIGINAL agent one clean re-run before
+  // yanking work to someone else. The retry is "burned" once reassigned_to_agent_id
+  // is set → the next pass falls through to different-agent selection below.
+  // (Marker reuses reassigned_to_agent_id, NOT escalation_level: MAX_ESCALATIONS is
+  //  dead code — markBlocked deletes state at level 2 — so renumbering the ladder
+  //  would break the abandon-check. This sidesteps the whole state-machine rework.)
+  const retryBurned   = state.reassigned_to_agent_id != null;
+  const originalAgent  = state.original_agent_id ? getAgentById(state.original_agent_id) : null;
+  if (!retryBurned && originalAgent && originalAgent.status === 'active') {
+    try {
+      getDb().prepare(`
+        UPDATE job_queue
+        SET status = 'failed', error = 'cancelled: same-agent retry by Sentinel'
+        WHERE status IN ('pending','claimed')
+          AND json_extract(payload,'$.taskId') = ?
+      `).run(task.id);
+    } catch (err) {
+      logger.warn('sentinel: failed to cancel job before same-agent retry', { taskId: task.id, error: (err as Error).message });
+    }
+
+    // Re-enqueue to the SAME agent + sync assignee. Do NOT bump escalation_level —
+    // the retry is tracked via reassigned_to_agent_id so a second stall escalates.
+    getDb().prepare(
+      `UPDATE tasks SET agent_id = ?, assignee = ?, status = 'todo', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+    ).run(originalAgent.id, originalAgent.name, task.id);
+
+    enqueueJob('agent_task', {
+      taskId:          task.id,
+      agentId:         originalAgent.id,
+      agentName:       originalAgent.name,
+      taskTitle:       task.title,
+      taskDescription: task.description ?? '',
+      freshSession:    true,   // L3 race guard — avoid zombie/retry session interleave
+    });
+
+    updateState(task.id, {
+      reassigned_to_agent_id: originalAgent.id,
+      agent_response:         `same-agent retry (${originalAgent.name}); original run cancelled`,
+      last_check_in_at:       new Date().toISOString(),
+    });
+
+    lifetimeReassigns++;
+    cfgSet(CFG_REASSIGNS, String(lifetimeReassigns));
+
+    logHive('sentinel_same_agent_retry', `sentinel: Sentinel re-ran "${task.title}" on ${originalAgent.name} (transient stall — fresh session)`, sentinelAgent?.id, { taskId: task.id, agentId: originalAgent.id });
+    logger.info('sentinel: same-agent retry dispatched', { taskId: task.id, agentName: originalAgent.name });
+    sendAlert({
+      severity: 'info',
+      source:   'sentinel',
+      title:    `Sentinel re-ran "${task.title}" on ${originalAgent.name}`,
+      body:     `Task stalled; gave the original agent a fresh-session retry before escalating to a different specialist.`,
+      dedupKey: `sentinel_retry_${task.id}`,
+    }).catch(err => logger.warn('sentinel: sendAlert failed', { error: (err as Error).message }));
+    return;
+  }
+
+  // ── Different-agent reassignment (retry already burned, or original inactive) ──
   const candidates = getAllAgents().filter(a =>
     a.status === 'active' &&
     a.role !== 'orchestrator' &&
@@ -334,9 +501,10 @@ async function requestReassignment(task: StaleTask, state: SentinelTaskState): P
 
   // Reassign + reset to 'todo', then re-enqueue through the normal job pipeline.
   // _runAgentTask will set it back to 'doing' with a fresh heartbeat (→ live).
+  // L2 — sync assignee to the NEW owner so the card/monitors follow the real doer.
   getDb().prepare(
-    `UPDATE tasks SET agent_id = ?, status = 'todo', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-  ).run(newAgentId, task.id);
+    `UPDATE tasks SET agent_id = ?, assignee = ?, status = 'todo', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+  ).run(newAgentId, newAgent.name, task.id);
 
   enqueueJob('agent_task', {
     taskId:          task.id,
@@ -368,10 +536,11 @@ async function requestReassignment(task: StaleTask, state: SentinelTaskState): P
   }).catch(err => logger.warn('sentinel: sendAlert failed', { error: (err as Error).message }));
 }
 
-async function markBlocked(task: StaleTask, state: SentinelTaskState): Promise<void> {
+async function markBlocked(task: StaleTask, state: SentinelTaskState, reasonOverride?: string): Promise<void> {
   const sentinelAgent = getSentinelAgent();
   const alfred = getAlfredAgent();
-  const reason = `Task stalled through check-in and reassignment. Agent response: "${(state.agent_response ?? 'none').slice(0, 300)}"`;
+  const reason = reasonOverride
+    ?? `Task stalled through check-in and reassignment. Agent response: "${(state.agent_response ?? 'none').slice(0, 300)}"`;
 
   const freshState = getState(task.id);
   if (!freshState || freshState.escalation_level !== state.escalation_level) {
@@ -437,11 +606,28 @@ async function processStaleTask(task: StaleTask): Promise<boolean> {
     return false;
   }
 
+  // Failure classification (Archon): route on CAUSE, not just the clock. A
+  // provider-agnostic FATAL error (bad model, missing secret, unknown tool, or a
+  // failure that has already repeated FATAL_REPEAT_THRESHOLD times) will fail
+  // identically on same-agent retry AND cross-agent reassign — so skip the ladder
+  // and block immediately rather than burning two ≥cooldown escalation windows.
+  // transient/unknown fall through to the normal recoverable ladder unchanged.
+  if (CLASSIFY_FAILURES) {
+    const klass = classifyFailure(task.last_error, task.failure_count);
+    if (klass === 'fatal') {
+      const snippet = (task.last_error ?? `${task.failure_count}× repeated failure`).slice(0, 200);
+      await markBlocked(task, state, `fatal (${task.failure_count}× fails): ${snippet}`);
+      if (USE_LIVENESS) markEscalated(task.id);
+      logger.warn('sentinel: fatal failure — skipping ladder, blocking immediately', { taskId: task.id, failureCount: task.failure_count });
+      return true;
+    }
+  }
+
   if (state.escalation_level === 0) {
     const agentId = task.agent_id ?? state.original_agent_id;
     if (!agentId) {
       try {
-        updateTask(task.id, { status: 'todo', agent_id: null });
+        updateTask(task.id, { status: 'todo', agent_id: null, assignee: 'User' });
         getDb().prepare('DELETE FROM sentinel_task_state WHERE task_id = ?').run(task.id);
         logHive('sentinel_reset_agentless', `sentinel: Reset agentless stuck task "${task.title}" to todo`, undefined, { taskId: task.id });
         logger.info('sentinel: reset agentless stuck task to todo', { taskId: task.id });
@@ -453,7 +639,7 @@ async function processStaleTask(task: StaleTask): Promise<boolean> {
     const agent = getAgentById(agentId);
     if (!agent || agent.status !== 'active') {
       try {
-        updateTask(task.id, { status: 'todo', agent_id: null });
+        updateTask(task.id, { status: 'todo', agent_id: null, assignee: 'User' });
         getDb().prepare('DELETE FROM sentinel_task_state WHERE task_id = ?').run(task.id);
         logHive('orphaned_doing_task_requeued', `sentinel: Sentinel reset task "${task.title}" to todo — agent ${agentId} is inactive/deleted`, undefined, { taskId: task.id, previousAgentId: agentId, source: 'sentinel' });
         logger.info('sentinel: orphaned task reset to todo', { taskId: task.id, agentId });
@@ -529,6 +715,26 @@ export async function runSentinelScan(): Promise<{ checked: number; actedOn: num
         if (await processStaleTask(task)) actedOn++;
       } catch (err) {
         logger.warn('sentinel: error processing stale task', { taskId: task.id, error: (err as Error).message });
+      }
+    }
+
+    // Wave-2 Item C3: runaway pass (default OFF via SENTINEL_RUNAWAY_ENABLED).
+    // Complementary to the stale pass — handles LIVE-but-wedged tasks that have
+    // blown their wall-clock budget. Own try/catch per task so one failure never
+    // aborts the scan.
+    if (RUNAWAY_ENABLED) {
+      try {
+        const runawayTasks = findRunawayTasks();
+        checked += runawayTasks.length;
+        for (const task of runawayTasks) {
+          try {
+            if (await processRunawayTask(task)) actedOn++;
+          } catch (err) {
+            logger.warn('sentinel: error processing runaway task', { taskId: task.id, error: (err as Error).message });
+          }
+        }
+      } catch (err) {
+        logger.warn('sentinel: runaway pass failed', { error: (err as Error).message });
       }
     }
   } catch (err) {

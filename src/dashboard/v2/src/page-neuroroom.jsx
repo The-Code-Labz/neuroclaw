@@ -333,12 +333,12 @@ const NeuroRoom = () => {
 
             {/* All */}
             <div onClick={() => selectAgent('all')} style={{
-              background: isSelected('all') ? 'rgba(0,183,255,0.1)' : 'transparent',
-              border: `1px solid ${isSelected('all') ? 'rgba(0,183,255,0.4)' : 'var(--line-soft)'}`,
+              background: isSelected('all') ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
+              border: `1px solid ${isSelected('all') ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--line-soft)'}`,
               borderRadius:6, padding:'8px 10px', marginBottom:4, cursor:'pointer',
               display:'flex', alignItems:'center', gap:8,
             }}>
-              <div style={{ width:24, height:24, background:'rgba(0,183,255,0.15)', border:'1px solid rgba(0,183,255,0.3)', borderRadius:6, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13 }}>⬡</div>
+              <div style={{ width:24, height:24, background:'color-mix(in srgb, var(--accent) 15%, transparent)', border:'1px solid color-mix(in srgb, var(--accent) 30%, transparent)', borderRadius:6, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13 }}>⬡</div>
               <div>
                 <div style={{ color: isSelected('all') ? 'var(--accent)' : 'var(--fg)', fontSize:11, fontWeight:600 }}>All Agents</div>
                 <div style={{ color:'var(--muted)', fontSize:9 }}>broadcast</div>
@@ -387,7 +387,7 @@ const NeuroRoom = () => {
         <div ref={scrollRef} style={{ flex:1, overflowY:'auto', padding:'16px 20px', display:'flex', flexDirection:'column', gap:10 }}>
           {messages.length === 0 && (
             <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12 }}>
-              <div style={{ fontSize:32, filter:'drop-shadow(0 0 10px rgba(0,183,255,0.5))' }}>⬡</div>
+              <div style={{ fontSize:32, filter:'drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 50%, transparent))' }}>⬡</div>
               <div style={{ color:'var(--accent)', fontFamily:'var(--display)', letterSpacing:'0.2em', fontSize:13 }}>NEURO ROOM</div>
               <div style={{ color:'var(--muted)', fontSize:12, textAlign:'center', maxWidth:280, lineHeight:1.6 }}>Select an agent or broadcast to All. Type or hold Space to speak.</div>
               {!livekitEnabled && (
@@ -402,7 +402,7 @@ const NeuroRoom = () => {
             if (msg.role === 'user') return (
               <div key={msg.id} style={{ display:'flex', justifyContent:'flex-end' }}>
                 <div style={{ maxWidth:'72%' }}>
-                  <div style={{ background:'rgba(0,183,255,0.08)', border:'1px solid rgba(0,183,255,0.2)', borderRadius:'8px 2px 8px 8px', padding:'8px 12px' }}>
+                  <div style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', border:'1px solid color-mix(in srgb, var(--accent) 20%, transparent)', borderRadius:'8px 2px 8px 8px', padding:'8px 12px' }}>
                     {msg.isVoice && <span style={{ fontSize:10, color:'var(--accent)', marginRight:6 }}>🎤</span>}
                     <span style={{ color:'var(--fg)', fontSize:13 }}>{msg.content}</span>
                   </div>
@@ -456,8 +456,8 @@ const NeuroRoom = () => {
             onClick={isRecording ? stopRecording : startRecording}
             style={{
               width:36, height:36, borderRadius:'50%', cursor:'pointer', border:'none',
-              background: isRecording ? 'rgba(255,60,60,0.2)' : 'rgba(0,183,255,0.12)',
-              outline: `1px solid ${isRecording ? 'rgba(255,60,60,0.5)' : 'rgba(0,183,255,0.35)'}`,
+              background: isRecording ? 'rgba(255,60,60,0.2)' : 'color-mix(in srgb, var(--accent) 12%, transparent)',
+              outline: `1px solid ${isRecording ? 'rgba(255,60,60,0.5)' : 'color-mix(in srgb, var(--accent) 35%, transparent)'}`,
               color: isRecording ? '#ff4444' : 'var(--accent)',
               fontSize:15, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
             }}>
@@ -489,8 +489,8 @@ const NeuroRoom = () => {
             disabled={!draft.trim() || streaming}
             style={{
               width:32, height:32, borderRadius:6, cursor: draft.trim() ? 'pointer' : 'default',
-              border:`1px solid ${draft.trim() ? 'rgba(0,183,255,0.4)' : 'var(--line)'}`,
-              background: draft.trim() ? 'rgba(0,183,255,0.15)' : 'rgba(0,183,255,0.04)',
+              border:`1px solid ${draft.trim() ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--line)'}`,
+              background: draft.trim() ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'color-mix(in srgb, var(--accent) 4%, transparent)',
               color: draft.trim() ? 'var(--accent)' : 'var(--muted)',
               fontSize:14, flexShrink:0,
             }}>↑</button>
@@ -498,7 +498,7 @@ const NeuroRoom = () => {
 
         <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:6 }}>
           <span style={{ color:'var(--muted)', fontSize:9 }}>Speaking to:</span>
-          <span style={{ background:'rgba(0,183,255,0.08)', border:'1px solid rgba(0,183,255,0.25)', borderRadius:10, padding:'2px 8px', fontSize:9, color:'var(--accent)' }}>{targetLabel()}</span>
+          <span style={{ background:'color-mix(in srgb, var(--accent) 8%, transparent)', border:'1px solid color-mix(in srgb, var(--accent) 25%, transparent)', borderRadius:10, padding:'2px 8px', fontSize:9, color:'var(--accent)' }}>{targetLabel()}</span>
           <span style={{ color:'var(--muted)', fontSize:9, marginLeft:'auto' }}>
             {voiceMode === 'ptt' ? 'click mic or hold Space' : 'click mic or VAD'} · Enter = send
           </span>

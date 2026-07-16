@@ -187,7 +187,7 @@ export async function extract(input: ExtractInput): Promise<ExtractedMemory | nu
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user',   content: userPrompt },
           ],
-        }, { label: 'memory-extractor' });
+        }, { label: 'memory-extractor', preferGemini: true });
         raw = resp.choices[0]?.message?.content ?? '';
       } catch (fbErr) {
         logger.warn('memory-extractor: fallback LLM call also failed', { error: (fbErr as Error).message });
@@ -205,7 +205,7 @@ export async function extract(input: ExtractInput): Promise<ExtractedMemory | nu
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user',   content: userPrompt },
         ],
-      }, { label: 'memory-extractor' });
+      }, { label: 'memory-extractor', preferGemini: true });
       raw = resp.choices[0]?.message?.content ?? '';
     } catch (err) {
       logger.warn('memory-extractor: LLM call failed', { error: (err as Error).message });

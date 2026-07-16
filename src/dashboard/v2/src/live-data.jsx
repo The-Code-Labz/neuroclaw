@@ -804,21 +804,21 @@ function ensureStatusBadge() {
   el.style.cssText = `
     position: fixed; bottom: 8px; left: 8px; z-index: 9999;
     font-family: 'JetBrains Mono', monospace; font-size: 10px;
-    background: rgba(2,6,23,0.92); color: #00b7ff;
-    border: 1px solid rgba(0,183,255,0.4); border-radius: 3px;
+    background: rgba(2,6,23,0.92); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 3px;
     padding: 4px 8px; cursor: pointer; user-select: none;
-    box-shadow: 0 0 8px rgba(0,183,255,0.3);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
     max-width: 360px;
   `;
   el.title = 'click to force refresh';
   el.addEventListener('click', () => {
     el.textContent = 'LIVE · refreshing…';
-    refreshAll().catch(e => { el.style.color = '#fb3b5f'; el.textContent = 'LIVE · ' + e.message; });
+    refreshAll().catch(e => { el.style.color = 'var(--danger)'; el.textContent = 'LIVE · ' + e.message; });
   });
   document.body.appendChild(el);
   return el;
 }
-function setStatus(text, color = '#00b7ff') {
+function setStatus(text, color = 'var(--accent)') {
   const el = ensureStatusBadge();
   el.style.color = color;
   el.textContent = text;
@@ -856,7 +856,7 @@ window.NC_LIVE = {
       if (core && core.state && core.state !== 'booting') {
         try { localStorage.setItem('nc_core_cache', JSON.stringify({ core, savedAt: Date.now() })); } catch { /* quota */ }
       }
-      setStatus(`LIVE · ${window.NC_DATA.AGENTS?.length ?? 0} agents · stream`, '#00f5d4');
+      setStatus(`LIVE · ${window.NC_DATA.AGENTS?.length ?? 0} agents · stream`, 'var(--accent-2)');
     } else if (msg.type === 'agents') {
       applyResults({ agents: msg.agents, tasks: window.NC_DATA.TASKS });
       emitTick({ keys: ['agents'] });
@@ -897,7 +897,7 @@ window.NC_LIVE = {
       if (this._sseFailures >= 3 && !this._timer) {
         // SSE persistently failing — fall back to polling
         console.warn('[NC_LIVE] SSE failed 3x, falling back to polling');
-        setStatus('LIVE · polling fallback', '#facc15');
+        setStatus('LIVE · polling fallback', 'var(--amber)');
         this._timer = setInterval(async () => {
           try { await refreshAll(); }
           catch (err) { console.warn('[NC_LIVE] poll tick failed:', err); }

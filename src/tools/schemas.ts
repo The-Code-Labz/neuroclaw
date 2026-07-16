@@ -10,6 +10,138 @@ export const searchMemoryShape = {
 };
 export const searchMemorySchema = z.object(searchMemoryShape);
 
+// ── Shared Notepad (agent_notes) ────────────────────────────────────────────
+export const writeNoteShape = {
+  title:   z.string().describe('Short title for the note (shown in the Notes tab list).'),
+  content: z.string().describe('The note body in Markdown. No length limit — use this to hand the user a long, continuous document instead of a truncated Discord message.'),
+  pinned:  z.boolean().optional().describe('Pin to the top of the Notes list. Default false.'),
+};
+export const writeNoteSchema = z.object(writeNoteShape);
+
+export const appendNoteShape = {
+  note_id: z.string().optional().describe('Id of the note to append to (from list_notes). Preferred when known.'),
+  title:   z.string().optional().describe('Title of the note to append to. If no note with this title exists it is created. Use this to keep building ONE continuous note across turns.'),
+  content: z.string().describe('Markdown to append to the end of the note.'),
+  attribution: z.boolean().optional().describe('Insert a "— author · timestamp" divider before this block. Default true; set false to append seamlessly into one flowing document.'),
+};
+export const appendNoteSchema = z.object(appendNoteShape);
+
+export const listNotesShape = {
+  include_archived: z.boolean().optional().describe('Include archived notes. Default false.'),
+};
+export const listNotesSchema = z.object(listNotesShape);
+
+export const readNoteShape = {
+  note_id: z.string().optional().describe('Id of the note to read (from list_notes).'),
+  title:   z.string().optional().describe('Exact title of the note to read (alternative to note_id).'),
+};
+export const readNoteSchema = z.object(readNoteShape);
+
+// ── Media gallery (agent_media) ─────────────────────────────────────────────
+export const registerMediaShape = {
+  url:    z.string().optional().describe('Remote https URL of the generated media to store (e.g. an image/video/audio link returned by a generation tool). Provide this OR base64.'),
+  base64: z.string().optional().describe('Base64 (or data: URL) of the media bytes. Provide this OR url.'),
+  kind:   z.enum(['image', 'video', 'audio']).optional().describe('Media kind. If omitted it is inferred from the MIME type.'),
+  title:  z.string().optional().describe('Short human label shown in the Media gallery card.'),
+  prompt: z.string().optional().describe('The prompt or description that produced this media.'),
+  mime_type:   z.string().optional().describe('MIME type, e.g. image/png, video/mp4, audio/mpeg. Inferred from the source when omitted.'),
+  source_tool: z.string().optional().describe('Which tool/model produced it, e.g. voidai_image, chatgpt_image.'),
+};
+export const registerMediaSchema = z.object(registerMediaShape);
+
+export const listMediaShape = {
+  kind:  z.enum(['image', 'video', 'audio']).optional().describe('Filter to one media kind.'),
+  limit: z.number().int().min(1).max(1000).optional().describe('Max items to return (default 100).'),
+};
+export const listMediaSchema = z.object(listMediaShape);
+
+// ── NeuroArchive (MinIO long-term reusable asset store) ──────────────────────
+export const registerArchiveShape = {
+  url:         z.string().optional().describe('Remote https URL of the file to archive. Provide this OR base64.'),
+  base64:      z.string().optional().describe('Base64 (or data: URL) of the file bytes. Provide this OR url.'),
+  category:    z.enum(['video', 'image', 'audio', 'broll', 'code', 'document', 'other']).optional().describe('Archive category. If omitted it is inferred from the MIME type.'),
+  title:       z.string().optional().describe('Short human label shown in the archive.'),
+  description: z.string().optional().describe('Longer description of the asset and how to use it.'),
+  tags:        z.array(z.string()).optional().describe('Reusable tags for finding this asset later, e.g. ["b-roll", "city", "night"].'),
+  mime_type:   z.string().optional().describe('MIME type, e.g. video/mp4, image/png, text/markdown. Inferred from the source when omitted.'),
+  source_tool: z.string().optional().describe('Which tool/model produced it, e.g. render_remote, abacus_image.'),
+};
+export const registerArchiveSchema = z.object(registerArchiveShape);
+
+export const listArchiveShape = {
+  category:        z.enum(['video', 'image', 'audio', 'broll', 'code', 'document', 'other']).optional().describe('Filter to one archive category.'),
+  tag:             z.string().optional().describe('Filter to items that include this exact tag.'),
+  include_archived: z.boolean().optional().describe('Include soft-deleted items. Default false.'),
+  pinned_first:    z.boolean().optional().describe('Sort pinned items to the top. Default false (newest first).'),
+  limit:           z.number().int().min(1).max(1000).optional().describe('Max items to return (default 100).'),
+};
+export const listArchiveSchema = z.object(listArchiveShape);
+
+export const searchArchiveShape = {
+  query:    z.string().describe('Substring to search across title, description, and tags.'),
+  category: z.enum(['video', 'image', 'audio', 'broll', 'code', 'document', 'other']).optional().describe('Restrict search to one category.'),
+  limit:    z.number().int().min(1).max(1000).optional().describe('Max items to return (default 100).'),
+};
+export const searchArchiveSchema = z.object(searchArchiveShape);
+
+export const getArchiveItemShape = {
+  id: z.string().describe('Archive item id from list_archive or register_archive.'),
+};
+export const getArchiveItemSchema = z.object(getArchiveItemShape);
+
+export const fetchArchiveBytesShape = {
+  id:         z.string().describe('Archive item id to download locally.'),
+  dest_path:  z.string().optional().describe('Optional absolute destination path. If omitted, writes to a persistent scratch path under _shared/archive-fetch/.'),
+};
+export const fetchArchiveBytesSchema = z.object(fetchArchiveBytesShape);
+
+export const pinArchiveItemShape = {
+  id:     z.string().describe('Archive item id.'),
+  pinned: z.boolean().describe('Pin (true) or unpin (false) the item.'),
+};
+export const pinArchiveItemSchema = z.object(pinArchiveItemShape);
+
+export const archiveItemDeleteShape = {
+  id:        z.string().describe('Archive item id.'),
+  permanent: z.boolean().optional().describe('When true, permanently delete the MinIO object and DB row. Default false (soft-delete via archived flag).'),
+};
+export const archiveItemDeleteSchema = z.object(archiveItemDeleteShape);
+
+// ── Remote render forge (HyperFrames / Remotion → render-node → R2) ──────────
+export const renderRemoteShape = {
+  engine:       z.enum(['hyperframes', 'remotion']).describe('Which render stack to use. "hyperframes" = an HTML+GSAP composition folder containing index.html (Puppeteer capture → FFmpeg NVENC). "remotion" = a React/TypeScript Remotion project folder.'),
+  project_path: z.string().describe('Absolute local path to the composition folder on the app box. For hyperframes: a folder containing index.html. For remotion: the Remotion project root (containing package.json). node_modules/.git are excluded from upload automatically.'),
+  title:        z.string().optional().describe('Human label for the resulting video in the Media gallery. Defaults to the folder name.'),
+  duration_seconds: z.number().min(0.1).max(600).optional().describe('HyperFrames only: clip length in seconds (default 5).'),
+  fps:          z.number().int().min(1).max(120).optional().describe('HyperFrames only: frames per second (default 30).'),
+  width:        z.number().int().min(16).max(7680).optional().describe('HyperFrames only: viewport width in px (default 1280).'),
+  height:       z.number().int().min(16).max(4320).optional().describe('HyperFrames only: viewport height in px (default 720).'),
+  composition_id: z.string().optional().describe('Remotion only: the composition id to render (default "Main").'),
+  entry:        z.string().optional().describe('Remotion only: entry file relative to the project root (e.g. src/index.ts). Auto-detected when omitted.'),
+  register:     z.boolean().optional().describe('Auto-register the resulting MP4 into the Media gallery (Studio › Media). Default true.'),
+};
+export const renderRemoteSchema = z.object(renderRemoteShape);
+
+// ── OpenMontage stage-driver exec (agent-driven pipeline, no code orchestrator) ──
+// OpenMontage has no single-shot "render" call like hyperframes/remotion — the
+// driving agent (e.g. Sachi Komine) IS the orchestrator: it reads project.json /
+// checkpoint_<stage>.json via get_next_stage() and calls ToolRegistry tools stage
+// by stage. This tool is that primitive: run Python or a shell command inside the
+// vendored ~/openmontage venv on the render node, with provider secrets injected
+// server-side (never exposed to the agent). Same operator-scoped SSH transport
+// render_remote and the Backlot dashboard already use — no render-node SSH needed.
+export const OM_ALLOWED_SECRETS = [
+  'SHARED_VOIDAI_BG_KEY', 'SHARED_VOID_API_FREE_KEY', 'SHARED_KOKORO_API_KEY',
+  'SHARED_FAL_API_KEY', 'SHARED_KIE_API_KEY',
+] as const;
+export const openmontageExecShape = {
+  python_code: z.string().optional().describe('Python source to run via "$HOME/openmontage/.venv/bin/python -c" (base64-wrapped server-side, so no shell-quoting risk). cwd is $HOME/openmontage, so `from lib...`/`from tools...` imports resolve. Provide this OR command, not both.'),
+  command:     z.string().optional().describe('Raw shell command to run instead of python_code (e.g. a direct ffmpeg/npx call). cwd is $HOME/openmontage. Provide this OR python_code, not both.'),
+  secrets:     z.array(z.enum(OM_ALLOWED_SECRETS)).optional().describe('Provider secret NAMES to inject into the remote process env for this call (values never reach the agent). Allowlisted to OpenMontage provider shims only.'),
+  timeout_seconds: z.number().int().min(1).max(3600).optional().describe('Execution ceiling in seconds (default 300). Calls over 480s automatically run DETACHED (launch-and-poll) so they are NOT bound by the ~10m sshd exec ceiling — use this for long multi-stage renders (up to 3600s / 60m).'),
+};
+export const openmontageExecSchema = z.object(openmontageExecShape);
+
 export const writeVaultNoteShape = {
   title:      z.string().describe('4-8 words.'),
   type:       z.string().describe('episodic | semantic | procedural | preference | insight | project | session_summary'),
@@ -148,6 +280,19 @@ export const fsSearchShape = {
   max_results: z.number().int().optional(),
 };
 export const fsSearchSchema = z.object(fsSearchShape);
+
+export const fsEditShape = {
+  path:      z.string(),
+  oldString: z.string().describe('Exact text to find. Must appear exactly once in the file.'),
+  newString: z.string().describe('Text to replace it with.'),
+};
+export const fsEditSchema = z.object(fsEditShape);
+
+export const globShape = {
+  pattern: z.string().describe("Glob pattern, e.g. 'src/**/*.ts' or '**/*.md'."),
+  path:    z.string().optional().describe('Base directory to search from. Defaults to the workspace root.'),
+};
+export const globSchema = z.object(globShape);
 
 // ── Session uploads (files the user sent from Discord / web GUI) ────────────
 
@@ -310,6 +455,8 @@ export const manageTaskShape = {
   feature:       z.string().optional().describe('Free-text feature label that cuts across projects (e.g. "auth", "billing").'),
   sources:       z.unknown().optional().describe('JSON array of citations. Each entry typically {url, title, relevance}. Hooks NeuroVault retrievals onto the task.'),
   code_examples: z.unknown().optional().describe('JSON array of code snippet references. Each entry typically {file, line, summary}.'),
+  verification_mode: z.enum(['reconcile', 'review']).optional().describe("Dispatcher-only discriminator for the deterministic reconcile gate. 'reconcile' asserts main HEAD moved during the task; 'review' bypasses that assertion because a review is supposed to leave main untouched. Ignored on update — a task cannot mutate its own mode."),
+  dependsOn:     z.array(z.string()).optional().describe('Blocker task ids this task depends on. The task will NOT be claimable (or transitionable to "doing") until EVERY blocker is "done". Cycles and self-edges are rejected. On update this REPLACES the existing blocker set; pass [] to clear all blockers.'),
   hard:          z.boolean().optional().describe('On delete: when true, permanently remove. Default false (archive).'),
 };
 export const manageTaskSchema = z.object(manageTaskShape);
@@ -426,8 +573,8 @@ export const browserlessRunJsSchema = z.object(browserlessRunJsShape);
 export const scheduleJobShape = {
   name:                    z.string().describe('Human-readable job name'),
   schedule:                z.string().optional().describe('Cron expression e.g. "0 9 * * *". Omit for inbound-webhook-only jobs.'),
-  job_type:                z.enum(['agent_message', 'outbound_webhook', 'shell_command', 'n8n_workflow', 'kestra_flow']).describe('Type of job to run'),
-  config:                  z.string().describe('JSON string with type-specific config. agent_message: {agentId,message,sessionId?}. outbound_webhook: {url,method?,headers?,body?}. shell_command: {command,timeout?}. n8n_workflow: {baseUrl,apiKey,workflowId,payload?}. kestra_flow: {namespace,flowId,inputs?,baseUrl?,apiKey?}'),
+  job_type:                z.enum(['agent_message', 'outbound_webhook', 'shell_command', 'n8n_workflow', 'kestra_flow', 'create_task']).describe('Type of job to run'),
+  config:                  z.string().describe('JSON string with type-specific config. agent_message: {agentId,message,sessionId?}. outbound_webhook: {url,method?,headers?,body?}. shell_command: {command,timeout?}. n8n_workflow: {baseUrl,apiKey,workflowId,payload?}. kestra_flow: {namespace,flowId,inputs?,baseUrl?,apiKey?}. create_task: {title,description?,agentId?,projectId?,priority?,dependsOn?,coalesceKey?} — lands a tracked task on the Mission Control board (claim→doing→review→done) instead of firing an ephemeral chat; by default coalesces to one open instance per routine.'),
   description:             z.string().optional().describe('Optional human-readable description'),
   on_complete_webhook_url: z.string().optional().describe('URL to POST to after each successful run'),
   enable_inbound:          z.boolean().optional().describe('Generate an inbound webhook slug so external services can trigger this job'),
@@ -435,7 +582,7 @@ export const scheduleJobShape = {
 export const scheduleJobSchema = z.object(scheduleJobShape);
 
 export const listJobsShape = {
-  type:    z.enum(['agent_message', 'outbound_webhook', 'shell_command', 'n8n_workflow', 'kestra_flow']).optional().describe('Filter by job type'),
+  type:    z.enum(['agent_message', 'outbound_webhook', 'shell_command', 'n8n_workflow', 'kestra_flow', 'create_task']).optional().describe('Filter by job type'),
   enabled: z.boolean().optional().describe('Filter by enabled status'),
 };
 export const listJobsSchema = z.object(listJobsShape);
@@ -501,6 +648,71 @@ export const getAttachmentParsedShape = {
 };
 export const getAttachmentParsedSchema = z.object(getAttachmentParsedShape);
 
+export const searchDocumentShape = {
+  id:    z.string().describe('The attachment_id of the uploaded document to search — the UUID after "attachment_id:" in the system context block.'),
+  query: z.string().describe('A natural-language question or keywords. Returns the most semantically relevant passages from the document instead of the whole thing — use this for LARGE pre-parsed documents flagged "use search_document" rather than dumping the full markdown into context.'),
+  top_k: z.number().int().min(1).max(20).optional().describe('How many passages to return (default 6).'),
+};
+export const searchDocumentSchema = z.object(searchDocumentShape);
+
+// ── Notebook / collection RAG (spec: native-notebook-rag) ──────────────────
+export const notebookCreateShape = {
+  title:       z.string().describe('Name of the notebook (collection of documents).'),
+  description: z.string().optional().describe('Optional description of what the notebook is for.'),
+};
+export const notebookCreateSchema = z.object(notebookCreateShape);
+
+export const notebookListShape = {} as const;
+export const notebookListSchema = z.object(notebookListShape);
+
+export const notebookUseShape = {
+  notebook_id: z.string().describe('The notebook id to make the active notebook for this conversation.'),
+};
+export const notebookUseSchema = z.object(notebookUseShape);
+
+export const notebookStatusShape = {} as const;
+export const notebookStatusSchema = z.object(notebookStatusShape);
+
+export const notebookAddSourceShape = {
+  notebook_id: z.string().optional().describe('Notebook id. If omitted, uses the active notebook for this conversation.'),
+  source:      z.string().describe('An uploaded document attachment_id, OR an https URL to a document (PDF/DOCX/HTML/MD/TXT). YouTube URLs are not supported in v1.'),
+};
+export const notebookAddSourceSchema = z.object(notebookAddSourceShape);
+
+export const notebookSourceListShape = {
+  notebook_id: z.string().optional().describe('Notebook id. If omitted, uses the active notebook.'),
+};
+export const notebookSourceListSchema = z.object(notebookSourceListShape);
+
+export const notebookAskShape = {
+  notebook_id: z.string().optional().describe('Notebook id. If omitted, uses the active notebook.'),
+  question:    z.string().describe('The question to answer using RAG across ALL documents in the notebook.'),
+  top_k:       z.number().int().min(1).max(30).optional().describe('How many passages to retrieve (default 10).'),
+};
+export const notebookAskSchema = z.object(notebookAskShape);
+
+// ── SSH machine connections (spec: ssh-machine-connections) ────────────────
+export const sshRunShape = {
+  machine: z.string().describe('Registered machine name or id (from the Connect → Machines tab).'),
+  command: z.string().describe('Shell command to run on the remote host.'),
+  timeout_ms: z.number().int().min(1000).max(300000).optional().describe('Command timeout in ms (default 60000, max 300000).'),
+};
+export const sshRunSchema = z.object(sshRunShape);
+
+export const sshUploadShape = {
+  machine: z.string().describe('Registered machine name or id.'),
+  local_path: z.string().describe('Absolute path of the local file to upload.'),
+  remote_path: z.string().describe('Destination absolute path on the remote host.'),
+};
+export const sshUploadSchema = z.object(sshUploadShape);
+
+export const sshDownloadShape = {
+  machine: z.string().describe('Registered machine name or id.'),
+  remote_path: z.string().describe('Absolute path of the remote file to download.'),
+  local_path: z.string().describe('Destination absolute path on the local host.'),
+};
+export const sshDownloadSchema = z.object(sshDownloadShape);
+
 export const generateImageShape = {
   prompt:  z.string().describe('What to generate.'),
   quality: z.enum(['standard', 'hd']).optional()
@@ -519,6 +731,20 @@ export const generateImageVeniceShape = {
 };
 export const generateImageVeniceSchema = z.object(generateImageVeniceShape);
 
+// ── Venice AI image EDIT (aka inpaint) — separate endpoint, separate model list ──
+export const veniceImageEditShape = {
+  prompt:        z.string().describe('Text directions for the edit (e.g. "change the sky to a sunrise", "remove the tree"). Short, descriptive prompts work best.'),
+  input_image:   z.string().describe('Required. The image to edit. Accepts: an https URL; a session upload id (from list_uploads); a local file path (absolute, or relative to your workspace, ending in .png/.jpg/.jpeg/.webp/.gif/.bmp); a base64 string; or a "data:image/...;base64," URI. PREFER the upload id or file path for local images — the server reads the file directly, so the bytes never have to be inlined into your own context (which is slow and can be rejected for large images).'),
+  model:         z.string().optional().describe('Venice edit model id. Omit to use Venice\'s built-in default. Options: firered-image-edit, qwen-edit-uncensored, grok-imagine-edit, grok-imagine-quality-edit, qwen-image-2-edit, qwen-image-2-pro-edit, wan-2-7-pro-edit, flux-2-max-edit, gpt-image-2-edit, gpt-image-1-5-edit, nano-banana-2-edit, nano-banana-pro-edit, nano-banana-2-lite-edit, luma-uni-1-edit, luma-uni-1-max-edit, seedream-v5-lite-edit, seedream-v5-pro-edit, seedream-v4-edit.'),
+  aspect_ratio:  z.enum(['auto', '1:1', '3:2', '16:9', '21:9', '9:16', '2:3', '3:4', '4:5']).optional().describe('Output aspect ratio. "auto" (or omit) infers the closest supported ratio from the input image; set explicitly when exact output dimensions are required.'),
+  resolution:    z.string().optional().describe('Resolution tier, e.g. "1K", "2K", "4K". Supported values vary by model. Default "1K".'),
+  output_format: z.enum(['jpeg', 'jpg', 'png', 'webp']).optional().describe('Output format. When omitted, inferred from resolution: PNG for 1K, JPEG for 2K/4K.'),
+  quality:       z.enum(['low', 'medium', 'high']).optional().describe('Quality tier — currently only honored by gpt-image-2-edit (default "high" for that model). Ignored by other models.'),
+  alt:           z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),
+  caption:       z.string().optional().describe('Optional caption shown below the image.'),
+};
+export const veniceImageEditSchema = z.object(veniceImageEditShape);
+
 export const generateSpeechShape = {
   text:  z.string().describe('Text to synthesize into speech.'),
   voice: z.string().optional().describe('xAI voice id override. Omit to use the default configured voice.'),
@@ -529,7 +755,7 @@ export const generateSpeechSchema = z.object(generateSpeechShape);
 export const abacusImageShape = {
   prompt:       z.string().describe('Text describing the image to generate, or the edit/upscale instruction.'),
   operation:    z.enum(['generate', 'edit', 'upscale']).optional().describe("Default 'generate'. 'edit' transforms input_image per the prompt; 'upscale' increases its resolution. edit/upscale REQUIRE input_image."),
-  input_image:  z.string().optional().describe('For edit/upscale: the source image as an https URL or base64 data URL.'),
+  input_image:  z.string().optional().describe('For edit/upscale: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a "data:image/...;base64," URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context.'),
   model:        z.string().optional().describe('Abacus image model id (free-form string — pass any id below). Defaults per operation: generate→flux_pro, edit→flux_kontext_edit, upscale→magnific. AVAILABLE MODELS — generate: flux_pro, flux_pro_ultra, flux2, flux2_pro, flux_kontext, flux_pro_canny, flux_pro_depth, gpt_image15, gpt_image2, imagen, nano_banana, nano_banana2, nano_banana_lite, nano_banana_pro, ideogram, ideogram_character, midjourney, seedream, recraft, recraft_svg, dreamina, hunyuan_image, imagine_art, grok_imagine_image, grok_imagine_image_quality. edit (need input_image): flux_kontext_edit, gpt_image_edit, gpt_image2_edit, qwen_image_edit, recraft_vectorize. upscale (need input_image): magnific. Known-UNSUPPORTED (will fail, do not use): dalle, wan27. Live list: /api/models?provider=abacus (media_type=image).'),
   num_images:   z.number().int().min(1).max(4).optional().describe('How many images to generate (1-4, generate only). Default 1.'),
   aspect_ratio: z.string().optional().describe('e.g. "1:1", "16:9", "2:3" — varies by model.'),
@@ -543,7 +769,7 @@ export const abacusImageSchema = z.object(abacusImageShape);
 export const voidaiImageShape = {
   prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
   operation:    z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image."),
-  input_image:  z.string().optional().describe('For edit: the source image as an https URL or a base64 data URL. Ignored for generate.'),
+  input_image:  z.string().optional().describe('For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a "data:image/...;base64," URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.'),
   aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. "1:1", "16:9", "2:3", "3:4". Default "1:1".'),
   resolution:   z.enum(['STANDARD', '2K', '4K']).optional().describe('Output resolution. STANDARD≈1K (default), plus 2K and 4K.'),
   model:        z.string().optional().describe('VoidAI image model id. Default "gemini-3.1-flash-image" (Nano-Banana). Other Gemini image ids like "gemini-3-pro-image" also work.'),
@@ -552,11 +778,50 @@ export const voidaiImageShape = {
 };
 export const voidaiImageSchema = z.object(voidaiImageShape);
 
+// ── KIE AI media-job image tool (async: submit→poll→download bytes) ──────────
+export const kieImageShape = {
+  prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
+  operation:    z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image."),
+  input_image:  z.string().optional().describe('For edit: the source image. KIE\'s job queue REQUIRES a public https URL — pass one directly, or pass a session upload id (from list_uploads), a local file path, or a base64/data: URI and the server will stage it to a public URL automatically. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.'),
+  aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. "1:1", "16:9", "3:4". Default "1:1".'),
+  output_format:z.enum(['png', 'jpeg']).optional().describe('Output format. Default "png".'),
+  model:        z.string().optional().describe('KIE media model id (unified createTask API). Default per operation: generate→"google/nano-banana", edit→"google/nano-banana-edit". AVAILABLE MODELS (live-verified 2026-07-14) — generate: google/nano-banana, google/imagen4, google/imagen4-fast, google/imagen4-ultra, bytedance/seedream, bytedance/seedream-v4-text-to-image, ideogram/v3-text-to-image, qwen/text-to-image, qwen2/text-to-image, grok-imagine/text-to-image. edit (need input_image): google/nano-banana-edit, bytedance/seedream-v4-edit, seedream/4.5-edit, seedream/5-lite-image-to-image, seedream/5-pro-image-to-image, ideogram/v3-edit, ideogram/v3-remix, ideogram/character-edit, qwen/image-edit, qwen/image-to-image, qwen2/image-edit, grok-imagine/image-to-image. NOTE: gpt-image and flux are NOT on KIE\'s unified API — use voidai_gpt_image / fal_image for those.'),
+  alt:          z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),
+  caption:      z.string().optional().describe('Optional caption shown below the image.'),
+};
+export const kieImageSchema = z.object(kieImageShape);
+
+// ── fal media-queue image tool (async: submit→poll→download bytes) ───────────
+export const falImageShape = {
+  prompt:      z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
+  operation:   z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image."),
+  input_image: z.string().optional().describe('For edit: the source image. fal\'s queue REQUIRES a public https URL — pass one directly, or pass a session upload id (from list_uploads), a local file path, or a base64/data: URI and the server will stage it to a public URL automatically. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.'),
+  image_size:  z.string().optional().describe('fal image_size, e.g. "square_hd", "landscape_16_9", "portrait_4_3". Model-dependent. Generate only — edit models use aspect_ratio (baked into the prompt/model default) instead.'),
+  num_images:  z.number().int().optional().describe('How many images to generate. Default 1.'),
+  model:       z.string().optional().describe('fal model id (endpoint_id from fal\'s v1/models catalog). Default per operation: generate→"fal-ai/flux/schnell", edit→"fal-ai/nano-banana/edit". Others (generate, live-verified 2026-07-14): fal-ai/flux/dev, fal-ai/flux-pro/v1.1, fal-ai/flux-pro/v1.1-ultra, fal-ai/flux-2, fal-ai/flux-2-pro, fal-ai/nano-banana, fal-ai/nano-banana-2, fal-ai/nano-banana-pro, fal-ai/bytedance/seedream/v4/text-to-image, fal-ai/bytedance/seedream/v4.5/text-to-image, bytedance/seedream/v5/pro/text-to-image, fal-ai/ideogram/v3, fal-ai/recraft/v3/text-to-image, fal-ai/z-image/turbo, openai/gpt-image-2, xai/grok-imagine-image. Others (edit): fal-ai/nano-banana-2/edit, fal-ai/nano-banana-pro/edit, fal-ai/flux-pro/kontext, fal-ai/flux-pro/kontext/max, fal-ai/flux-2/edit, fal-ai/flux-2-pro/edit, fal-ai/bytedance/seedream/v4/edit, fal-ai/bytedance/seedream/v4.5/edit, bytedance/seedream/v5/pro/edit, fal-ai/gemini-25-flash-image/edit, fal-ai/gemini-3-pro-image-preview/edit, fal-ai/gpt-image-1.5/edit, openai/gpt-image-2/edit, xai/grok-imagine-image/edit.'),
+  safety_tolerance: z.enum(['1', '2', '3', '4', '5', '6']).optional().describe('Content filter strictness (strictest→most permissive). Only honored by the Nano-Banana family (default "4") and Pro-tier FLUX models like flux-pro/v1.1*, flux-2-pro/-max/-flex (default "2"). Silently ignored by models that don\'t expose it (flux/schnell, flux/dev, flux-2 base, gpt-image-*, seedream, ideogram, recraft, qwen-image, grok-imagine-image).'),
+  alt:         z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),
+  caption:     z.string().optional().describe('Optional caption shown below the image.'),
+};
+export const falImageSchema = z.object(falImageShape);
+
+// ── OpenArt MCP image tool (async: submit→wait→download bytes; gallery-routed) ─
+export const openartImageShape = {
+  prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
+  operation:    z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image, mode text2image). 'edit' (mode image2image) transforms input_image per the prompt and REQUIRES input_image."),
+  input_image:  z.string().optional().describe('For edit: the source/reference image. Pass a session upload id (from list_uploads), a local file path, a base64/data: URI, or a public https URL — the server reads the bytes and uploads them to OpenArt via a presigned PUT. PREFER an upload id or file path for local images (read server-side, never inlined into your context). Ignored for generate.'),
+  model:        z.string().optional().describe('OpenArt model id (NOT displayName). One of: nano-banana-2, nano-banana-pro, nano-banana-2-lite (default), gpt-image-2, byte-plus-seedream-4-5, byte-plus-seedream-5-lite. All support both generate and edit.'),
+  aspect_ratio: z.string().optional().describe('Aspect ratio: one of 21:9, 16:9, 3:2, 4:3, 5:4, 1:1 (default), 4:5, 3:4, 2:3, 9:16.'),
+  alt:          z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),
+  caption:      z.string().optional().describe('Optional caption shown below the image.'),
+};
+export const openartImageSchema = z.object(openartImageShape);
+
 // ── VoidAI gpt-image (OpenAI Images API) image tool ─────────────────────────
 export const voidaiGptImageShape = {
   prompt:      z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
   operation:   z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image."),
-  input_image: z.string().optional().describe('For edit: the source image as an https URL or a base64 data URL. Ignored for generate.'),
+  input_image: z.string().optional().describe('For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a "data:image/...;base64," URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.'),
   mask:        z.string().optional().describe('For edit: optional mask (https URL or base64 data URL). Transparent areas of the mask mark the region to change (inpaint). Ignored for generate.'),
   size:        z.enum(['1024x1024', '1024x1536', '1536x1024', '512x512']).optional().describe('Output size. Default "1024x1024"; 1024x1536 (portrait) and 1536x1024 (landscape) also supported.'),
   model:       z.string().optional().describe('VoidAI gpt-image model id. Default "gpt-image-2". Others: "gpt-image-1.5", "gpt-image-1".'),
@@ -572,7 +837,7 @@ export const voidaiGptImageSchema = z.object(voidaiGptImageShape);
 export const voidaiGeminiProImageShape = {
   prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
   operation:    z.enum(['generate', 'edit']).optional().describe("Default 'generate' (text→image). 'edit' transforms input_image per the prompt and REQUIRES input_image."),
-  input_image:  z.string().optional().describe('For edit: the source image as an https URL or a base64 data URL. Ignored for generate.'),
+  input_image:  z.string().optional().describe('For edit: the source image. Accepts an https URL, a session upload id (from list_uploads), a local file path, a base64 string, or a "data:image/...;base64," URI. PREFER the upload id or file path for local images — read server-side, never inlined into your context. Ignored for generate.'),
   aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. "1:1", "16:9", "2:3", "3:4". Default "1:1".'),
   resolution:   z.enum(['STANDARD', '2K', '4K']).optional().describe('Output resolution. STANDARD≈1K (default), plus 2K and 4K. Gemini Pro is the right model for 2K/4K.'),
   alt:          z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),

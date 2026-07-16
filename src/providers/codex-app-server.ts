@@ -5,14 +5,16 @@
 // `codex app-server` JSON-RPC 2.0 server over stdio. Codex agents get full
 // NeuroClaw tool access via `dynamicTools` (registered on thread/start) +
 // `item/tool/call` server-initiated callbacks and true token streaming via
-// `item/agentMessage/delta`. Each turn runs on a FRESH ephemeral thread whose
-// developerInstructions carry the caller's freshly-rebuilt system prompt, so the
-// dynamic prompt is never stale (NeuroClaw owns the conversation history). The
-// process is shared across all Codex agents; per-turn tool calls are routed to the
-// correct agent/session via a threadId → ToolContext map.
+// `item/agentMessage/delta`.
 //
-// Spec: docs/specs/codex-app-server-spec.md. Protocol shapes verified against
-// codex 0.136.0 via `codex app-server generate-ts`.
+// Threads are PERSISTENT per (sessionId, agentId): a durable SQLite registry
+// maps each pair to a Codex threadId, and every turn after the first calls
+// `thread/resume` to refresh developerInstructions/model before `turn/start`.
+// Only a change in the tool-name fingerprint forces a fresh `thread/start`;
+// prompt/model changes ride the free per-turn resume override.
+//
+// Spec: .planning/specs/2026-07-09-codex-hybrid-persistent-thread.md
+// Protocol shapes verified against codex 0.128.0 via `codex app-server generate-ts`.
 //
 // Tool building + dispatch deliberately reuse the OpenAI adapter
 // (buildOpenAiTools / dispatchOpenAiTool) so the dynamicTools schemas are the
@@ -24,9 +26,11 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { config } from '../config';
+import { getDb } from '../db';
 import { logger } from '../utils/logger';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { createStreamScrubber } from '../broker/scrubber';
@@ -34,6 +38,7 @@ import { buildOpenAiTools, dispatchOpenAiTool } from '../tools/adapters/openai';
 import { buildComposioOpenAiTools } from '../tools/adapters/composio';
 import type { ToolContext } from '../tools/context';
 import type { CodexCliUsage } from './codex-cli';
+import type Anthropic from '@anthropic-ai/sdk';
 
 // ── Error types ───────────────────────────────────────────────────────────
 export class CodexAppServerAuthError      extends Error { constructor(m = 'codex login required (run `codex login`)') { super(m); this.name = 'CodexAppServerAuthError'; } }
@@ -203,8 +208,8 @@ class CodexAppServerProcess {
 
 // ── Module state ──────────────────────────────────────────────────────────
 let _instance: CodexAppServerProcess | null = null;
-// Per-turn tool-call routing: each (ephemeral) thread maps to the ToolContext of
-// the agent/session that started it, so item/tool/call dispatches with the CORRECT
+// Per-turn tool-call routing: each thread maps to the ToolContext of the
+// agent/session that started it, so item/tool/call dispatches with the CORRECT
 // per-turn context even though the app-server process is shared across all Codex
 // agents. (Without this, a single shared dispatch handler would attribute every
 // agent's tool calls to whichever agent started the process first.)
@@ -214,6 +219,277 @@ let _toolDispatchRegistered = false;
 function getProcess(): CodexAppServerProcess {
   if (!_instance) _instance = new CodexAppServerProcess();
   return _instance;
+}
+
+// ── Persistent thread registry ───────────────────────────────────────────────
+// Non-ephemeral Codex threads survive a `codex app-server` child-process restart
+// on disk under ~/.codex/sessions/, but we need a durable map from our
+// (sessionId, agentId) pair back to the threadId. The registry is backed by the
+// `codex_threads` SQLite table (created in db.ts) with an in-memory hot cache.
+//
+// Lifecycle:
+//   * tool fingerprint unchanged  -> thread/resume + turn/start (native memory)
+//   * tool fingerprint changed    -> thread/archive old, thread/start fresh
+//
+// The tool-name fingerprint is the ONLY rebuild trigger. developerInstructions
+// and model are refreshed unconditionally every turn via thread/resume.
+
+interface CodexThreadRegistryEntry {
+  sessionId: string;
+  agentId: string;
+  threadId: string;
+  toolFingerprint: string;
+  lastUsedAt: string;
+}
+
+const CODEX_THREAD_REGISTRY = new Map<string, CodexThreadRegistryEntry>();
+let _registryLoaded = false;
+
+function registryKey(sessionId: string, agentId: string): string {
+  return `${sessionId}:${agentId ?? ''}`;
+}
+
+function loadThreadRegistry(): void {
+  if (_registryLoaded) return;
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT session_id AS sessionId, agent_id AS agentId, thread_id AS threadId, tool_fingerprint AS toolFingerprint, last_used_at AS lastUsedAt FROM codex_threads'
+    ).all() as CodexThreadRegistryEntry[];
+    for (const row of rows) {
+      CODEX_THREAD_REGISTRY.set(registryKey(row.sessionId, row.agentId), row);
+    }
+    _registryLoaded = true;
+    logger.debug('codex app-server: loaded thread registry', { count: rows.length });
+  } catch (err) {
+    logger.error('codex app-server: failed to load thread registry', { error: (err as Error).message });
+  }
+}
+
+function lookupThread(sessionId: string, agentId: string): CodexThreadRegistryEntry | null {
+  loadThreadRegistry();
+  return CODEX_THREAD_REGISTRY.get(registryKey(sessionId, agentId)) ?? null;
+}
+
+function upsertThread(entry: CodexThreadRegistryEntry): void {
+  CODEX_THREAD_REGISTRY.set(registryKey(entry.sessionId, entry.agentId), entry);
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO codex_threads (session_id, agent_id, thread_id, tool_fingerprint, last_used_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, agent_id) DO UPDATE SET
+         thread_id = excluded.thread_id,
+         tool_fingerprint = excluded.tool_fingerprint,
+         last_used_at = excluded.last_used_at`
+    ).run(entry.sessionId, entry.agentId, entry.threadId, entry.toolFingerprint, entry.lastUsedAt);
+  } catch (err) {
+    logger.error('codex app-server: failed to persist thread registry', { error: (err as Error).message });
+  }
+}
+
+function deleteThread(sessionId: string, agentId: string): void {
+  CODEX_THREAD_REGISTRY.delete(registryKey(sessionId, agentId));
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM codex_threads WHERE session_id = ? AND agent_id = ?').run(sessionId, agentId);
+  } catch (err) {
+    logger.error('codex app-server: failed to delete thread registry', { error: (err as Error).message });
+  }
+}
+
+function computeToolFingerprint(tools: DynamicToolSpec[]): string {
+  const names = tools.map((t) => t.name).sort();
+  return createHash('sha256').update(JSON.stringify(names)).digest('hex');
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+// Per-thread turn lock: only one turn may run on a given persistent thread at a
+// time. Codex threads are stateful; concurrent turns on the same threadId would
+// interleave and corrupt history.
+class Mutex {
+  private locked = false;
+  private queue: Array<() => void> = [];
+  async acquire(): Promise<() => void> {
+    if (!this.locked) {
+      this.locked = true;
+      return this.releaseFn();
+    }
+    return new Promise((resolve) => {
+      this.queue.push(() => resolve(this.releaseFn()));
+    });
+  }
+  private releaseFn(): () => void {
+    return () => {
+      if (this.queue.length > 0) {
+        const next = this.queue.shift()!;
+        next();
+      } else {
+        this.locked = false;
+      }
+    };
+  }
+}
+
+const threadMutexes = new Map<string, Mutex>();
+
+function getThreadMutex(threadId: string): Mutex {
+  if (!threadMutexes.has(threadId)) threadMutexes.set(threadId, new Mutex());
+  return threadMutexes.get(threadId)!;
+}
+
+interface AnthropicTextBlock { type: 'text'; text: string; }
+interface AnthropicToolUseBlock { type: 'tool_use'; id: string; name: string; input: unknown; }
+interface AnthropicToolResultBlock { type: 'tool_result'; tool_use_id: string; content: string | unknown; }
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock | { type: string };
+
+// Convert Anthropic-shaped history (used by the Claude CLI path and stored in
+// our DB) into Responses-API items that can be injected into a fresh Codex
+// thread. This preserves tool calls/results instead of stripping them like the
+// old text flatten.
+function anthropicHistoryToCodexItems(history: Anthropic.Messages.MessageParam[]): unknown[] {
+  const items: unknown[] = [];
+  for (const msg of history) {
+    if (msg.role === 'user') {
+      const content: unknown[] = [];
+      if (typeof msg.content === 'string') {
+        if (msg.content.trim()) content.push({ type: 'input_text', text: msg.content });
+      } else {
+        for (const block of msg.content as AnthropicContentBlock[]) {
+          if (block.type === 'text' && (block as AnthropicTextBlock).text?.trim()) {
+            content.push({ type: 'input_text', text: (block as AnthropicTextBlock).text });
+          } else if (block.type === 'tool_result') {
+            const tb = block as AnthropicToolResultBlock;
+            const resultText = typeof tb.content === 'string' ? tb.content : JSON.stringify(tb.content ?? '');
+            content.push({ type: 'input_text', text: `[tool_result ${tb.tool_use_id}]: ${resultText}` });
+          }
+        }
+      }
+      if (content.length > 0) items.push({ type: 'message', role: 'user', content });
+    } else if (msg.role === 'assistant') {
+      const content: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      if (typeof msg.content === 'string') {
+        if (msg.content.trim()) content.push({ type: 'output_text', text: msg.content });
+      } else {
+        for (const block of msg.content as AnthropicContentBlock[]) {
+          if (block.type === 'text' && (block as AnthropicTextBlock).text?.trim()) {
+            content.push({ type: 'output_text', text: (block as AnthropicTextBlock).text });
+          } else if (block.type === 'tool_use') {
+            const tb = block as AnthropicToolUseBlock;
+            toolCalls.push({
+              type: 'function_call',
+              call_id: tb.id,
+              name: tb.name,
+              arguments: JSON.stringify(tb.input ?? {}),
+            });
+          }
+        }
+      }
+      if (content.length > 0) items.push({ type: 'message', role: 'assistant', content });
+      for (const tc of toolCalls) items.push(tc);
+    }
+  }
+  return items;
+}
+
+async function startOrResumeThread(
+  proc: CodexAppServerProcess,
+  ctx: ToolContext,
+  systemPrompt: string | undefined,
+  model: string | undefined,
+  cwd: string,
+  dynamicTools: DynamicToolSpec[],
+): Promise<{ threadId: string; isFresh: boolean }> {
+  const sessionId = ctx.sessionId ?? '';
+  const agentId = ctx.agentId ?? '';
+  const fingerprint = computeToolFingerprint(dynamicTools);
+  const existing = lookupThread(sessionId, agentId);
+
+  if (existing && existing.toolFingerprint === fingerprint) {
+    await proc.request('thread/resume', {
+      threadId: existing.threadId,
+      developerInstructions: systemPrompt,
+      model,
+    });
+    upsertThread({ ...existing, lastUsedAt: nowIso() });
+    logger.debug('codex app-server: resumed persistent thread', { threadId: existing.threadId, sessionId, agentId });
+    return { threadId: existing.threadId, isFresh: false };
+  }
+
+  if (existing) {
+    logger.info('codex app-server: tool roster changed, archiving old thread', {
+      sessionId, agentId, oldThreadId: existing.threadId,
+    });
+    proc.request('thread/archive', { threadId: existing.threadId }).catch(() => {});
+    deleteThread(sessionId, agentId);
+  }
+
+  const startParams: Record<string, unknown> = {
+    cwd,
+    developerInstructions: systemPrompt,
+    dynamicTools,
+    approvalPolicy: 'never',
+    ephemeral: false,
+    sandbox: config.codex.sandboxMode,
+  };
+  if (model) startParams.model = model;
+  const res = await proc.request<{ thread: { id: string } }>('thread/start', startParams);
+  const threadId = res.thread.id;
+  upsertThread({ sessionId, agentId, threadId, toolFingerprint: fingerprint, lastUsedAt: nowIso() });
+  logger.info('codex app-server: started persistent thread', { threadId, sessionId, agentId });
+  return { threadId, isFresh: true };
+}
+
+async function injectHistoryItems(proc: CodexAppServerProcess, threadId: string, history: Anthropic.Messages.MessageParam[]): Promise<void> {
+  const items = anthropicHistoryToCodexItems(history);
+  if (items.length === 0) return;
+  try {
+    await proc.request('thread/inject_items', { threadId, items });
+    logger.debug('codex app-server: injected history items', { threadId, count: items.length });
+  } catch (err) {
+    logger.warn('codex app-server: failed to inject history items', { threadId, error: (err as Error).message });
+  }
+}
+
+let evictionTimer: NodeJS.Timeout | null = null;
+const CODEX_THREAD_IDLE_TTL_HOURS = 24;
+
+/** Evict idle persistent threads: archive the Codex thread and delete the row. */
+export function evictIdleCodexThreads(): { archived: number; errors: number } {
+  const cutoff = new Date(Date.now() - CODEX_THREAD_IDLE_TTL_HOURS * 60 * 60 * 1000).toISOString();
+  const db = getDb();
+  let archived = 0;
+  let errors = 0;
+  try {
+    const rows = db.prepare(
+      'SELECT session_id, agent_id, thread_id FROM codex_threads WHERE last_used_at < ?'
+    ).all(cutoff) as Array<{ session_id: string; agent_id: string; thread_id: string }>;
+    for (const row of rows) {
+      try {
+        getProcess().request('thread/archive', { threadId: row.thread_id }).catch(() => {});
+        deleteThread(row.session_id, row.agent_id);
+        archived++;
+      } catch {
+        errors++;
+      }
+    }
+    if (archived > 0) {
+      logger.info('codex app-server: evicted idle threads', { archived, errors });
+    }
+  } catch (err) {
+    logger.error('codex app-server: eviction sweep failed', { error: (err as Error).message });
+    errors++;
+  }
+  return { archived, errors };
+}
+
+function startEvictionScheduler(): void {
+  if (evictionTimer) return;
+  evictionTimer = setInterval(() => evictIdleCodexThreads(), 60 * 60 * 1000);
 }
 
 // Strip OPENAI_API_KEY so Codex uses ~/.codex/auth.json subscription tokens.
@@ -320,8 +596,8 @@ function createTurnSubscription(proc: CodexAppServerProcess, threadId: string) {
   // that never sends turn/completed) keeps `drain` blocked on its wake promise
   // forever — the SSE stream never closes, the session queue jams, and the run
   // heartbeats "thinking" indefinitely. Mirror codex-cli's hard cap
-  // (config.codex.timeoutMs). On expiry we fail the turn; the caller's finally
-  // archives the ephemeral thread, which stops codex working on it.
+  // (config.codex.timeoutMs). On expiry we fail the turn; the persistent thread
+  // survives and the next turn will resume it.
   let hardTimer: ReturnType<typeof setTimeout> | null = null;
   const failTimeout = () => {
     if (done) return;
@@ -391,6 +667,13 @@ export interface CodexAppServerOptions {
   sessionId?:    string | null;
   cwd?:          string;
   onUsage?:      (u: CodexCliUsage) => void;
+  /**
+   * Prior conversation history (Anthropic-shaped). When supplied, a fresh
+   * persistent thread is seeded with structured Responses-API items via
+   * `thread/inject_items` so tool calls/results are preserved. Resumed threads
+   * already hold their native history and ignore this field.
+   */
+  history?:      Anthropic.Messages.MessageParam[];
 }
 
 export async function* streamCodexAppServerChat(
@@ -399,49 +682,48 @@ export async function* streamCodexAppServerChat(
   const ctx: ToolContext = { agentId: opts.agentId ?? null, sessionId: opts.sessionId ?? null };
   const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'codex-app-server', buildChildEnv());
   const scrubber = createStreamScrubber(sub.resolved);
+  const cwd = opts.cwd ?? process.cwd();
 
   const proc = getProcess();
   // Always await — start() is idempotent and a no-op on a warm process, but on
   // a cold/in-flight start it makes concurrent turns share one handshake so none
   // sends thread/start before initialize completes.
   await proc.start(buildChildEnv());
+  startEvictionScheduler();
 
   registerToolDispatch(proc);   // no-op after first call (guarded); ctx-agnostic
 
-  // Fresh EPHEMERAL thread per turn. developerInstructions carry the CURRENT system
-  // prompt (the caller rebuilds it every turn — team/memory/inbox + recent history),
-  // so the dynamic prompt is never stale, matching the CLI path. dynamicTools are
-  // this agent's visible tools. NeuroClaw owns conversation history; the Codex
-  // thread is transient. `dynamicTools`/`ephemeral` pass through though they are
-  // absent from the generated ThreadStartParams bindings (verified live).
-  const startParams: Record<string, unknown> = {
-    cwd:                   opts.cwd ?? process.cwd(),
-    developerInstructions: opts.systemPrompt,
-    dynamicTools:          await buildDynamicTools(ctx),
-    approvalPolicy:        'never',
-    ephemeral:             true,
-  };
-  if (opts.model) startParams.model = opts.model;
-  const res = await proc.request<{ thread: { id: string } }>('thread/start', startParams);
-  const threadId = res.thread.id;
+  const dynamicTools = await buildDynamicTools(ctx);
+  const { threadId, isFresh } = await startOrResumeThread(
+    proc, ctx, opts.systemPrompt, opts.model, cwd, dynamicTools,
+  );
   // Route this thread's tool calls to THIS turn's agent/session.
   threadCtx.set(threadId, ctx);
 
-  // Attach listeners BEFORE starting the turn so no agentMessage/delta is missed.
-  const turnSub = createTurnSubscription(proc, threadId);
-  const turnPromise = proc.request('turn/start', {
-    threadId,
-    input: [{ type: 'text', text: opts.prompt }],
-  }).catch((e: Error) => { turnSub.fail(e); });
+  // Seed a fresh thread with structured history so prior turns (including tool
+  // context) are visible to the model. Resumed threads already hold native history.
+  if (isFresh && opts.history && opts.history.length > 0) {
+    await injectHistoryItems(proc, threadId, opts.history);
+  }
 
+  // Serialize turns on the same persistent thread.
+  const release = await getThreadMutex(threadId).acquire();
   try {
-    yield* turnSub.drain(scrubber, opts.onUsage);
-    await turnPromise;
+    // Attach listeners BEFORE starting the turn so no agentMessage/delta is missed.
+    const turnSub = createTurnSubscription(proc, threadId);
+    const turnPromise = proc.request('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: opts.prompt }],
+    }).catch((e: Error) => { turnSub.fail(e); });
+
+    try {
+      yield* turnSub.drain(scrubber, opts.onUsage);
+      await turnPromise;
+    } finally {
+      threadCtx.delete(threadId);
+    }
   } finally {
-    threadCtx.delete(threadId);
-    // Ephemeral thread — best-effort archive so threads don't accumulate in the
-    // long-lived process. Fire-and-forget; any failure is harmless.
-    proc.request('thread/archive', { threadId }).catch(() => {});
+    release();
   }
 }
 

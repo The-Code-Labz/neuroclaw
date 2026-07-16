@@ -84,7 +84,7 @@ const HiveMind = () => {
               {filtered.map((e, i) => {
                 const toneCls = e.tone === 'blue' ? 'blue' : e.tone === 'cyan' ? 'cyan' : e.tone === 'violet' ? 'violet' : e.tone === 'amber' ? 'amber' : e.tone === 'red' ? 'red' : 'green';
                 return (
-                  <div key={i} className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 22px 110px 200px 1fr', gap: 12, padding: '8px 16px', borderBottom: '1px dashed rgba(0,183,255,0.06)', alignItems: 'center', fontSize: 11 }}>
+                  <div key={i} className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 22px 110px 200px 1fr', gap: 12, padding: '8px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center', fontSize: 11 }}>
                     <span className="muted">{e.t}</span>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: e.tone === 'blue' ? 'var(--accent)' : e.tone === 'cyan' ? 'var(--accent-2)' : e.tone === 'violet' ? 'var(--violet)' : e.tone === 'amber' ? 'var(--amber)' : e.tone === 'red' ? 'var(--danger)' : 'var(--green)', boxShadow: `0 0 6px currentColor` }}/>
                     <span style={{ color: 'var(--text)' }}>@{e.agent}</span>
@@ -172,7 +172,7 @@ const TracesPanel = ({ search }) => {
           <div key={run.id} className="nc-panel" style={{ padding: 0, overflow: 'hidden' }}>
             <div
               onClick={() => toggle(run.id)}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', cursor: 'pointer', background: isOpen ? 'rgba(0,183,255,0.04)' : 'transparent' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--accent) 4%, transparent)' : 'transparent' }}
             >
               <span className="dot cyan pulse" style={{ flexShrink: 0 }}/>
               <span className="mono" style={{ fontWeight: 700, color: 'var(--accent-2)', fontSize: 12 }}>@{run.agent_name || 'unknown'}</span>
@@ -184,7 +184,7 @@ const TracesPanel = ({ search }) => {
             </div>
 
             {isOpen && (
-              <div style={{ borderTop: '1px dashed rgba(0,183,255,0.1)', padding: '8px 0' }}>
+              <div style={{ borderTop: '1px dashed color-mix(in srgb, var(--accent) 10%, transparent)', padding: '8px 0' }}>
                 {events[run.id] === undefined && (
                   <div className="mono muted" style={{ padding: '10px 20px', fontSize: 11 }}>// loading events…</div>
                 )}
@@ -246,7 +246,7 @@ const TraceEventRow = ({ ev }) => {
   const ts = isNaN(_tsDate.getTime()) ? '—' : _tsDate.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: true, hour: 'numeric', minute: '2-digit', second: '2-digit' });
 
   return (
-    <div style={{ padding: '5px 20px', borderBottom: '1px dashed rgba(0,183,255,0.04)' }}>
+    <div style={{ padding: '5px 20px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 4%, transparent)' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
         <span className="mono muted" style={{ fontSize: 10, flexShrink: 0, paddingTop: 1 }}>{ts}</span>
         <span style={{ color: cfg.color, fontWeight: 700, fontSize: 13, flexShrink: 0, width: 14, textAlign: 'center' }}>{cfg.glyph}</span>

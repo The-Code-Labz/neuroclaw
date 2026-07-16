@@ -120,7 +120,7 @@ const Overview = () => {
             {sparkline.map((v, i) => (
               <div key={i} className="chart-bar" style={{ height: `${(v/max)*92}%`, opacity: 0.7 + (i/sparkline.length)*0.3 }} />
             ))}
-            <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', borderTop: '1px dashed rgba(0,183,255,0.18)', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', borderTop: '1px dashed color-mix(in srgb, var(--accent) 18%, transparent)', pointerEvents: 'none' }} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }} className="mono muted">
             <span style={{ fontSize: 10 }}>00:00</span><span style={{ fontSize: 10 }}>06:00</span><span style={{ fontSize: 10 }}>12:00</span><span style={{ fontSize: 10 }}>18:00</span><span style={{ fontSize: 10 }}>now</span>
@@ -170,7 +170,7 @@ const Overview = () => {
         <div className="nc-panel glow" style={{ padding: 16 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>PROVIDER BACKENDS</div>
           {(window.NC_DATA.PROVIDERS || []).map((p, i, arr) => (
-            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: i < arr.length - 1 ? '1px dashed rgba(0,183,255,0.08)' : 'none' }}>
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: i < arr.length - 1 ? '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)' : 'none' }}>
               <span className={`dot ${p.status === 'online' ? 'green' : p.status === 'warn' ? 'amber' : 'red'} pulse`} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)' }}>{p.name}</div>
@@ -189,7 +189,7 @@ const Overview = () => {
           </div>
           <div style={{ maxHeight: 240, overflow: 'auto' }}>
             {(HIVE_EVENTS || []).slice(0, 8).map((e, i) => (
-              <div key={i} style={{ padding: '8px 14px', borderBottom: '1px dashed rgba(0,183,255,0.06)', display: 'grid', gridTemplateColumns: '60px 1fr', gap: 8, alignItems: 'flex-start' }}>
+              <div key={i} style={{ padding: '8px 14px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'grid', gridTemplateColumns: '60px 1fr', gap: 8, alignItems: 'flex-start' }}>
                 <span className="mono muted" style={{ fontSize: 10 }}>{(e.t || '').slice(0, 5)}</span>
                 <div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
@@ -207,8 +207,8 @@ const Overview = () => {
         <div className="nc-panel glow" style={{ padding: 16 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>AGENT ROSTER</div>
           {(AGENTS || []).slice(0, 6).map(a => (
-            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', borderBottom: '1px dashed rgba(0,183,255,0.06)' }}>
-              <div style={{ width: 28, height: 28, borderRadius: 6, background: a.temp ? 'radial-gradient(circle, rgba(139,92,246,0.5), rgba(139,92,246,0.1))' : 'radial-gradient(circle, rgba(0,183,255,0.5), rgba(0,183,255,0.1))', border: `1px solid ${a.temp ? 'rgba(139,92,246,0.5)' : 'var(--line-hard)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, overflow: 'hidden' }}>
+            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' }}>
+              <div style={{ width: 28, height: 28, borderRadius: 6, background: a.temp ? 'radial-gradient(circle, rgba(139,92,246,0.5), rgba(139,92,246,0.1))' : 'radial-gradient(circle, color-mix(in srgb, var(--accent) 50%, transparent), color-mix(in srgb, var(--accent) 10%, transparent))', border: `1px solid ${a.temp ? 'rgba(139,92,246,0.5)' : 'var(--line-hard)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, overflow: 'hidden' }}>
                 {a._raw?.avatar_url
                   ? <img src={a._raw.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 6 }} />
                   : a.name[0]}
@@ -244,7 +244,7 @@ const Overview = () => {
               <div className="mono muted" style={{ padding: '12px 16px', fontSize: 11 }}>// all clear</div>
             ) : (
               analystAlerts.slice(0, 3).map((a, i, arr) => (
-                <div key={a.id} style={{ padding: '10px 14px', borderBottom: i < arr.length - 1 ? '1px dashed rgba(0,183,255,0.06)' : 'none', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <div key={a.id} style={{ padding: '10px 14px', borderBottom: i < arr.length - 1 ? '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)' : 'none', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   <span className={`dot ${sevColor(a.severity)} pulse`} style={{ marginTop: 4, flexShrink: 0 }} />
                   <div>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 3 }}>

@@ -19,7 +19,7 @@ const CliToolCard = ({ tool }) => {
     });
   };
 
-  const borderColor = dim ? 'rgba(0,183,255,0.15)' : 'rgba(0,183,255,0.35)';
+  const borderColor = dim ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'color-mix(in srgb, var(--accent) 35%, transparent)';
 
   return (
     <div
@@ -123,9 +123,9 @@ const CliToolsPanel = () => {
             style={{
               padding: '2px 10px', borderRadius: 3, cursor: 'pointer',
               fontFamily: 'var(--mono)', fontSize: 10,
-              background: filter === f ? 'rgba(0,183,255,0.18)' : 'rgba(255,255,255,0.04)',
+              background: filter === f ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'rgba(255,255,255,0.04)',
               color: filter === f ? 'var(--accent)' : 'var(--muted)',
-              border: filter === f ? '1px solid rgba(0,183,255,0.3)' : '1px solid var(--line-soft)',
+              border: filter === f ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : '1px solid var(--line-soft)',
             }}>
             {f}
           </span>
@@ -177,8 +177,8 @@ const InstallAppButton = () => {
       <div onClick={install}
         style={{
           padding: '4px 10px', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer',
-          color: 'var(--accent)', border: '1px solid rgba(0,183,255,0.3)', borderRadius: 3,
-          background: 'rgba(0,183,255,0.08)',
+          color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)', borderRadius: 3,
+          background: 'color-mix(in srgb, var(--accent) 8%, transparent)',
         }}>
         ⬇ install app
       </div>
@@ -460,8 +460,8 @@ const AgentPickerModal = ({ onPick, onClose }) => {
             <div key={a.id}
               onClick={() => { onPick(a); onClose(); }}
               className="mono"
-              style={{ padding: '10px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px dashed rgba(0,183,255,0.06)', fontSize: 12 }}
-              onMouseOver={e => e.currentTarget.style.background = 'rgba(0,183,255,0.08)'}
+              style={{ padding: '10px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', fontSize: 12 }}
+              onMouseOver={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 8%, transparent)'}
               onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
               <span className="dot cyan pulse" />
               <span style={{ flex: 1 }}>{a.name}</span>
@@ -524,7 +524,7 @@ const SessionPicker = ({ onClose, onResume }) => {
           )}
           {sessions.map(s => (
             <div key={s.id} className="mono"
-              style={{ padding: '10px 16px', borderBottom: '1px dashed rgba(0,183,255,0.06)', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+              style={{ padding: '10px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {s.title || s.id.slice(0, 12) + '…'}
@@ -534,7 +534,7 @@ const SessionPicker = ({ onClose, onResume }) => {
                 </div>
               </div>
               {isActive(s) && (
-                <span style={{ padding: '2px 6px', background: 'rgba(0,183,255,0.12)', color: 'var(--accent)', borderRadius: 3, fontSize: 9 }}>active</span>
+                <span style={{ padding: '2px 6px', background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)', borderRadius: 3, fontSize: 9 }}>active</span>
               )}
               <button className="nc-btn" onClick={() => onResume(s)}
                 style={{ padding: '4px 10px', fontSize: 10, flexShrink: 0 }}>

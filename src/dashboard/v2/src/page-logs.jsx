@@ -192,7 +192,7 @@ const Logs = () => {
                 padding: '3px 0',
                 fontSize: 11,
                 lineHeight: 1.5,
-                borderBottom: '1px dashed rgba(0,183,255,0.04)',
+                borderBottom: '1px dashed color-mix(in srgb, var(--accent) 4%, transparent)',
               }}
             >
               <span className="muted">{l.t}</span>

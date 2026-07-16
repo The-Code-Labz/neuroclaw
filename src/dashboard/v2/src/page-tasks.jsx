@@ -294,9 +294,9 @@ const TaskCard = ({ task, agents, onEdit, onDragStart }) => {
       {task.feature && <span className="tag" style={{ fontSize: 9, padding: '0 5px', marginBottom: 6, display: 'inline-block' }}>#{task.feature}</span>}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
         {agent
-          ? <span style={{ width: 18, height: 18, borderRadius: 4, background: 'rgba(0,183,255,0.15)', border: '1px solid var(--line)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700 }}>{agent.name[0]}</span>
+          ? <span style={{ width: 18, height: 18, borderRadius: 4, background: 'color-mix(in srgb, var(--accent) 15%, transparent)', border: '1px solid var(--line)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700 }}>{agent.name[0]}</span>
           : null}
-        <span className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>{task.assignee}</span>
+        <span className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>{agent ? '@' + agent.name : (task.assignee || 'Unassigned')}</span>
       </div>
       {(sourcesCount > 0 || examplesCount > 0) && (
         <div className="mono muted" style={{ fontSize: 10, display: 'flex', gap: 8 }}>
@@ -604,7 +604,7 @@ const Tasks = () => {
                     <TaskCard key={t.id} task={t} agents={agents} onDragStart={onDragStart} onEdit={(task) => setTaskModal({ open: true, task })}/>
                   ))}
                   {items.length === 0 && (
-                    <div className="mono muted" style={{ fontSize: 10, textAlign: 'center', padding: 18, border: '1px dashed rgba(0,183,255,0.1)', borderRadius: 2 }}>// drop here</div>
+                    <div className="mono muted" style={{ fontSize: 10, textAlign: 'center', padding: 18, border: '1px dashed color-mix(in srgb, var(--accent) 10%, transparent)', borderRadius: 2 }}>// drop here</div>
                   )}
                 </div>
               </div>
@@ -617,7 +617,7 @@ const Tasks = () => {
         <div className="nc-panel table-responsive" style={{ padding: 0 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--mono)', fontSize: 11 }}>
             <thead>
-              <tr style={{ background: 'rgba(0,183,255,0.06)', textAlign: 'left' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', textAlign: 'left' }}>
                 {['Title','Status','Priority','Assignee','Feature','Sources','Updated',''].map(h => (
                   <th key={h} style={{ padding: '8px 10px', borderBottom: '1px solid var(--line-soft)', fontSize: 10, color: 'var(--text-soft)' }}>{h}</th>
                 ))}
@@ -628,7 +628,7 @@ const Tasks = () => {
                 const agent = agents.find(a => (a._raw?.id || a.id) === t.agentId);
                 const pTone = PRIORITY_TONE[t.priority_level] || 'muted';
                 return (
-                  <tr key={t.id} style={{ borderBottom: '1px dashed rgba(0,183,255,0.06)', cursor: 'pointer' }} onClick={() => setTaskModal({ open: true, task: t })}>
+                  <tr key={t.id} style={{ borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', cursor: 'pointer' }} onClick={() => setTaskModal({ open: true, task: t })}>
                     <td style={{ padding: '8px 10px', color: 'var(--text)' }}>{t.title}</td>
                     <td style={{ padding: '8px 10px' }}><span className="tag" style={{ fontSize: 9 }}>{t.status}</span></td>
                     <td style={{ padding: '8px 10px' }}><span className={`tag ${pTone}`} style={{ fontSize: 9 }}>{t.priority_level}</span></td>
@@ -665,7 +665,7 @@ const Tasks = () => {
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--mono)', fontSize: 11 }}>
               <thead>
-                <tr style={{ background: 'rgba(0,183,255,0.06)', textAlign: 'left' }}>
+                <tr style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)', textAlign: 'left' }}>
                   {['Title', 'Project', 'Status', 'Priority', 'Assignee', 'Feature', 'Archived At', ''].map(h => (
                     <th key={h} style={{ padding: '8px 10px', borderBottom: '1px solid var(--line-soft)', fontSize: 10, color: 'var(--text-soft)' }}>{h}</th>
                   ))}
@@ -676,7 +676,7 @@ const Tasks = () => {
                   const proj = projects.find(p => p.id === t.project_id);
                   const pTone = PRIORITY_TONE[t.priority_level] || 'muted';
                   return (
-                    <tr key={t.id} style={{ borderBottom: '1px dashed rgba(0,183,255,0.06)', opacity: 0.75 }}>
+                    <tr key={t.id} style={{ borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', opacity: 0.75 }}>
                       <td style={{ padding: '8px 10px', color: 'var(--text)' }}>{t.title}</td>
                       <td style={{ padding: '8px 10px', color: 'var(--text-soft)' }}>{proj?.title || <span className="muted">—</span>}</td>
                       <td style={{ padding: '8px 10px' }}><span className="tag" style={{ fontSize: 9 }}>{t.status}</span></td>
@@ -871,7 +871,7 @@ const AgentActivityPanel = () => {
             const meta  = ACTION_META[e.action] || { icon: '·', tone: 'muted', label: e.action };
             const color = TONE_COLOR[meta.tone] || 'var(--muted)';
             return (
-              <div key={e.id || i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '2px 0', borderBottom: '1px dashed rgba(0,183,255,0.04)' }}>
+              <div key={e.id || i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '2px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 4%, transparent)' }}>
                 <span style={{ color, fontSize: 10, fontFamily: 'var(--mono)', flexShrink: 0, width: 12, textAlign: 'center' }}>{meta.icon}</span>
                 <span className="mono" style={{ fontSize: 9, color: 'var(--muted)', flexShrink: 0, width: 70 }}>{e.t}</span>
                 <span className="mono" style={{ fontSize: 10, color, flexShrink: 0 }}>{meta.label}</span>

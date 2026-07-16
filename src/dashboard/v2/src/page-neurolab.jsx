@@ -114,7 +114,7 @@ const AgentDesk = ({ agent, areaColor, spriteState, frame, ghost = false, bubble
         <span style={{ position: 'absolute', left: '50%', top: '100%', transform: 'translateX(-50%)', width: 0, height: 0, borderLeft: '3px solid transparent', borderRight: '3px solid transparent', borderTop: `3px solid ${areaColor}` }}/>
       </div>
     )}
-    <div className="mono" style={{ fontSize: 6, color: ghost ? 'rgba(255,255,255,0.4)' : '#fff', letterSpacing: '.08em', opacity: ghost ? 0.6 : 0.85, whiteSpace: 'nowrap' }}>
+    <div className="mono" style={{ fontSize: 6, color: ghost ? 'color-mix(in srgb, var(--text) 40%, transparent)' : 'var(--text)', letterSpacing: '.08em', opacity: ghost ? 0.6 : 0.85, whiteSpace: 'nowrap' }}>
       {ghost ? `${agent.name} ↗` : agent.name.toUpperCase()}
     </div>
     <ChibiSprite agentId={agent.id} state={spriteState} frame={frame} ghost={ghost}/>
@@ -251,9 +251,9 @@ const FloorCanvas = ({ rooms, agents, agentRooms, agentBehavior = {}, beams = []
     </div>
     <div style={{ overflowX: 'auto', overflowY: 'hidden' }}>
       <div style={{ position: 'relative', width: FLOOR_W, height: FLOOR_H, background: '#07070f', flexShrink: 0 }}>
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'linear-gradient(rgba(0,183,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,183,255,0.03) 1px,transparent 1px)', backgroundSize: '40px 40px' }}/>
-        <div style={{ position: 'absolute', left: 0, right: 0, top: CORR_Y, height: CORR_H, background: 'rgba(0,183,255,0.025)', borderTop: '1px dashed rgba(0,183,255,0.15)', borderBottom: '1px dashed rgba(0,183,255,0.15)', display: 'flex', alignItems: 'center', paddingLeft: 12 }}>
-          <span className="mono" style={{ fontSize: 7, color: 'rgba(0,183,255,0.2)', letterSpacing: '.15em' }}>// MAIN CORRIDOR</span>
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'linear-gradient(color-mix(in srgb, var(--accent) 3%, transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb, var(--accent) 3%, transparent) 1px,transparent 1px)', backgroundSize: '40px 40px' }}/>
+        <div style={{ position: 'absolute', left: 0, right: 0, top: CORR_Y, height: CORR_H, background: 'color-mix(in srgb, var(--accent) 2.5%, transparent)', borderTop: '1px dashed color-mix(in srgb, var(--accent) 15%, transparent)', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 15%, transparent)', display: 'flex', alignItems: 'center', paddingLeft: 12 }}>
+          <span className="mono" style={{ fontSize: 7, color: 'color-mix(in srgb, var(--accent) 20%, transparent)', letterSpacing: '.15em' }}>// MAIN CORRIDOR</span>
         </div>
         {rooms.map(room => (
           <RoomDiv key={room.id} room={room} agents={agents} agentRooms={agentRooms} agentBehavior={agentBehavior} tick={tick} selectedId={selectedId} onSelectAgent={onSelectAgent}/>
@@ -280,9 +280,9 @@ const FloorCanvas = ({ rooms, agents, agentRooms, agentBehavior = {}, beams = []
 
 // ─── HiveBar ──────────────────────────────────────────────────────────────────
 const HiveBar = ({ rooms, agents, agentRooms, hiveActivity = {} }) => (
-  <div style={{ height: 22, background: '#0a0a14', borderTop: '1px solid rgba(0,183,255,0.12)', display: 'flex', alignItems: 'center', paddingLeft: 10, gap: 10 }}>
-    <span className="mono" style={{ fontSize: 7, color: 'rgba(0,183,255,0.4)', letterSpacing: '.12em', whiteSpace: 'nowrap' }}>⬡ HIVE</span>
-    <div style={{ flex: 1, height: 8, background: 'rgba(0,183,255,0.05)', display: 'flex', overflow: 'hidden', gap: 1 }}>
+  <div style={{ height: 22, background: '#0a0a14', borderTop: '1px solid color-mix(in srgb, var(--accent) 12%, transparent)', display: 'flex', alignItems: 'center', paddingLeft: 10, gap: 10 }}>
+    <span className="mono" style={{ fontSize: 7, color: 'color-mix(in srgb, var(--accent) 40%, transparent)', letterSpacing: '.12em', whiteSpace: 'nowrap' }}>⬡ HIVE</span>
+    <div style={{ flex: 1, height: 8, background: 'color-mix(in srgb, var(--accent) 5%, transparent)', display: 'flex', overflow: 'hidden', gap: 1 }}>
       {rooms.map((r, i) => {
         const activity = hiveActivity[r.id] || 0;
         const agentCount = agents.filter(a => agentRooms[a.id] === r.id).length;
@@ -299,7 +299,7 @@ const HiveBar = ({ rooms, agents, agentRooms, hiveActivity = {} }) => (
       })}
     </div>
     <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#00f5d4', opacity: 0.85 }}/>
-    <span className="mono" style={{ fontSize: 7, color: 'rgba(0,183,255,0.35)', marginRight: 8 }}>LIVE</span>
+    <span className="mono" style={{ fontSize: 7, color: 'color-mix(in srgb, var(--accent) 35%, transparent)', marginRight: 8 }}>LIVE</span>
   </div>
 );
 
@@ -326,16 +326,16 @@ const RightPanel = ({ rooms, agents, agentRooms, selectedId, agentBehavior = {},
                 <ChibiSprite agentId={selectedAgent.id} state="idle" frame={0}/>
               </div>
               <div>
-                <div className="mono" style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>{selectedAgent.name}</div>
+                <div className="mono" style={{ fontSize: 12, color: 'var(--text)', fontWeight: 700 }}>{selectedAgent.name}</div>
                 <div className="mono muted" style={{ fontSize: 9 }}>@{selectedAgent.id} · {selectedAgent.role}</div>
               </div>
             </div>
             <div className="mono" style={{ fontSize: 10, lineHeight: 1.8, color: 'var(--text-soft)' }}>
-              <div>STATUS · <span style={{ color: '#fff' }}>{selectedAgent.status}</span></div>
+              <div>STATUS · <span style={{ color: 'var(--text)' }}>{selectedAgent.status}</span></div>
               <div>HOME · <span style={{ color: homeRoom?.color || 'var(--muted)' }}>{homeRoom?.name || 'unassigned'}</span></div>
               {visitRoom && <div>VISITING · <span style={{ color: visitRoom.color }}>{visitRoom.name}</span></div>}
               <div>BEHAVIOR · <span style={{ color: 'var(--accent)' }}>{beh?.state || 'desk'}</span></div>
-              <div>MODEL · <span style={{ color: '#fff' }}>{selectedAgent.model}</span></div>
+              <div>MODEL · <span style={{ color: 'var(--text)' }}>{selectedAgent.model}</span></div>
             </div>
           </div>
         )}
@@ -350,7 +350,7 @@ const RightPanel = ({ rooms, agents, agentRooms, selectedId, agentBehavior = {},
                   {GLYPH_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
                 </select>
                 <input value={room.name} onChange={e => onUpdateRoom(room.id, { name: e.target.value })} className="mono"
-                  style={{ flex: 1, background: 'transparent', color: '#fff', border: 'none', borderBottom: `1px solid ${room.color}44`, outline: 'none', fontSize: 11 }}/>
+                  style={{ flex: 1, background: 'transparent', color: 'var(--text)', border: 'none', borderBottom: `1px solid ${room.color}44`, outline: 'none', fontSize: 11 }}/>
                 {!CORE_ROOM_IDS.includes(room.id) && (
                   <button onClick={() => { if (confirm(`Delete "${room.name}"?`)) onRemoveRoom(room.id); }}
                     style={{ background: 'transparent', border: 'none', color: room.color, fontSize: 14, cursor: 'pointer' }}>×</button>

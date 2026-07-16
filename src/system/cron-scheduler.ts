@@ -75,6 +75,7 @@ async function _execute(jobId: string, triggeredBy: string): Promise<string> {
       case 'shell_command':    output = await _runShellCommand(job);         break;
       case 'n8n_workflow':     output = await _runN8nWorkflow(job);          break;
       case 'kestra_flow':      output = await _runKestraFlow(job);           break;
+      case 'create_task':      output = await _runCreateTask(job);           break;
       default: throw new Error(`Unknown job_type: ${job.job_type}`);
     }
   } catch (err) {
@@ -131,6 +132,44 @@ async function _runAgentMessage(job: CronJob, runId: string): Promise<string> {
     sysPrompt, cfg.agentId,
   );
   return fullReply;
+}
+
+/** Wave-2 Item E: land a tracked task on the Mission Control board. Unlike
+ *  agent_message (ephemeral chatStream), this flows through the full pipeline
+ *  (claim → doing → review → holdout → done) with Sentinel + goal-ancestry +
+ *  failure-classification coverage. Coalesces to one outstanding open instance
+ *  per routine by default (anti-stampede), overridable via coalesceKey. */
+async function _runCreateTask(job: CronJob): Promise<string> {
+  const cfg = JSON.parse(job.config) as {
+    title?: string; description?: string; agentId?: string; projectId?: string;
+    priority?: number; dependsOn?: string[]; coalesceKey?: string;
+  };
+  if (!cfg.title) throw new Error('create_task job requires title in config');
+
+  const { getDb }       = await import('../db');
+  const { createTask }  = await import('./task-manager');
+
+  // Default coalesceKey = the cron job id → at most one open task per routine.
+  const routineKey = cfg.coalesceKey ?? `cron:${job.id}`;
+  const open = getDb().prepare(
+    `SELECT id FROM tasks
+     WHERE routine_key = ? AND archived = 0 AND status IN ('todo','doing','review','blocked')
+     LIMIT 1`,
+  ).get(routineKey) as { id: string } | undefined;
+  if (open) {
+    return `coalesced: routine "${routineKey}" already has an open task (${open.id}); skipped`;
+  }
+
+  const task = await createTask(cfg.title, {
+    description: cfg.description,
+    agentId:     cfg.agentId,
+    project_id:  cfg.projectId,
+    priority:    cfg.priority,
+    dependsOn:   cfg.dependsOn,
+    routine_key: routineKey,
+    task_source: 'dashboard',   // dashboard-sourced → claimable off the board
+  });
+  return `created task ${task.id} — "${cfg.title}" (routine_key=${routineKey})`;
 }
 
 async function _runOutboundWebhook(job: CronJob): Promise<string> {

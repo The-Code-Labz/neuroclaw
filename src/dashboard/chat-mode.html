@@ -342,6 +342,11 @@ const ChatMode = () => {
   const recorderRef  = useRef(null);
   const chunksRef    = useRef([]);
   const audioRef     = useRef(null);
+  // Set by the ⏏ BG button just before aborting the fetch: distinguishes a
+  // deliberate "continue in background" detach from a hard ■ Stop, so the
+  // catch(AbortError) handler in send() knows whether to keep the run going
+  // via attachViaResumeCM() instead of just closing out the bubble.
+  const detachRequestedRef = useRef(false);
   const fileRef      = useRef(null);
   const skipRef      = useRef(null);
   const taRef        = useRef(null);
@@ -396,12 +401,18 @@ const ChatMode = () => {
         delay     = Math.min(delay + 1000, 10000);
         pollTimer = setTimeout(poll, delay);
       } else {
-        // Terminal — reload canonical session history and release the composer.
-        setStreaming(false);
+        // Terminal — reload canonical session history. NOTE: do not touch the
+        // global `streaming` flag here. This poll may belong to a bubble that
+        // was deliberately backgrounded (⏏ BG) while a *different* turn is now
+        // occupying the composer — calling setStreaming(false) unconditionally
+        // would incorrectly unlock/disturb that unrelated in-flight turn. The
+        // composer-owning turn's own send()/finally is solely responsible for
+        // the global flag; this poll only owns bubbleIdx's per-message state,
+        // which the canonical-reload below restores correctly either way.
         const byId = Object.fromEntries(agents.map(a => [a.id, a.name]));
         api(`/api/sessions/${sessionId}/messages`)
           .then(rows => { if (!cancelled) setMessages(mapRows(rows, byId)); })
-          .catch(() => {});
+          .catch(() => { if (!cancelled) setMessages(m => m.map((msg, i) => i === bubbleIdx ? { ...msg, streaming: false, activity: null } : msg)); });
       }
     };
     pollTimer = setTimeout(poll, delay);
@@ -410,6 +421,70 @@ const ChatMode = () => {
       if (pollTimer) clearTimeout(pollTimer);
       bgPollRef.current = null;
     };
+  };
+
+  // Re-attach to a deliberately-backgrounded (⏏ BG) turn via the SSE resume
+  // endpoint. Modeled on page-chat.jsx's attachViaResume: takes bubbleIdx and
+  // sessionId as explicit parameters (never reads the ambient liveRef) and
+  // owns a private AbortController (never touches the shared abortRef), so a
+  // concurrent turn started afterward in send() cannot cross-write this
+  // bubble or get its fetch hijacked/aborted by this one's lifecycle. Called
+  // fire-and-forget (not awaited) so the caller's finally{} unlocks the
+  // composer immediately instead of waiting for this background run to end.
+  const attachViaResumeCM = (bubbleIdx, sessionId, runId) => {
+    const ctrl = new AbortController();
+    let cancelled = false, sawTerminal = false;
+
+    const setBubble = (patch) => setMessages(m => m.map((msg, i) => i === bubbleIdx ? { ...msg, ...patch } : msg));
+    const pushLog = (label, done = false) => setMessages(m => m.map((msg, i) => i !== bubbleIdx ? msg : {
+      ...msg, activityLog: [...(msg.activityLog || []).map(e => ({ ...e, done: true })), { label, done }],
+    }));
+
+    (async () => {
+      try {
+        const rr = await fetch(`/api/chat/resume/${sessionId}`, {
+          credentials: 'same-origin', signal: ctrl.signal, headers: { 'x-dashboard-token': TOKEN },
+        });
+        if (rr.status === 404 || !rr.ok || !rr.body) throw new Error('not resumable');
+        const reader = rr.body.getReader(); const dec = new TextDecoder();
+        let rbuf = '', body = '';
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break;
+          rbuf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = rbuf.indexOf('\n\n')) !== -1) {
+            const chunk = rbuf.slice(0, idx); rbuf = rbuf.slice(idx + 2);
+            const line = chunk.split('\n').find(l => l.startsWith('data: ')); if (!line) continue;
+            let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            if (evt.type === 'agent') setBubble({ agent: evt.name });
+            else if (evt.type === 'replay') { body = evt.content; setBubble({ body }); }
+            else if (evt.type === 'chunk') { body += evt.content; setBubble({ body }); }
+            else if (evt.type === 'heartbeat') {
+              const sec = Math.round((evt.elapsedMs || 0) / 1000);
+              setBubble({ activity: `${evt.currentActivity || 'working…'} · ${sec}s` });
+            }
+            else if (evt.type === 'tool_start') pushLog('tool · ' + evt.tool, false);
+            else if (evt.type === 'tool_done')  pushLog('tool · ' + evt.tool, true);
+            else if (evt.type === 'done' || evt.type === 'paused' || evt.type === 'error') {
+              sawTerminal = true;
+              setBubble({ streaming: false, activity: null });
+            }
+          }
+        }
+        if (!sawTerminal && !cancelled) throw new Error('resume stream ended early');
+      } catch {
+        // Resume 404'd/dropped before a terminal event — fall back to REST
+        // polling, still explicitly scoped to this bubbleIdx/sessionId. If we
+        // never captured a runId (SSE closed before the 'run' event landed),
+        // there's nothing left to poll — just release this bubble.
+        if (!cancelled && !sawTerminal) {
+          if (runId) startBackgroundPoll({ id: runId }, bubbleIdx, sessionId);
+          else setBubble({ streaming: false, activity: null });
+        }
+      }
+    })();
+
+    return () => { cancelled = true; try { ctrl.abort(); } catch {} };
   };
 
   // ── Persist session/agent + mirror live state into refs ───────────────────
@@ -701,6 +776,7 @@ const ChatMode = () => {
     const slashSkill = text.startsWith('/') && sentText !== fullText ? text.slice(1).split(/\s+/)[0] : null;
 
     setDraft(''); setPendingImgs([]); setPendingDocs([]); setError(null);
+    detachRequestedRef.current = false;  // fresh turn — clear any stale ⏏ BG intent
 
     setMessages(m => [...m, {
       kind: 'user', who: 'You', t: nowTime(),
@@ -715,6 +791,7 @@ const ChatMode = () => {
 
     let buf = '', agentName = null;
     let sessionIdLive = activeSession;
+    let runIdLive = null;
     let terminal = false;
 
     const log = (label, done = false) => setMessages(m => m.map((msg, i) => i !== liveRef.current ? msg : {
@@ -731,7 +808,8 @@ const ChatMode = () => {
           skipRef.current = evt.sessionId; setActiveSession(evt.sessionId);
           setSessions(s => s.some(x => x.id === evt.sessionId) ? s : [{ id: evt.sessionId, title: 'New chat', last: 'just now' }, ...s]);
         }
-      } else if (evt.type === 'agent') { agentName = evt.name; updateLive(); log('processing'); }
+      } else if (evt.type === 'run') { runIdLive = evt.runId; }
+      else if (evt.type === 'agent') { agentName = evt.name; updateLive(); log('processing'); }
       else if (evt.type === 'chunk')  { buf += evt.content; updateLive(); }
       else if (evt.type === 'replay') { buf  = evt.content; updateLive(); }  // replace — replay is the canonical full partial_output
       else if (evt.type === 'heartbeat') {
@@ -809,7 +887,7 @@ const ChatMode = () => {
             activityLog: [{ label: 'reconnecting to background run…', done: false }],
           }));
           startBackgroundPoll(run, bubbleIdx, sid);
-          return; // poll calls setStreaming on terminal
+          return; // this send()'s own finally{} still owns the global streaming flag
         }
       } catch {}
       setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
@@ -836,7 +914,21 @@ const ChatMode = () => {
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        if (!terminal) setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+        if (detachRequestedRef.current && sessionIdLive && !terminal) {
+          // Deliberate backgrounding (⏏ BG): capture the bubble index BEFORE
+          // any await, then hand off to attachViaResumeCM fire-and-forget (not
+          // awaited) so `finally` below runs immediately and frees the
+          // composer instead of waiting for the backgrounded run to finish.
+          const bubbleIdx = liveRef.current;
+          detachRequestedRef.current = false;
+          setMessages(m => m.map((msg, i) => i !== bubbleIdx ? msg : {
+            ...msg, activityLog: [...(msg.activityLog || []).map(e => ({ ...e, done: true })), { label: 'backgrounded — run continues', done: true }],
+            activity: 'continuing in background…',
+          }));
+          attachViaResumeCM(bubbleIdx, sessionIdLive, runIdLive);
+        } else if (!terminal) {
+          setMessages(m => m.map((msg, i) => i === liveRef.current ? { ...msg, streaming: false, activity: null } : msg));
+        }
       } else {
         setError(err.message);
         if (!terminal) {
@@ -1107,6 +1199,12 @@ const ChatMode = () => {
                 title={recording?'Stop recording':transcribing?'Transcribing…':'Voice input'}
               >{recording?'● REC':transcribing?'…':'🎤 Voice'}</button>
               <div style={{flex:1}}/>
+              {streaming && (
+                <button className="cm-act-btn" title="Continue in background — the run keeps going server-side while you do other things"
+                  onClick={() => { detachRequestedRef.current = true; abortRef.current?.abort(); }}>
+                  ⏏ BG
+                </button>
+              )}
               {streaming
                 ? <button className="cm-stop-btn" onClick={stopStream}>■ Stop</button>
                 : <button className="cm-send-btn" onClick={send} disabled={streaming}>Send ↑</button>

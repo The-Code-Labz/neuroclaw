@@ -323,7 +323,7 @@ const Secrets = () => {
         </div>
       )}
       {okMsg && (
-        <div className="mono" style={{ color: 'var(--accent-2)', fontSize: 11, marginBottom: 10, padding: '8px 12px', background: 'rgba(0,245,212,0.08)', border: '1px solid rgba(0,245,212,0.3)', borderRadius: 4 }}>
+        <div className="mono" style={{ color: 'var(--accent-2)', fontSize: 11, marginBottom: 10, padding: '8px 12px', background: 'color-mix(in srgb, var(--accent-2) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-2) 30%, transparent)', borderRadius: 4 }}>
           // {okMsg}
         </div>
       )}
@@ -654,7 +654,7 @@ const ScopeSection = ({
     <div className="nc-panel" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
       <div style={{
         padding: '10px 14px',
-        borderBottom: '1px solid rgba(0,183,255,0.2)',
+        borderBottom: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)',
         background: 'rgba(2,6,23,0.4)',
         display: 'flex', alignItems: 'center', gap: 10,
       }}>
@@ -698,11 +698,11 @@ const SecretRow = ({
       gridTemplateColumns: '260px 1fr auto',
       gap: 12,
       padding: '12px 14px',
-      borderBottom: isLast ? 'none' : '1px dashed rgba(0,183,255,0.08)',
+      borderBottom: isLast ? 'none' : '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)',
       alignItems: 'center',
     }}>
       <div>
-        <div className="mono" style={{ fontSize: 11, color: '#fff', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           {secret.name}
           <span className="tag" style={{ background: typeColor, color: '#020617', fontSize: 8, padding: '1px 5px', fontWeight: 700 }}>
             {secret.type}
@@ -810,7 +810,7 @@ const OrphansSection = ({ orphans }) => {
           borderBottom: i === orphans.length - 1 ? 'none' : '1px dashed rgba(255,184,108,0.15)',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
-          <span className="mono" style={{ fontSize: 11, color: '#fff' }}>{o.name}</span>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--text)' }}>{o.name}</span>
           <span className="mono muted" style={{ fontSize: 9 }}>// reason: {o.reason}</span>
         </div>
       ))}
@@ -828,7 +828,7 @@ const AuditRow = ({ row }) => {
   return (
     <div style={{
       padding: '6px 0',
-      borderBottom: '1px dashed rgba(0,183,255,0.06)',
+      borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
       display: 'grid',
       gridTemplateColumns: '80px 80px 110px 1fr 70px',
       gap: 8,
@@ -836,7 +836,7 @@ const AuditRow = ({ row }) => {
     }}>
       <span className="mono muted" style={{ fontSize: 10 }}>{ts}</span>
       <span className="mono" style={{ fontSize: 10, color: 'var(--text-soft)' }}>{row.event}</span>
-      <span className="mono" style={{ fontSize: 10, color: '#fff' }}>{row.agent}</span>
+      <span className="mono" style={{ fontSize: 10, color: 'var(--text)' }}>{row.agent}</span>
       <span className="mono muted" style={{ fontSize: 10, wordBreak: 'break-all' }}>
         {row.secret_name || (row.secrets_requested || []).join(', ') || row.detail || ''}
         {row.purpose && <span style={{ color: 'var(--muted)' }}> · {row.purpose}</span>}
