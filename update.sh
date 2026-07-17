@@ -8,9 +8,10 @@
 #   • Your config and data are gitignored (.env, *.db, backups/, workspaces/,
 #     dist/) so a fetch/checkout can't touch them.
 #   • Schema migrations run automatically on next boot.
-#   • All git fetch/checkout operations route through scripts/nc-git.sh with
-#     NC_GIT_SELF_UPDATE=1 so they are serialized but the drift guard knows the
-#     resulting detached HEAD is sanctioned.
+#   • Git fetch/checkout operations route through scripts/nc-git.sh when it is
+#     present (the private multi-agent checkout uses it to serialize writes and
+#     sanction the detached HEAD); public single-user clones fall back to plain
+#     git automatically.
 #
 # Channels:
 #   stable (default) — checks out the latest vX.Y.Z release tag. Predictable.
@@ -37,6 +38,19 @@ say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── Git wrapper ────────────────────────────────────────────────────────────
+# Route git through scripts/nc-git.sh WHEN PRESENT (the private multi-agent
+# checkout uses it to serialize concurrent writes and sanction the detached
+# HEAD for its drift guard). Public single-user clones don't ship that wrapper
+# (it's an internal-only tool), so transparently fall back to plain git.
+ncgit() {
+  if [ -x ./scripts/nc-git.sh ]; then
+    NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh "$@"
+  else
+    git "$@"
+  fi
+}
 
 # ── Build + restart helpers ────────────────────────────────────────────────
 restart_service() {
@@ -122,7 +136,7 @@ CURRENT_SHORT="$(git rev-parse --short HEAD)"
 if [ -n "$ROLLBACK_TO" ]; then
   LOCKFILE_BEFORE="$(git hash-object package-lock.json 2>/dev/null || echo none)"
   say "Rolling back to $ROLLBACK_TO ..."
-  NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh checkout -q "$ROLLBACK_TO" || die "Could not check out $ROLLBACK_TO"
+  ncgit checkout -q "$ROLLBACK_TO" || die "Could not check out $ROLLBACK_TO"
   ok "Checked out $ROLLBACK_TO. Rebuilding ..."
   rebuild_and_restart
   ok "Rolled back to $ROLLBACK_TO."
@@ -146,7 +160,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 say "Fetching latest from $REMOTE (channel: $CHANNEL) ..."
-NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh fetch --tags --prune "$REMOTE"
+ncgit fetch --tags --prune "$REMOTE"
 
 # ── Resolve the target ref ─────────────────────────────────────────────────
 if [ "$CHANNEL" = "edge" ]; then
@@ -194,7 +208,7 @@ echo ""
 LOCKFILE_BEFORE="$(git hash-object package-lock.json 2>/dev/null || echo none)"
 
 say "Checking out $TARGET_LABEL ..."
-NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh checkout -q "$TARGET_REF"
+ncgit checkout -q "$TARGET_REF"
 
 rebuild_and_restart
 restore_stash_if_any

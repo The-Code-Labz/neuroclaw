@@ -111,17 +111,33 @@ async function git(args: string[], token?: string): Promise<GitResult> {
   }
 }
 
-/** Wrap a git-with-token operation in broker context (HTTP routes have no
- *  ambient agent context → broker.withSecrets would throw no_agent_context). */
-async function withToken<T>(fn: (token: string) => Promise<T>): Promise<T> {
-  return agentStore.run(
-    { agentName: 'system', sessionId: 'self-update' },
-    () => broker.withSecrets(['SHARED_GITHUB_PAT'], async (env) => {
-      const token = env['SHARED_GITHUB_PAT'];
-      if (!token) throw new Error('SHARED_GITHUB_PAT not resolvable from broker');
-      return fn(token);
-    }),
-  );
+/** Resolve the OPTIONAL GitHub PAT and run `fn` with it.
+ *
+ *  A public repo needs NO auth — anonymous fetch works — so a missing or
+ *  unresolvable PAT is NOT fatal. If the broker has no SHARED_GITHUB_PAT (the
+ *  normal case for a public/distributable deployment, which surfaces as
+ *  `secret_not_found:SHARED_GITHUB_PAT`) or there is no agent context, we fall
+ *  through to an ANONYMOUS git op (token=undefined). `git()` only attaches the
+ *  auth header when a token is present, so `git fetch origin` then relies on the
+ *  remote URL alone (public HTTPS → anonymous). Private-repo deployments that DO
+ *  have SHARED_GITHUB_PAT in their broker still pick it up and authenticate.
+ *  HTTP routes have no ambient agent context, so a system-scoped one is set for
+ *  the resolve. */
+async function withToken<T>(fn: (token?: string) => Promise<T>): Promise<T> {
+  let token: string | undefined;
+  try {
+    token = await agentStore.run(
+      { agentName: 'system', sessionId: 'self-update' },
+      () => broker.withSecrets(['SHARED_GITHUB_PAT'], async (env) => env['SHARED_GITHUB_PAT'] || undefined),
+    );
+  } catch (e: any) {
+    // No PAT / no agent context → proceed anonymously (public-repo fetch is unauthenticated).
+    logger.info('self-update: no GitHub PAT available — using anonymous fetch (public repo)', {
+      reason: String(e?.message ?? e).slice(0, 120),
+    });
+    token = undefined;
+  }
+  return fn(token);
 }
 
 async function currentSha(): Promise<string> {
