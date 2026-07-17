@@ -622,7 +622,7 @@ const Comms = () => {
       />
 
       {/* ── Summary bar ── */}
-      <div className="nc-panel glow" style={{ display: 'flex', gap: 0, marginBottom: 14, padding: 0, overflow: 'hidden' }}>
+      <div className="nc-panel" style={{ display: 'flex', gap: 0, marginBottom: 14, padding: 0, overflow: 'hidden', borderColor: 'var(--line-soft)' }}>
         {[
           { label: 'TOTAL',     value: total,      cls: 'blue',   active: statusFilter === 'all',        onClick: () => setStatusFilter('all') },
           { label: 'PENDING',   value: pending,    cls: 'amber',  active: statusFilter === 'pending',    onClick: () => setStatusFilter(statusFilter === 'pending'   ? 'all' : 'pending') },
@@ -691,32 +691,34 @@ const Comms = () => {
       )}
 
       {/* ── Main grid: relay log + notes/notifications ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12 }}>
+      <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12 }}>
 
         {/* Relay log */}
         <Section title={`RELAY LOG  ·  ${filtered.length} entries`} padded={false}>
-          {/* Column header */}
-          <div className="mono" style={{
-            display: 'grid',
-            gridTemplateColumns: '72px auto 1fr 80px 70px',
-            gap: 10,
-            padding: '8px 16px',
-            borderBottom: '1px solid var(--line-soft)',
-            fontSize: 9,
-            color: 'var(--muted)',
-            letterSpacing: '0.14em',
-            background: 'color-mix(in srgb, var(--accent) 3%, transparent)',
-          }}>
-            <span>TIME</span><span>DIR · ROUTE</span><span>MESSAGE / RESPONSE</span><span>STATUS</span><span></span>
-          </div>
-
-          {filtered.length === 0 && (
-            <div className="mono muted" style={{ padding: 30, textAlign: 'center', fontSize: 11 }}>
-              // no messages match current filters
+          <div className="table-scroll">
+            {/* Column header */}
+            <div className="mono" style={{
+              display: 'grid',
+              gridTemplateColumns: '72px auto 1fr 80px 70px',
+              gap: 10,
+              padding: '8px 16px',
+              borderBottom: '1px solid var(--line-soft)',
+              fontSize: 9,
+              color: 'var(--muted)',
+              letterSpacing: '0.14em',
+              background: 'color-mix(in srgb, var(--accent) 3%, transparent)',
+            }}>
+              <span>TIME</span><span>DIR · ROUTE</span><span>MESSAGE / RESPONSE</span><span>STATUS</span><span></span>
             </div>
-          )}
 
-          {filtered.map((c, i) => <CommRow key={c._raw?.id || i} c={c} i={i}/>)}
+            {filtered.length === 0 && (
+              <div className="mono muted" style={{ padding: 30, textAlign: 'center', fontSize: 11 }}>
+                // no messages match current filters
+              </div>
+            )}
+
+            {filtered.map((c, i) => <CommRow key={c._raw?.id || i} c={c} i={i}/>)}
+          </div>
         </Section>
 
         {/* Right panel: tabs for Notes vs Notifications */}

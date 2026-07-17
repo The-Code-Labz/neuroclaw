@@ -28,7 +28,13 @@
     // generated layout CSS ':root:not([data-layout])' default (compact) paints.
     var l = localStorage.getItem('nc_dashboard_layout');
     if (l) document.documentElement.setAttribute('data-layout', l);
-  } catch (e) { /* localStorage unavailable (private mode, etc.) — default theme + layout render */ }
+    // Design axis (data-design) — shape/component personality (corner radius +
+    // button typography). Applied pre-paint for the same reason as theme/layout
+    // above. If unset, the generated design CSS ':root:not([data-design])'
+    // default (terminal — today's exact look) paints.
+    var d = localStorage.getItem('nc_dashboard_design');
+    if (d) document.documentElement.setAttribute('data-design', d);
+  } catch (e) { /* localStorage unavailable (private mode, etc.) — default theme + layout + design render */ }
 })();
 </script>
 <!-- Production build entry — all JS served by Vite bundle, no Babel transpilation -->
@@ -124,7 +130,7 @@
   .nc-panel {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: var(--radius-panel, 6px);
     position: relative;
   }
   .nc-panel.glow { box-shadow: var(--glow-soft); }
@@ -151,12 +157,12 @@
 
   /* Markdown rendering for agent chat bubbles (page-chat.jsx .nc-md). */
   .nc-md p { margin: 4px 0; white-space: pre-wrap; }
-  .nc-md h1, .nc-md h2, .nc-md h3 { color: var(--accent-2); margin: 10px 0 4px; font-family: var(--mono); }
+  .nc-md h1, .nc-md h2, .nc-md h3 { color: var(--accent-2); margin: 10px 0 4px; font-family: var(--display); }
   .nc-md h1 { font-size: 15px; } .nc-md h2 { font-size: 14px; } .nc-md h3 { font-size: 13px; }
   .nc-md ul, .nc-md ol { padding-left: 18px; margin: 4px 0; }
   .nc-md li { margin: 2px 0; }
-  .nc-md code { background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 3px; padding: 1px 5px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
-  .nc-md pre { background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
+  .nc-md code { background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); border-radius: var(--radius-inline, 3px); padding: 1px 5px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .nc-md pre { background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: var(--radius-panel, 6px); padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
   .nc-md pre code { background: none; border: none; padding: 0; color: var(--text-soft); font-size: 12px; }
   .nc-md strong { color: var(--accent); font-weight: 600; }
   .nc-md em { font-style: italic; color: var(--text-soft); }
@@ -165,7 +171,7 @@
   .nc-md table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
   .nc-md th, .nc-md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
   .nc-md th { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent); }
-  .nc-md img { max-width: 100%; max-height: 480px; border-radius: 6px; border: 1px solid var(--line); display: block; margin: 6px 0; }
+  .nc-md img { max-width: 100%; max-height: 480px; border-radius: var(--radius-panel, 6px); border: 1px solid var(--line); display: block; margin: 6px 0; }
 
   .mono { font-family: var(--mono); }
   .pixel { font-family: var(--mono); letter-spacing: 0.08em; }
@@ -225,13 +231,13 @@
     border: 1px solid var(--line);
     color: var(--text);
     padding: 7px 12px;
-    font-family: var(--mono);
+    font-family: var(--btn-font, var(--mono));
     font-size: 11px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    letter-spacing: var(--btn-tracking, 0.12em);
+    text-transform: var(--btn-case, uppercase);
     cursor: pointer;
-    transition: all .15s ease;
-    border-radius: 2px;
+    transition: all .15s ease, border-radius .2s ease;
+    border-radius: var(--radius-control, 2px);
     display: inline-flex; align-items: center; gap: 8px;
   }
   .nc-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--line-hard); box-shadow: var(--glow-soft); color: var(--text); }
@@ -251,21 +257,6 @@
     border-color: var(--line);
     color: var(--muted);
   }
-
-  /* Version switcher (v3 ↔ v4) */
-  .nc-btn.version-switch {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-    border-color: var(--line-hard);
-    color: var(--text-soft);
-    text-decoration: none;
-  }
-  .nc-btn.version-switch:hover {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    border-color: var(--accent);
-    color: var(--text);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 25%, transparent);
-  }
-  .nc-btn.version-switch .mono { letter-spacing: 0.08em; }
 
   /* Holographic outline */
   .holo {
@@ -290,7 +281,7 @@
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 8px;
     border: 1px solid var(--line);
-    border-radius: 999px;
+    border-radius: var(--radius-pill, 999px);
     font-family: var(--mono);
     font-size: 10px;
     letter-spacing: 0.1em;
@@ -316,38 +307,39 @@
     padding: 9px 12px;
     font-family: var(--mono);
     font-size: 12px;
-    border-radius: 2px;
+    border-radius: var(--radius-control, 2px);
     outline: none;
   }
   .nc-input:focus, .nc-select:focus, .nc-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
 
-  /* Sidebar */
+  /* Sidebar — calm nav: quiet hover, single accent rail marks "this one" */
   .nc-sidebar a {
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center; gap: 12px;
+    min-height: 36px;
     padding: 8px 14px;
     margin: 1px 8px;
     color: var(--text-soft);
     text-decoration: none;
-    font-family: var(--mono);
-    font-size: 12px;
-    border-radius: 2px;
+    font-family: var(--display);
+    font-size: 13.5px;
+    border-radius: 8px;
     cursor: pointer;
     position: relative;
-    border-left: 2px solid transparent;
-    transition: all .15s ease;
+    transition: background .15s ease, color .15s ease;
   }
-  .nc-sidebar a:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--text); }
+  .nc-sidebar a:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
   .nc-sidebar a.active {
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, transparent), color-mix(in srgb, var(--accent) 2%, transparent));
-    border-left-color: var(--accent);
+    background: var(--panel);
     color: var(--text);
-    box-shadow: inset 0 0 30px color-mix(in srgb, var(--accent) 6%, transparent);
+    font-weight: 500;
   }
-  .nc-sidebar a.active::after {
-    content: ''; position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent); box-shadow: 0 0 8px var(--accent);
+  .nc-sidebar a.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px;
+    width: 3px; border-radius: 2px;
+    background: var(--accent);
   }
+  .nc-sidebar a.active { padding-left: 20px; }
+  .nc-sidebar a.active svg { color: var(--accent); }
   .nc-sidebar a.disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* Util grid bg */
@@ -595,11 +587,49 @@
     padding: 4px 8px;
     background: rgba(2,6,23,0.7);
     border: 1px solid var(--line);
-    border-radius: 999px;
+    border-radius: var(--radius-pill, 999px);
     font-family: var(--mono); font-size: 10px;
     color: var(--text-soft);
     letter-spacing: 0.06em;
   }
+
+  /* Footer — ambient row is calm; dev telemetry lives in a collapsible strip */
+  .footer-ambient {
+    height: 100%; display: flex; align-items: center; gap: 18px; padding: 0 14px;
+  }
+  .footer-dev-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: transparent; border: none; cursor: pointer;
+    color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    padding: 2px 4px; transition: color .15s ease;
+  }
+  .footer-dev-toggle:hover { color: var(--text-soft); }
+  .footer-dev-toggle svg { transition: transform .18s ease; }
+  .footer-dev-toggle.open svg { transform: rotate(180deg); }
+  .footer-dev-strip {
+    height: 30px; display: flex; align-items: center; gap: 16px; padding: 0 14px;
+    border-top: 1px solid var(--line-soft); background: var(--bg-0);
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    overflow-x: auto; white-space: nowrap;
+  }
+  .footer-dev-strip span b { color: var(--text-soft); font-weight: 500; }
+
+  /* System status pill (TopBar) — one calm entry point, details live in the popover */
+  .sys-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: transparent; border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 12px; cursor: pointer; color: var(--text-soft);
+    font-family: var(--display); font-size: 12px; transition: border-color .15s ease, background .15s ease;
+  }
+  .sys-pill:hover { background: color-mix(in srgb, var(--text) 4%, transparent); border-color: var(--line-hard, var(--line)); }
+  .sys-pill .dot { width: 6px; height: 6px; }
+  .sys-popover-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px; font-family: var(--mono); font-size: 11px;
+  }
+  .sys-popover-row + .sys-popover-row { border-top: 1px dashed var(--line-soft); }
+  .sys-popover-row .k { color: var(--muted); letter-spacing: 0.06em; }
+  .sys-popover-row .v { color: var(--text); }
 
   /* SVG icons base */
   .ico { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -613,8 +643,8 @@
   .nc-prose ul, .nc-prose ol { margin: 0 0 12px 20px; padding: 0; }
   .nc-prose li { margin: 4px 0; }
   .nc-prose a  { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-  .nc-prose code { background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 1px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12px; }
-  .nc-prose pre { background: var(--panel); padding: 12px 14px; border-radius: 6px; border: 1px solid var(--line-soft); overflow-x: auto; }
+  .nc-prose code { background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 1px 6px; border-radius: var(--radius-inline, 4px); font-family: var(--mono); font-size: 12px; }
+  .nc-prose pre { background: var(--panel); padding: 12px 14px; border-radius: var(--radius-panel, 6px); border: 1px solid var(--line-soft); overflow-x: auto; }
   .nc-prose pre code { background: transparent; padding: 0; font-size: 12px; }
   .nc-prose blockquote { border-left: 3px solid var(--accent); padding: 6px 14px; color: var(--text-soft); background: color-mix(in srgb, var(--accent) 5%, transparent); margin: 0 0 12px; }
   .nc-prose table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px; }
@@ -661,6 +691,74 @@
     }
     .stat-grid > * {
       width: 100% !important;
+    }
+  }
+
+  /* ── Fixed-sidebar + flex/grid content split (Backlot, Dream journal, Interactive,
+     NeuroLab, MCP form rows). Pages set their own desktop widths inline
+     (width:260, gridTemplateColumns:'220px 1fr', etc) — these !important rules
+     beat that inline style at narrow widths, same pattern as .chat-layout above. */
+  @media (max-width: 768px) {
+    .split-flex { flex-direction: column !important; }
+    .split-flex-fixed {
+      width: 100% !important;
+      max-width: none !important;
+      flex-shrink: 1 !important;
+    }
+    .split-grid { grid-template-columns: 1fr !important; }
+  }
+
+  /* ── Label + control form rows (Settings, MCP editor, Secrets forms): the
+     inline gridTemplateColumns (e.g. '220px 1fr') is too tight under ~360px
+     of viewport width, so stack label above control. */
+  @media (max-width: 640px) {
+    .setting-row { grid-template-columns: 1fr !important; gap: 6px !important; }
+  }
+
+  /* ── Dense data-table rows (Providers/Usage/Comms/Hivemind/Logs/Channels/
+     Approvals): many fixed-px columns for alignment don't reflow into a
+     stacked card view safely, so scroll the row horizontally instead of
+     silently clipping or squeezing data unreadable on a phone. */
+  .table-scroll { overflow-x: visible; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 768px) {
+    .table-scroll { overflow-x: auto !important; overflow-y: visible; }
+  }
+
+  /* ── Secrets audit-row (5 fixed-px columns): reduce column count instead of
+     squeezing, matching the v4 dashboard's equivalent .audit-row treatment. */
+  @media (max-width: 768px) {
+    .audit-row { grid-template-columns: 70px 90px 1fr 60px !important; }
+    .audit-row span:nth-child(3) { display: none; }
+  }
+  @media (max-width: 640px) {
+    /* 3 spans remain visible (event, message, outcome) once time+agent are
+       hidden below — 3 tracks, not 2, so the outcome badge doesn't get
+       squeezed into the message column. */
+    .audit-row { grid-template-columns: auto 1fr auto !important; gap: 6px !important; }
+    .audit-row span:nth-child(1),
+    .audit-row span:nth-child(3) { display: none; }
+  }
+
+  /* ── Modal dialogs with a fixed desktop pixel width (Cmd palette, etc):
+     .modal-back has no padding, so a `width:560` child overflows a
+     320-375px phone unclipped. Clamp to viewport width. */
+  @media (max-width: 640px) {
+    .modal-fixed-width { width: calc(100vw - 32px) !important; max-width: none !important; }
+  }
+
+  /* ── Topbar-anchored dropdown panels (notification bell, etc): the inline
+     `position:absolute; right:0; width:360` popup overflows a 320-375px
+     phone since it's anchored to an icon that isn't at the viewport edge.
+     Detach it into a viewport-clamped sheet below the topbar instead. */
+  @media (max-width: 480px) {
+    .notif-panel {
+      position: fixed !important;
+      left: 8px !important;
+      right: 8px !important;
+      top: calc(48px + env(safe-area-inset-top, 0px) + 4px) !important;
+      width: auto !important;
+      max-width: none !important;
+      max-height: calc(100dvh - 96px) !important;
     }
   }
 
@@ -755,24 +853,97 @@
     }
   }
 
-  /* Chat layout - 3 columns to stacked */
+  /* Chat layout — Calm Instrument: rail | thread, inspector opt-in 3rd col */
   .chat-layout {
     display: grid;
-    grid-template-columns: 260px 1fr 280px;
-    gap: 0;
+    grid-template-columns: 260px 1fr;
+    gap: 12px;
     height: 100%;
   }
+  .chat-layout.inspector-open { grid-template-columns: 260px 1fr 320px; }
+  .chat-sessions, .chat-inspector, .chat-thread { border-color: var(--line-soft); }
+  .chat-inspector { display: none; flex-direction: column; overflow: hidden; padding: 0; }
+  .chat-layout.inspector-open .chat-inspector { display: flex; }
+  .chat-inspector-toggle.is-active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  /* Sessions rail rows */
+  .chat-rail-row {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .chat-rail-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .chat-rail-row.active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .chat-rail-title { font-family: var(--display); font-size: 13px; font-weight: 500; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-rail-row.active .chat-rail-title { color: var(--text); }
+  .chat-rail-meta { font-family: var(--display); font-size: 11px; color: var(--muted); }
+  .chat-rail-icon-btn {
+    background: transparent; border: none; color: var(--muted); cursor: pointer;
+    padding: 4px; border-radius: var(--radius-inline, 4px); display: inline-flex; align-items: center; justify-content: center;
+    transition: color .12s ease, background .12s ease;
+  }
+  .chat-rail-icon-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .chat-rail-icon-btn.is-active { color: var(--accent); }
   /* Session-rail row actions: reveal on hover (touch devices always show). */
   .chat-sess-actions { opacity: 0; transition: opacity .12s ease; }
   .chat-sess-row:hover .chat-sess-actions { opacity: 1; }
   @media (hover: none) { .chat-sess-actions { opacity: 1; } }
+
+  /* Thread header — quiet pill controls, no mono title bar */
+  .chat-thread-header { padding: 14px 18px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; gap: 12px; }
+  .chat-thread-name { font-family: var(--display); font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-thread-sub { font-family: var(--display); font-size: 11px; color: var(--muted); margin-top: 2px; display: flex; gap: 10px; align-items: center; }
+  .chat-pill-select, .chat-pill-btn {
+    border: 1px solid var(--line-soft); border-radius: var(--radius-pill, 999px);
+    background: transparent; color: var(--text-soft); font-family: var(--display); font-size: 12px;
+    padding: 6px 12px; cursor: pointer; transition: all .12s ease;
+  }
+  .chat-pill-btn:hover, .chat-pill-select:hover { border-color: var(--accent); color: var(--text); }
+  .chat-pill-btn.is-active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+  /* Message bubbles — proportional prose, hairline surfaces (no gradients) */
+  .chat-bubble { border: 1px solid var(--line-soft); padding: 14px 16px; }
+  .chat-bubble-user { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 25%, var(--line-soft)); border-radius: var(--radius-panel, 6px) var(--radius-panel, 6px) 4px var(--radius-panel, 6px); }
+  .chat-bubble-agent { background: var(--panel); border-radius: var(--radius-panel, 6px) var(--radius-panel, 6px) var(--radius-panel, 6px) 4px; }
+  .chat-bubble-meta { font-family: var(--display); font-size: 11px; color: var(--muted); }
+  .chat-bubble-body { font-family: var(--display); font-size: 14.5px; line-height: 1.55; color: var(--text); }
+  .chat-bubble-body code, .chat-bubble-body pre, .chat-bubble-body pre code { font-family: var(--mono); }
+  .chat-cursor { display: inline-block; color: var(--accent); animation: chat-cursor-pulse 1.2s ease-in-out infinite; }
+  @keyframes chat-cursor-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
+
+  /* Composer — stacked textarea + action row, circular icon buttons */
+  .chat-composer-shell { border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px); padding: 12px; background: var(--panel); }
+  .chat-composer-textarea {
+    width: 100%; background: transparent; border: 0; outline: 0;
+    color: var(--text); font-family: var(--display); font-size: 14px;
+    resize: none; line-height: 1.5; min-height: 24px; max-height: 160px; overflow-y: auto;
+  }
+  .chat-composer-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+  .chat-icon-btn {
+    width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent; color: var(--muted); cursor: pointer; transition: all .12s ease; flex: none;
+  }
+  .chat-icon-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .chat-icon-btn.is-active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .chat-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chat-send-btn {
+    background: var(--accent); color: var(--icon-on-accent, #04141c); border: none; border-radius: var(--radius-pill, 999px);
+    padding: 8px 16px; font-family: var(--display); font-size: 12px; font-weight: 600; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; transition: opacity .12s ease; flex: none;
+  }
+  .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chat-kbd-hint { font-family: var(--display); font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
+
   @media (max-width: 1024px) {
-    .chat-layout { grid-template-columns: 200px 1fr; }
+    .chat-layout, .chat-layout.inspector-open { grid-template-columns: 200px 1fr !important; }
     /* !important beats the inline style={{display:'flex'}} on the panel */
-    .chat-layout .chat-inspector { display: none !important; }
+    .chat-layout .chat-inspector, .chat-layout.inspector-open .chat-inspector { display: none !important; }
+    .chat-inspector-toggle { display: none !important; }
   }
   @media (max-width: 768px) {
-    .chat-layout { grid-template-columns: 1fr !important; }
+    .chat-layout, .chat-layout.inspector-open { grid-template-columns: 1fr !important; }
     /* !important beats the inline style={{display:'flex'}} on the panel */
     .chat-layout .chat-sessions { display: none !important; }
     .chat-layout .chat-sessions.mob-open {
@@ -794,22 +965,18 @@
     }
   }
 
-  /* ── Mobile chat composer ────────────────────────────────────────────
-     On desktop the caret + textarea + action buttons sit on one row. On a
-     phone that squeezes the textarea to a few characters, so wrap: textarea
-     takes the full first line, action buttons flow onto the line below. */
+  /* ── Mobile chat header / composer ───────────────────────────────────
+     Composer is a vertical stack (textarea, then action row) at every
+     width already, so no wrap hack is needed there. On a phone, drop the
+     redundant thread name/sub line (topbar already reads "Chat") and let
+     the agent picker fill the row; give action-row icon buttons roomier
+     touch targets. */
   @media (max-width: 640px) {
-    .chat-composer-row { flex-wrap: wrap; row-gap: 8px; }
-    .chat-composer-row > .chat-prompt-caret { display: none; }
-    .chat-composer-input { flex: 1 1 100% !important; }
-    /* Action buttons: comfortable touch targets on their own row */
-    .chat-composer-row .nc-btn { min-height: 40px; }
-    .chat-composer-row .nc-btn.primary { flex: 1 1 auto; justify-content: center; }
-
-    /* Chat thread header: drop the redundant "New chat · msgs · live" text
-       (topbar already reads "Chat") and let the agent picker fill the row. */
-    .chat-thread-title { display: none !important; }
-    .chat-agent-select { flex: 1 1 auto; width: auto !important; min-width: 0; }
+    .chat-icon-btn { width: 36px; height: 36px; }
+    .chat-send-btn { min-height: 36px; }
+    .chat-kbd-hint { display: none; }
+    .chat-thread-name, .chat-thread-sub { display: none !important; }
+    .chat-pill-select { flex: 1 1 auto; width: auto !important; min-width: 0; }
   }
 
   /* Overview 3-column layout */
@@ -856,6 +1023,106 @@
       width: 160px;
       height: 160px;
     }
+  }
+
+  /* ============================================================
+     OVERVIEW — "Calm Instrument"
+     Hairline-bordered blocks instead of stacked glow panels; one
+     breathing hero (Atrium) instead of a busy orb; restrained motion.
+     ============================================================ */
+
+  .ov-atrium {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+  .ov-atrium-top { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .ov-atrium-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ov-eyebrow {
+    font-family: var(--mono); font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted);
+  }
+  .ov-state-word {
+    font-family: var(--display); font-size: 24px; font-weight: 600;
+    letter-spacing: -0.01em; text-transform: capitalize; line-height: 1.15;
+  }
+  .ov-atrium-readouts { display: flex; align-items: center; gap: 22px; margin-left: auto; flex-wrap: wrap; }
+  .ov-readout { display: flex; flex-direction: column; gap: 2px; }
+  .ov-readout__label { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+  .ov-readout__value { font-size: 13px; color: var(--text-soft); }
+  .ov-whisper { margin-top: 12px; font-size: 11px; color: var(--text-soft); opacity: 0.85; }
+  .ov-whisper.is-error { color: var(--danger); }
+
+  /* Breathing hero dot — replaces the old 220px orb */
+  .ov-breath { position: relative; width: 56px; height: 56px; flex: none; }
+  .ov-breath__ring, .ov-breath__halo, .ov-breath__core { position: absolute; border-radius: 50%; }
+  .ov-breath__ring { inset: 0; border: 1px solid color-mix(in srgb, var(--accent-2) 30%, transparent); }
+  .ov-breath__halo { inset: 8px; background: radial-gradient(circle, var(--accent-2), transparent 70%); opacity: 0.35; animation: ov-breathe 4.2s ease-in-out infinite; }
+  .ov-breath__core { inset: 20px; background: var(--accent-2); box-shadow: 0 0 16px color-mix(in srgb, var(--accent-2) 60%, transparent); }
+  .ov-breath--warn .ov-breath__ring { border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
+  .ov-breath--warn .ov-breath__halo { background: radial-gradient(circle, var(--amber), transparent 70%); animation: ov-flicker 1.2s ease-in-out infinite; }
+  .ov-breath--warn .ov-breath__core { background: var(--amber); box-shadow: 0 0 16px color-mix(in srgb, var(--amber) 60%, transparent); }
+  .ov-breath--off .ov-breath__ring { border-color: color-mix(in srgb, var(--danger) 30%, transparent); animation: ov-spin 24s linear infinite; }
+  .ov-breath--off .ov-breath__halo { opacity: 0.16; animation: none; }
+  .ov-breath--off .ov-breath__core { background: var(--danger); animation: ov-pulse-red 0.7s ease-in-out infinite; }
+  .ov-breath--boot .ov-breath__halo { background: radial-gradient(circle, var(--accent), transparent 70%); animation: ov-breathe 2.2s ease-in-out infinite; }
+  .ov-breath--boot .ov-breath__core { background: var(--accent); box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 60%, transparent); }
+  @keyframes ov-breathe   { 0%, 100% { transform: scale(0.92); opacity: 0.3; } 50% { transform: scale(1.08); opacity: 0.5; } }
+  @keyframes ov-flicker   { 0%, 100% { opacity: 0.28; } 50% { opacity: 0.5; } }
+  @keyframes ov-spin      { to { transform: rotate(360deg); } }
+  @keyframes ov-pulse-red { 0%, 100% { opacity: 0.7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.1); } }
+  @media (prefers-reduced-motion: reduce) {
+    .ov-breath__halo, .ov-breath__ring, .ov-breath__core { animation: none !important; }
+  }
+
+  /* Subsystem chips — six quiet dot+label pairs, no fill/chrome */
+  .ov-subsystems { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+  .ov-subsystem { display: flex; align-items: center; gap: 6px; }
+  .ov-subsystem .mono { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-soft); }
+
+  /* Section blocks — hairline border, no shadow/glow; replaces nc-panel.glow
+     for Overview's secondary/tertiary rows */
+  .ov-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; align-items: start; }
+  .ov-block {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 18px 20px;
+  }
+  .ov-block--flush { padding: 0; overflow: hidden; }
+  .ov-block--aux { opacity: 0.94; }
+  .ov-block__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .ov-block__title { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+  .ov-vital { height: 4px; }
+  .ov-vital__fill { transition: width 420ms cubic-bezier(0.4, 0, 0.2, 1); }
+  .ov-list-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; }
+
+  /* Roster — full-width roll-call, more breathing room than the old 3-col squeeze */
+  .ov-roster { display: flex; flex-direction: column; }
+  .ov-roster-row {
+    display: grid; grid-template-columns: 32px 1fr auto auto; align-items: center; gap: 12px;
+    padding: 11px 2px; border-bottom: 1px solid var(--line-soft); transition: background 160ms ease-out;
+  }
+  .ov-roster-row:last-child { border-bottom: none; }
+  .ov-roster-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  .ov-roster-avatar {
+    width: 30px; height: 30px; border-radius: var(--radius-control, 6px);
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+  }
+  .ov-roster-name { font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ov-roster-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+  @media (max-width: 1024px) {
+    .ov-row { grid-template-columns: 1fr; }
+    .ov-atrium-readouts { margin-left: 0; }
+  }
+  @media (max-width: 640px) {
+    .ov-atrium-top { gap: 14px; }
+    .ov-breath { width: 44px; height: 44px; }
+    .ov-state-word { font-size: 20px; }
+    .ov-roster-row { grid-template-columns: 28px 1fr auto; }
+    .ov-roster-row > .mono.muted { display: none; }
   }
 
   /* Touch-friendly button sizes */
@@ -1105,7 +1372,380 @@
       grid-template-columns: 1fr;
     }
   }
-  
+
+  /* ============================================================
+     AGENTS — "Calm Instrument" roster
+     Hairline cards, quiet inline meta, icon-only actions. No
+     per-card glow/tilt/gradient — matches Overview's ov-block language.
+     ============================================================ */
+  .ag-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 20px;
+    border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px);
+  }
+  .ag-toolbar-spacer { flex: 1; }
+
+  .ag-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  @media (max-width: 640px) { .ag-grid { grid-template-columns: 1fr; } }
+
+  .ag-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 16px;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .ag-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+  .ag-card.is-temp { border-color: color-mix(in srgb, var(--violet) 32%, var(--line-soft)); }
+  .ag-card.is-inactive { opacity: 0.5; }
+
+  .ag-head { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .ag-avatar {
+    width: 40px; height: 40px; flex: none; border-radius: var(--radius-control, 8px);
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+    font-family: var(--display); font-weight: 600; font-size: 15px;
+    background: color-mix(in srgb, var(--ag-accent, var(--accent)) 16%, transparent);
+    color: var(--ag-accent, var(--accent));
+    border: 1px solid color-mix(in srgb, var(--ag-accent, var(--accent)) 32%, transparent);
+  }
+  .ag-name { font-family: var(--display); font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
+  .ag-role { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+  .ag-desc { font-size: 12px; color: var(--text-soft); line-height: 1.5; margin-bottom: 12px; min-height: 18px; }
+  .ag-meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 3px 0; margin-bottom: 12px; }
+  .ag-meta b { color: var(--text-soft); font-weight: 500; }
+  .ag-meta .sep { margin: 0 7px; opacity: 0.5; }
+  .ag-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; min-height: 20px; }
+  .ag-actions { display: flex; align-items: center; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+  .ag-actions .nc-btn.grow { flex: 1; }
+  .ag-actions .nc-btn.icon-only { flex: none; width: 32px; height: 32px; padding: 0; display: flex; align-items: center; justify-content: center; }
+
+  /* ============================================================
+     MISSION CONTROL — "Calm Instrument"
+     Quiet toolbars, hairline kanban columns/cards, hairline rail
+     rows for Automation. No per-card glow/tilt/shadow-stack —
+     matches Overview/Agents language. `.mc-bar.is-live` is the
+     one deliberate exception (glow = something is actually running).
+     ============================================================ */
+  .mc-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 11px 16px; margin-bottom: 14px;
+    border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px);
+    transition: border-color 200ms ease-out, background 200ms ease-out;
+  }
+  .mc-bar.is-live {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--line-soft));
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+
+  .mc-col {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    overflow: hidden;
+  }
+  .mc-col-head {
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  .mc-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 11px;
+    background: var(--panel);
+    cursor: grab; user-select: none;
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .mc-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+
+  .mc-rail-row {
+    padding: 10px 14px; cursor: pointer; position: relative;
+    border-left: 2px solid transparent;
+    transition: background 140ms ease-out, border-color 140ms ease-out;
+  }
+  .mc-rail-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .mc-rail-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .mc-rail-row .mc-rail-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px; opacity: 0; transition: opacity 140ms; }
+  .mc-rail-row:hover .mc-rail-actions, .mc-rail-row.is-active .mc-rail-actions { opacity: 1; }
+  .mc-rail-row .mc-rail-actions button { background: transparent; border: none; cursor: pointer; padding: 2px 4px; color: var(--muted); }
+  .mc-rail-row .mc-rail-actions button:hover { color: var(--text); }
+
+  .mc-pill {
+    font-size: 9px; font-family: var(--mono); padding: 2px 8px; border-radius: var(--radius-pill, 999px);
+    border: 1px solid var(--line-soft); background: transparent; color: var(--muted);
+    cursor: pointer; text-transform: uppercase; letter-spacing: 0.08em; transition: all 140ms ease-out;
+  }
+  .mc-pill.is-active { border-color: color-mix(in srgb, var(--pill-accent, var(--accent)) 55%, transparent); color: var(--pill-accent, var(--accent)); background: color-mix(in srgb, var(--pill-accent, var(--accent)) 10%, transparent); }
+
+  /* ============================================================
+     STUDIO — "Calm Instrument"
+     Shared toolbar/panel/card/split vocabulary for all 15 Studio
+     sub-tabs (Canvas, NeuroLab, Terminal, Neuro Room, Interactive,
+     Generate, Video, Music, Games, WebApps, Editor, Photopea,
+     Gallery, Media, Backlot). No per-item glow/tilt/scan-line/
+     stripe-bg — matches Overview/Agents/Mission Control language.
+     `.st-toolbar.is-live` is the one deliberate glow exception
+     (something is actively generating/rendering/connected).
+     ============================================================ */
+  .st-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 16px;
+    border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px);
+    transition: border-color 200ms ease-out, background 200ms ease-out;
+  }
+  .st-toolbar.is-live {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--line-soft));
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+  .st-panel {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 16px;
+    background: var(--panel);
+  }
+  .st-panel--flush { padding: 0; overflow: hidden; }
+  .st-panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+  }
+  .st-panel-title { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+
+  .st-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  @media (max-width: 640px) { .st-grid { grid-template-columns: 1fr; } }
+
+  .st-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    overflow: hidden;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .st-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+
+  .st-split { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .st-split { grid-template-columns: 1fr; } }
+
+  .st-rail-row {
+    padding: 10px 14px; cursor: pointer; position: relative;
+    border-left: 2px solid transparent;
+    transition: background 140ms ease-out, border-color 140ms ease-out;
+  }
+  .st-rail-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .st-rail-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+  /* ============================================================
+     MEMORY — "Calm Instrument"
+     Shared toolbar/panel/card/grid vocabulary for Memory, RAG Docs,
+     Notebooks and Dream Cycle. No per-card glow/tilt/shadow-stack —
+     high-salience memories get a quiet accent border, not a bloom.
+     ============================================================ */
+  .mem-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 16px;
+    border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px);
+  }
+  .mem-panel {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 14px;
+    background: var(--panel);
+  }
+  .mem-rail {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 12px;
+  }
+  .mem-type-row {
+    padding: 7px 10px; border-radius: 4px; cursor: pointer; margin-bottom: 2px;
+    border-left: 2px solid transparent;
+    transition: background 140ms ease-out, border-color 140ms ease-out;
+  }
+  .mem-type-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .mem-type-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+  .mem-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  @media (max-width: 640px) { .mem-grid { grid-template-columns: 1fr; } }
+
+  .mem-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 12px;
+    background: var(--panel);
+    cursor: pointer;
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .mem-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+  .mem-card.is-active { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft)); }
+  .mem-card.is-high-salience { border-left: 2px solid var(--accent); }
+
+  /* ============================================================
+     NOTES — "Calm Instrument"
+     Reuses .st-split (300px rail + 1fr pane) and the .mem-card
+     vocabulary for the note list. No per-card glow/tilt/shadow-ring
+     — active note gets a quiet accent border, pinned gets a left
+     accent-2 rail. Detail pane is a flush panel, icon-only actions.
+     ============================================================ */
+  /* Bug fix: .nt-split previously had NO rule at all — list/viewer stacked
+     as plain blocks at every width, forcing a scroll past the whole list
+     to reach the viewer. Give it the real 300px + 1fr split. */
+  .nt-split { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; }
+  .nt-list { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); align-content: start; }
+  /* Below the collapse breakpoint, only one pane shows at a time — a
+     toggle switches between them instead of forcing a long scroll. */
+  @media (max-width: 900px) {
+    .nt-split { grid-template-columns: 1fr; }
+    .nt-mobile-tabs { display: flex !important; }
+    .nt-mobile-hide { display: none !important; }
+  }
+  .nt-mobile-tabs { display: none; gap: 6px; margin-bottom: 12px; }
+  .nt-mobile-tabs button { flex: 1; }
+  .nt-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 12px; cursor: pointer; position: relative;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .nt-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+  .nt-card.is-active { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft)); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .nt-card.is-pinned { border-left: 2px solid var(--accent-2); }
+  .nt-card.is-archived { opacity: 0.55; }
+  .nt-toolbar-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line-soft);
+    background: transparent; color: var(--icon-default, var(--text-soft)); cursor: pointer;
+    transition: background 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+  }
+  .nt-toolbar-btn:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); border-color: var(--line); }
+  .nt-toolbar-btn.is-danger:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line-soft)); }
+  .nt-toolbar-btn.is-active { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, var(--line-soft)); }
+
+  /* ============================================================
+     CONNECT — "Calm Instrument"
+     Shared toolbar/card/panel/row vocabulary for Providers · MCP ·
+     Skills · Channels · Composio · Machines. No per-card glow/tilt —
+     matches Agents/Mission Control/Studio/Memory language.
+     ============================================================ */
+  .cn-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 16px;
+    border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 6px);
+  }
+  .cn-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-bottom: 16px; }
+  .cn-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 14px;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .cn-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+  .cn-panel {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 16px;
+    background: var(--panel);
+  }
+  .cn-panel--flush { padding: 0; overflow: hidden; }
+  .cn-row {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 14px;
+    margin-bottom: 10px;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .cn-row:hover { background: color-mix(in srgb, var(--accent) 2%, transparent); }
+  .cn-row.is-disabled { opacity: 0.55; }
+
+  /* ============================================================
+     SECURITY — "Calm Instrument"
+     Shared panel/card/row vocabulary for Sentinel · Approvals ·
+     Secrets. No per-card glow/tilt — matches Agents/Mission Control/
+     Studio/Memory/Connect language.
+     ============================================================ */
+  .sec-panel {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 16px;
+    background: var(--panel);
+  }
+  .sec-panel--flush { padding: 0; overflow: hidden; }
+  .sec-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 14px;
+    background: var(--panel);
+    transition: background 160ms ease-out, border-color 160ms ease-out;
+  }
+  .sec-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+  .sec-row {
+    padding: 14px 16px;
+    border-bottom: 1px dashed color-mix(in srgb, var(--accent) 8%, transparent);
+    transition: background 160ms ease-out;
+  }
+  .sec-row:last-child { border-bottom: none; }
+  .sec-row:hover { background: color-mix(in srgb, var(--accent) 2%, transparent); }
+  .sec-scope-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--panel);
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  /* ============================================================
+     OBSERVABILITY — "Calm Instrument"
+     Shared panel/console/row vocabulary for Analytics · Usage ·
+     Health · Artifacts · Logs · Compression. Logs' terminal loses
+     its glow + scan-line (matches every other tab's console/table
+     surfaces); provider/error rows lose their JS onMouseOver hacks
+     and hardcoded rgba(0,0,0,...) backgrounds in favor of CSS hover
+     + theme tokens.
+     ============================================================ */
+  .ob-console {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    overflow: hidden;
+    background: var(--panel);
+  }
+  .ob-console-head {
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .ob-console-body {
+    background: color-mix(in srgb, var(--bg-0) 45%, transparent);
+    padding: 10px 14px; max-height: 560px; overflow: auto;
+  }
+  .ob-row {
+    padding: 10px 8px; cursor: pointer; border-radius: 2px;
+    transition: background 140ms ease-out;
+  }
+  .ob-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  .ob-sub-row { background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .ob-active-row { background: color-mix(in srgb, var(--accent) 5%, transparent); border-left: 2px solid var(--accent); }
+  .ob-preview-box {
+    background: color-mix(in srgb, var(--bg-0) 30%, transparent);
+    border: 1px solid var(--line-soft); border-radius: 2px;
+  }
+
+  /* ============================================================
+     SETTINGS — Calm Instrument pass
+     ============================================================ */
+  .se-panel {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel, 6px);
+    padding: 18px;
+    background: var(--panel);
+  }
+  .se-well {
+    background: color-mix(in srgb, var(--bg-0) 45%, transparent);
+    border-radius: 2px;
+  }
+  .se-banner-danger {
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+    border-radius: 4px;
+  }
+
   /* Stat card mobile scaling */
   .stat-card {
     padding: 14px;
@@ -1378,6 +2018,20 @@
   @media (max-width: 640px) {
     .gap-responsive { gap: 10px; }
   }
+
+  /* Native <select> popups default to a white OS/browser popup; without this,
+     any select using light inherited text color renders near-invisible text
+     on a white dropdown list. Forces the browser to draw the popup itself
+     (background + text) using its dark UI theme. Global safety net so this
+     class of bug can't recur on any page. */
+  select { color-scheme: dark; }
+
+  /* Global button text-color reset: browsers give unstyled <button> elements
+     a default "buttontext" color (near-black), independent of the page's
+     dark theme. Any button that doesn't set an explicit color (e.g. Backlot's
+     project-rail rows) silently renders near-invisible dark-on-dark text.
+     Safety net so this class of bug can't recur on any page. */
+  button { color: inherit; }
 
 </style>
 

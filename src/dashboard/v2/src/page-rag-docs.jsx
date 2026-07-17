@@ -73,7 +73,7 @@ const RAGDocs = () => {
       </>}/>
 
       {!enabled && (
-        <div className="nc-panel glow" style={{ padding: 16, marginBottom: 12 }}>
+        <div className="mem-panel" style={{ marginBottom: 12 }}>
           <div className="mono" style={{ fontSize: 12, color: 'var(--text-soft)' }}>
             Knowledge base is disabled. Set <span className="neonc">KB_ENABLED=true</span> and restart to enable RAG document browsing.
           </div>
@@ -90,12 +90,12 @@ const RAGDocs = () => {
         {sources.length} source{sources.length === 1 ? '' : 's'} · {totalPages} page chunk{totalPages === 1 ? '' : 's'} indexed
       </div>
 
-      <div className="stack" style={{ gap: 12, alignItems: 'flex-start' }}>
+      <div className="stack" style={{ gap: 16, alignItems: 'flex-start' }}>
         {/* Sources list */}
         <div style={{ flex: '0 0 320px', maxWidth: 360, display: 'grid', gap: 8, alignContent: 'start' }}>
           {loading && <div className="mono muted" style={{ fontSize: 11 }}>loading sources…</div>}
           {!loading && enabled && list.length === 0 && (
-            <div className="nc-panel" style={{ padding: 14 }}>
+            <div className="mem-panel">
               <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.6 }}>
                 No documents indexed yet.<br/>
                 <span className="muted">Agents add docs with </span><span className="neonc">crawl_and_index</span>
@@ -104,9 +104,7 @@ const RAGDocs = () => {
             </div>
           )}
           {list.map(s => (
-            <div key={s.source_id} className="nc-panel glow tilt" onClick={() => loadPages(s.source_id)}
-              style={{ padding: 12, cursor: 'pointer', position: 'relative',
-                boxShadow: active === s.source_id ? '0 0 0 1px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent)' : undefined }}>
+            <div key={s.source_id} className={`mem-card${active === s.source_id ? ' is-active' : ''}`} onClick={() => loadPages(s.source_id)}>
               <div className="mono" style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4, wordBreak: 'break-word' }}>
                 {s.title || s.source_id}
               </div>
@@ -124,14 +122,14 @@ const RAGDocs = () => {
         {/* Pages of the selected source */}
         <div style={{ flex: 1, minWidth: 0 }}>
           {!active && enabled && (
-            <div className="nc-panel" style={{ padding: 20, textAlign: 'center' }}>
+            <div className="mem-panel" style={{ textAlign: 'center' }}>
               <div className="mono muted" style={{ fontSize: 11 }}>← select a source to view its indexed pages</div>
             </div>
           )}
           {active && (
             <>
-              <div className="nc-panel glow" style={{ padding: 12, marginBottom: 12 }}>
-                <div className="label-tiny neonc" style={{ marginBottom: 6 }}>SOURCE</div>
+              <div className="mem-panel" style={{ marginBottom: 12 }}>
+                <div className="label-tiny" style={{ marginBottom: 6 }}>Source</div>
                 <div className="mono" style={{ fontSize: 13, color: 'var(--text)', wordBreak: 'break-word' }}>{activeSrc?.title || active}</div>
                 <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>
                   {active} · {total} chunk{total === 1 ? '' : 's'}

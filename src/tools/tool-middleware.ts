@@ -25,6 +25,26 @@ import {
   mapStringLeaves,
 } from './compression-engines';
 import { recordCompressionTelemetry } from './compression-telemetry';
+import {
+  classifyOutcome,
+  isRetrySafe,
+  parseRetryAfterMs,
+  type ToolCategory,
+  type ToolOutcome,
+} from './tool-result-class';
+import { onToolFailed } from '../system/self-heal/heal-loop';
+import { checkSpendBreaker, releaseSpendBreaker, estimateCost } from '../infra/spend-breaker';
+
+export { ToolCategory } from './tool-result-class';
+
+// ── Retry tuning ───────────────────────────────────────────────────────────
+const MAX_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.TOOL_RETRY_MAX_ATTEMPTS ?? '3', 10));
+const RETRY_DELAYS_MS = [30_000, 60_000, 120_000];
+const RETRY_JITTER_MS = 5_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
 
 // ── Exemption ──────────────────────────────────────────────────────────────
 
@@ -53,8 +73,6 @@ export const COMPRESSION_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   'notebook_add_source',
   'notebook_source_list',
 ]);
-
-export type ToolCategory = 'retrieval' | 'action' | 'compute' | undefined;
 
 /**
  * Is this tool result exempt from compression? Over-protection is the safe
@@ -333,12 +351,16 @@ export function maybeCompressToolResult(
  * (claude-sdk, openai, http-mcp, meta-tools/call_tool) route here so that:
  *   1. the tool_call trace is emitted uniformly (closes the historical
  *      logToolCall-missing-at-http-mcp gap), and
- *   2. output compression + the retrieval exemption are applied EXACTLY once,
- *      universally, for every provider and both agent + chat mode.
+ *   2. classification → retry → output compression + retrieval exemption are
+ *      applied EXACTLY once, universally, for every provider and both agent +
+ *      chat mode.
  *
  * `run` is the already-gated, already-validated handler invocation — this
  * wrapper deliberately does NOT re-gate or re-validate; each site owns its
  * own (differing) pre-flight. Keeping the wrapper narrow keeps blast radius low.
+ *
+ * Ordering (F8): classify → retry-loop-if-needed → maybeCompressToolResult ONCE
+ * on the settled result.
  */
 export async function invokeTool(params: {
   name: string;
@@ -353,6 +375,109 @@ export async function invokeTool(params: {
   if (params.trace !== false) {
     logToolCall(params.name, params.args, params.ctx);
   }
-  const result = await params.run();
-  return maybeCompressToolResult(params.name, params.category, result, params.ctx);
+
+  const { name, category, ctx, run } = params;
+  const userId = ctx.sessionId ?? ctx.agentId ?? 'anonymous';
+  const retrySafe = isRetrySafe(name, category);
+  const estCost = estimateCost(name);
+  const maxAttempts = MAX_RETRY_ATTEMPTS;
+
+  let lastResult: unknown;
+  let lastError: unknown;
+  let lastOutcome: ToolOutcome = 'success';
+  let sawInternalRetry = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    lastResult = undefined;
+    lastError = undefined;
+    let inFlightId: string | undefined;
+
+    try {
+      // Spend-breaker: count EACH attempt against the daily ceiling (F5).
+      if (estCost > 0) {
+        const gate = checkSpendBreaker({ userId, tool: name, estUsd: estCost });
+        if (!gate.allowed) {
+          lastOutcome = 'rate_limited';
+          lastError = new Error(`Studio spend breaker: ${gate.reason ?? 'rate_limited'}`);
+          break;
+        }
+        inFlightId = gate.inFlightId;
+      }
+
+      lastResult = await run();
+      lastOutcome = classifyOutcome(lastResult);
+      if (
+        lastResult &&
+        typeof lastResult === 'object' &&
+        (lastResult as { retriedInternally?: boolean }).retriedInternally === true
+      ) {
+        sawInternalRetry = true;
+      }
+
+      if (lastOutcome === 'success') {
+        if (inFlightId) releaseSpendBreaker(inFlightId);
+        return maybeCompressToolResult(name, category, lastResult, ctx);
+      }
+    } catch (err) {
+      lastError = err;
+      lastOutcome = classifyOutcome(undefined, err);
+      if (err && typeof err === 'object' && (err as { retriedInternally?: boolean }).retriedInternally === true) {
+        sawInternalRetry = true;
+      }
+    } finally {
+      if (inFlightId) releaseSpendBreaker(inFlightId);
+    }
+
+    // The provider helper already exhausted its own retry budget — do not stack
+    // another 3 boundary attempts on top (F4).
+    if (sawInternalRetry) {
+      logger.info('tool-boundary: skipping retry — provider already retried internally', { tool: name, attempt });
+      break;
+    }
+
+    // No more attempts.
+    if (attempt >= maxAttempts) break;
+
+    // Permanent failures and unsafe mutating transients are not retried.
+    if (lastOutcome === 'permanent' || !retrySafe) break;
+
+    // Spaced backoff: 30s → 60s → 120s + jitter. rate_limited honors Retry-After.
+    let delayMs = RETRY_DELAYS_MS[attempt - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+    if (lastOutcome === 'rate_limited') {
+      const retryAfter = parseRetryAfterMs(lastError, lastResult);
+      if (retryAfter !== undefined && retryAfter > 0) delayMs = retryAfter;
+    }
+    delayMs += Math.floor(Math.random() * RETRY_JITTER_MS);
+
+    logger.warn('tool-boundary: retryable outcome, backing off', {
+      tool: name, attempt, outcome: lastOutcome, retrySafe, delayMs,
+    });
+    await delay(delayMs);
+  }
+
+  // Settled failure: feed the tool phase into the self-heal storm-breaker.
+  if (lastOutcome !== 'success') {
+    const rawError =
+      lastError instanceof Error
+        ? lastError.message
+        : lastResult && typeof lastResult === 'object'
+          ? String((lastResult as { error?: string }).error ?? '')
+          : String(lastError ?? '');
+    const decision = onToolFailed({
+      toolName: name,
+      error: rawError || `${name} settled as ${lastOutcome}`,
+      outcome: lastOutcome,
+      runId: ctx.runId ?? undefined,
+    });
+    if (decision.suppress) {
+      const suppressed = {
+        ok: false,
+        error: `Self-heal storm-breaker suppressed repeated ${lastOutcome} failures for ${name}. Try again shortly.`,
+      };
+      return maybeCompressToolResult(name, category, suppressed, ctx);
+    }
+  }
+
+  if (lastError) throw lastError;
+  return maybeCompressToolResult(name, category, lastResult, ctx);
 }

@@ -372,6 +372,39 @@ function isPermanentLoginError(msg: string): boolean {
   return /invalid token|disallowed intent|tokeninvalid|disallowedintents/i.test(msg);
 }
 
+// ── Login backoff (breaks the thundering-herd retry loop) ──────────────────
+// On boot (and on every reload() cycle), dozens of bots used to call
+// client.login() back-to-back with zero stagger. Discord's login/gateway
+// endpoint intermittently 500s ("Internal Server Error") under that kind of
+// burst from one IP. Since a 500 isn't a permanent error, those bots retried
+// on the very next 30s reload tick — in the same tight lockstep loop — so the
+// same burst (and the same 500s) reproduced every cycle, forever. Two fixes:
+//  1. A small stagger between sequential startBot() calls in reload()/boot.
+//  2. Per-bot exponential backoff w/ jitter after a login failure, so a failed
+//     bot doesn't retry in lockstep with every other failed bot next cycle.
+const loginBackoffUntil = new Map<string, number>(); // botId → epoch ms, don't retry before this
+const loginFailStreak   = new Map<string, number>();  // botId → consecutive login failures
+const STARTUP_STAGGER_MS = 350;
+const BACKOFF_BASE_MS = 15_000;
+const BACKOFF_MAX_MS = 5 * 60_000;
+
+function scheduleLoginBackoff(botId: string): void {
+  const streak = (loginFailStreak.get(botId) ?? 0) + 1;
+  loginFailStreak.set(botId, streak);
+  const exp = Math.min(BACKOFF_BASE_MS * 2 ** Math.min(streak - 1, 5), BACKOFF_MAX_MS);
+  const jitter = Math.random() * exp * 0.5;
+  loginBackoffUntil.set(botId, Date.now() + exp + jitter);
+}
+
+function clearLoginBackoff(botId: string): void {
+  loginBackoffUntil.delete(botId);
+  loginFailStreak.delete(botId);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 // ── Per-bot inbound message dedup ──────────────────────────────────────────
 // Prevents double-processing when the same messageCreate event fires more than
 // once WITHIN THIS PROCESS (e.g. a duplicated gateway event after a resume).
@@ -1553,6 +1586,10 @@ async function startBot(row: DiscordBotRow): Promise<void> {
     updateDiscordBot(row.id, { status: 'disabled' });
     return;
   }
+  const backoffUntil = loginBackoffUntil.get(row.id);
+  if (backoffUntil !== undefined && Date.now() < backoffUntil) {
+    return; // still in post-failure backoff window — skip this reload tick
+  }
 
   const client = new Client({
     intents: [
@@ -1587,6 +1624,7 @@ async function startBot(row: DiscordBotRow): Promise<void> {
   client.on('ready', () => {
     const u = client.user;
     logger.info('discord-bot: ready', { botId: row.id, name: row.name, tag: u?.tag, guilds: client.guilds.cache.size });
+    clearLoginBackoff(row.id);
     bot.unhealthySince = null;
     bot.lastCloseCode = null;            // a clean connect clears any prior permanent-failure suspicion
     bot.permanentFailureLogged = false;
@@ -1804,6 +1842,11 @@ async function startBot(row: DiscordBotRow): Promise<void> {
       // reload loop from re-login spinning. Cleared by a manual restart.
       permanentlyFailedBots.set(row.id, row.token ?? '');
       logger.error('discord-bot: permanent login failure — not auto-retrying; fix token/intents then restart the bot', { botId: row.id, name: row.name });
+    } else {
+      // Transient (e.g. Discord 500 "Internal Server Error" from a login
+      // burst) — back off with jitter instead of retrying in lockstep on the
+      // next reload tick.
+      scheduleLoginBackoff(row.id);
     }
     updateDiscordBot(row.id, { status: 'error', status_detail: msg.slice(0, 240) });
     running.delete(row.id);
@@ -1851,12 +1894,16 @@ async function reload(): Promise<void> {
     if (!want || !want.enabled) await stopBot(id);
   }
 
-  // Start (or restart on token change) bots that are enabled
+  // Start (or restart on token change) bots that are enabled. Staggered to
+  // avoid a login burst against Discord (see loginBackoffUntil/STARTUP_STAGGER_MS
+  // above) — without this, ~50 bots logging in back-to-back on boot/reload
+  // trips Discord-side 500s on a subset every single cycle.
   for (const row of desired) {
     if (!row.enabled) continue;
     const live = running.get(row.id);
     if (!live) {
       await startBot(row);
+      await sleep(STARTUP_STAGGER_MS);
       continue;
     }
     // Restart if the token changed (re-login required)
@@ -2198,6 +2245,7 @@ export async function reloadDiscordBots(): Promise<void> {
 export async function restartBot(botId: string): Promise<void> {
   logger.info('discord-bot: manual restart', { botId });
   permanentlyFailedBots.delete(botId); // manual restart re-attempts even after a permanent failure
+  clearLoginBackoff(botId);            // manual restart bypasses the transient-failure backoff too
   await stopBot(botId);
   const row = getDiscordBot(botId);
   if (row && row.enabled) {

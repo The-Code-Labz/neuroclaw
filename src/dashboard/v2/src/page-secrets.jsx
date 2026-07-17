@@ -311,14 +311,14 @@ const Secrets = () => {
       <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <StatChip label="MANAGED"      value={totalManaged}        color="var(--accent)" />
         <StatChip label="SCOPES"       value={allScopes.length}    color="var(--accent-2)" />
-        <StatChip label="UNMANAGED"    value={orphans.length}      color="#ffb86c" />
-        <StatChip label="AGENT PREFIXES" value={agentPrefixes.length} color="#bd93f9" />
+        <StatChip label="UNMANAGED"    value={orphans.length}      color="var(--amber)" />
+        <StatChip label="AGENT PREFIXES" value={agentPrefixes.length} color="var(--violet)" />
         <StorageBackendChip storage={storage} />
       </div>
 
       {/* Alerts */}
       {err && (
-        <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10, padding: '8px 12px', background: 'rgba(251,59,95,0.1)', border: '1px solid rgba(251,59,95,0.3)', borderRadius: 4 }}>
+        <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10, padding: '8px 12px', background: 'color-mix(in srgb, var(--danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)', borderRadius: 4 }}>
           // error: {err}
         </div>
       )}
@@ -350,7 +350,7 @@ const Secrets = () => {
 
       {/* Agent prefix manager */}
       {showAgents && (
-        <div className="nc-panel" style={{ padding: 16, marginBottom: 16 }}>
+        <div className="sec-panel" style={{ padding: 16, marginBottom: 16 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>AGENT CANONICAL PREFIXES</div>
           <div className="mono muted" style={{ fontSize: 10, marginBottom: 12 }}>
             // Each agent owns one prefix (e.g. ORACLE, JARVIS). Used by the broker scope resolver to gate access to <code style={{ color: 'var(--accent-2)' }}>&lt;PREFIX&gt;_*</code> secrets.
@@ -370,7 +370,7 @@ const Secrets = () => {
 
       {/* Add form */}
       {showAdd && (
-        <div className="nc-panel" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--accent)' }}>
+        <div className="sec-panel" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--accent)' }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>NEW SECRET</div>
 
           {/* Scope picker */}
@@ -453,7 +453,7 @@ const Secrets = () => {
               fontFamily: 'var(--mono)',
               fontSize: 12,
               padding: '6px 10px',
-              background: 'rgba(2,6,23,0.7)',
+              background: 'var(--panel)',
               border: `1px solid ${resolveErrs.length || resolveCollision ? 'var(--danger)' : 'var(--accent)'}`,
               color: resolveErrs.length || resolveCollision ? 'var(--danger)' : 'var(--accent)',
               borderRadius: 2,
@@ -511,7 +511,7 @@ const Secrets = () => {
       {loading ? (
         <div className="mono muted" style={{ fontSize: 11, padding: 20 }}>// loading secrets…</div>
       ) : totalManaged === 0 && orphans.length === 0 ? (
-        <div className="nc-panel" style={{ padding: 28, textAlign: 'center' }}>
+        <div className="sec-panel" style={{ padding: 28, textAlign: 'center' }}>
           <div className="mono muted" style={{ fontSize: 11 }}>// no secrets yet — click "Add Secret" to create one</div>
         </div>
       ) : (
@@ -549,7 +549,7 @@ const Secrets = () => {
       )}
 
       {/* Audit panel */}
-      <div className="nc-panel" style={{ marginTop: 24, padding: 14 }}>
+      <div className="sec-panel" style={{ marginTop: 24, padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <div className="label-tiny neonc">RECENT ACCESS</div>
           <button className="nc-btn ghost" style={{ padding: 4 }} onClick={loadAudit} title="Refresh audit log">
@@ -568,7 +568,7 @@ const Secrets = () => {
       </div>
 
       {/* Naming convention reference */}
-      <div className="nc-panel" style={{ marginTop: 16, padding: 14 }}>
+      <div className="sec-panel" style={{ marginTop: 16, padding: 14 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 8 }}>NAMING CONVENTION</div>
         <div className="mono muted" style={{ fontSize: 10, lineHeight: 1.6 }}>
           // <code style={{ color: 'var(--accent)' }}>&lt;SCOPE&gt;_&lt;SERVICE&gt;_&lt;TYPE&gt;</code> — the name IS the access policy.<br/>
@@ -587,7 +587,7 @@ const Secrets = () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 const StatChip = ({ label, value, color }) => (
-  <div className="nc-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+  <div className="sec-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
     <span className="mono muted" style={{ fontSize: 10 }}>{label}</span>
     <span className="mono" style={{ fontSize: 16, color }}>{value}</span>
   </div>
@@ -596,7 +596,7 @@ const StatChip = ({ label, value, color }) => (
 const StorageBackendChip = ({ storage }) => {
   if (!storage) {
     return (
-      <div className="nc-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="sec-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span className="mono muted" style={{ fontSize: 10 }}>BACKEND</span>
         <span className="mono muted" style={{ fontSize: 11 }}>// loading…</span>
       </div>
@@ -608,7 +608,7 @@ const StorageBackendChip = ({ storage }) => {
                 /* env-manager */      '#ffb86c';
   const label = isInfisical ? 'INFISICAL' : 'ENV-MANAGER';
   return (
-    <div className="nc-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div className="sec-panel" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
       <span className="mono muted" style={{ fontSize: 10 }}>BACKEND</span>
       <span className="mono" style={{ fontSize: 11, color }}>{label}</span>
       <span className="mono muted" style={{ fontSize: 9 }}>{storage.detail}</span>
@@ -626,7 +626,7 @@ const AgentPrefixRow = ({ agent, onSave }) => {
     finally { setSaving(false); }
   };
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 10, alignItems: 'center' }}>
+    <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 10, alignItems: 'center' }}>
       <span className="mono" style={{ fontSize: 11 }}>{agent.name}</span>
       <input
         className="nc-input"
@@ -651,13 +651,8 @@ const ScopeSection = ({
 }) => {
   const color = SCOPE_BADGE_COLOR[scope] || '#bd93f9';
   return (
-    <div className="nc-panel" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-      <div style={{
-        padding: '10px 14px',
-        borderBottom: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)',
-        background: 'rgba(2,6,23,0.4)',
-        display: 'flex', alignItems: 'center', gap: 10,
-      }}>
+    <div className="sec-panel sec-panel--flush" style={{ marginBottom: 16 }}>
+      <div className="sec-scope-header" style={{ borderBottom: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)' }}>
         <span className="tag" style={{ background: color, color: '#020617', fontWeight: 700, fontSize: 9, padding: '2px 6px' }}>
           {scope}
         </span>
@@ -693,12 +688,11 @@ const SecretRow = ({
   const typeColor = TYPE_BADGE_COLOR[secret.type] || 'var(--muted)';
   const isRevealed = revealedValue !== undefined;
   return (
-    <div style={{
+    <div className="split-grid sec-row" style={{
       display: 'grid',
       gridTemplateColumns: '260px 1fr auto',
       gap: 12,
-      padding: '12px 14px',
-      borderBottom: isLast ? 'none' : '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)',
+      borderBottom: isLast ? 'none' : undefined,
       alignItems: 'center',
     }}>
       <div>
@@ -736,7 +730,7 @@ const SecretRow = ({
         ) : (
           <code className="mono" style={{
             display: 'block',
-            background: 'rgba(2,6,23,0.7)',
+            background: 'var(--panel)',
             border: '1px solid var(--line)',
             padding: '6px 10px',
             fontSize: 11,
@@ -790,24 +784,17 @@ const SecretRow = ({
 const OrphansSection = ({ orphans }) => {
   if (orphans.length === 0) return null;
   return (
-    <div className="nc-panel" style={{ padding: 0, overflow: 'hidden', marginBottom: 16, borderColor: '#ffb86c' }}>
-      <div style={{
-        padding: '10px 14px',
-        borderBottom: '1px solid rgba(255,184,108,0.3)',
-        background: 'rgba(255,184,108,0.06)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="tag" style={{ background: '#ffb86c', color: '#020617', fontWeight: 700, fontSize: 9, padding: '2px 6px' }}>UNMANAGED</span>
-          <span className="mono muted" style={{ fontSize: 10 }}>{orphans.length} legacy entr{orphans.length === 1 ? 'y' : 'ies'}</span>
-        </div>
-        <div className="mono muted" style={{ fontSize: 10, marginTop: 6 }}>
+    <div className="sec-panel sec-panel--flush" style={{ marginBottom: 16, borderColor: 'var(--amber)' }}>
+      <div className="sec-scope-header" style={{ borderBottom: '1px solid color-mix(in srgb, var(--amber) 30%, transparent)', background: 'color-mix(in srgb, var(--amber) 6%, transparent)', flexWrap: 'wrap' }}>
+        <span className="tag" style={{ background: 'var(--amber)', color: '#020617', fontWeight: 700, fontSize: 9, padding: '2px 6px' }}>UNMANAGED</span>
+        <span className="mono muted" style={{ fontSize: 10 }}>{orphans.length} legacy entr{orphans.length === 1 ? 'y' : 'ies'}</span>
+        <div className="mono muted" style={{ fontSize: 10, width: '100%', marginTop: 4 }}>
           // entries in <code style={{ color: 'var(--accent-2)' }}>.env</code> that don't match the broker naming convention. Migrate them to <code>SCOPE_SERVICE_TYPE</code> form to bring them under broker scope control.
         </div>
       </div>
       {orphans.map((o, i) => (
-        <div key={o.name} style={{
-          padding: '10px 14px',
-          borderBottom: i === orphans.length - 1 ? 'none' : '1px dashed rgba(255,184,108,0.15)',
+        <div key={o.name} className="sec-row" style={{
+          borderBottom: i === orphans.length - 1 ? 'none' : '1px dashed color-mix(in srgb, var(--amber) 15%, transparent)',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <span className="mono" style={{ fontSize: 11, color: 'var(--text)' }}>{o.name}</span>
@@ -826,7 +813,7 @@ const AuditRow = ({ row }) => {
     'var(--muted)';
   const ts = row.ts ? new Date(row.ts).toLocaleTimeString() : '';
   return (
-    <div style={{
+    <div className="audit-row" style={{
       padding: '6px 0',
       borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
       display: 'grid',

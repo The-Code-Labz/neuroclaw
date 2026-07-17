@@ -124,9 +124,9 @@ const Providers = () => {
         <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh All</button>
       </>}/>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div className="cn-grid">
         {displayProviders.map(p => (
-          <div key={p.id} className="nc-panel glow tilt" style={{ padding: 14, opacity: p.soon ? 0.55 : 1 }}>
+          <div key={p.id} className="cn-card" style={{ opacity: p.soon ? 0.55 : 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span className={`dot ${p.status === 'online' ? 'green' : p.status === 'warn' ? 'amber' : 'muted'} ${p.status === 'online' ? 'pulse' : ''}`}/>
@@ -136,7 +136,7 @@ const Providers = () => {
             </div>
             <div className="mono muted" style={{ fontSize: 10, marginBottom: 10 }}>backend · {p.backend}</div>
             <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', marginBottom: 8 }}>{p.model}</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
               <div><div className="label-tiny">MODELS</div><div className="mono neonc" style={{ fontSize: 14 }}>{p.models ?? '—'}</div></div>
               <div><div className="label-tiny">AGENTS</div><div className="mono" style={{ fontSize: 14 }}>{p.agents ?? '—'}</div></div>
               <div><div className="label-tiny">QUEUE</div><div className="mono neonc" style={{ fontSize: 14 }}>{p.queue}</div></div>
@@ -230,19 +230,21 @@ const Providers = () => {
       </Section>
 
       <Section title="AGENT × PROVIDER MATRIX" padded={false}>
-        <div className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--line-soft)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.14em' }}>
-          <span>AGENT</span><span>PROVIDER</span><span>MODEL</span><span>TOOLS</span><span>RAW</span><span>STATUS</span>
-        </div>
-        {AGENTS.filter(a => !a.temp).map(a => (
-          <div key={a.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '12px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', fontSize: 11, alignItems: 'center' }}>
-            <span style={{ color: 'var(--text)' }}>@{a.name}</span>
-            <span className="neonc">{a.provider}</span>
-            <span style={{ color: 'var(--text-soft)' }}>{a.model}</span>
-            <span style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>{a.caps.slice(0,3).map(c => <span key={c} className="tag" style={{ fontSize: 8, padding: '0 4px' }}>{c}</span>)}</span>
-            <span className="muted">{a._raw?.provider || 'voidai'}</span>
-            <span><span className={`dot ${a.status === 'live' ? 'green' : a.status === 'busy' ? 'amber' : 'muted'} pulse`}/></span>
+        <div className="table-scroll">
+          <div className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--line-soft)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.14em' }}>
+            <span>AGENT</span><span>PROVIDER</span><span>MODEL</span><span>TOOLS</span><span>RAW</span><span>STATUS</span>
           </div>
-        ))}
+          {AGENTS.filter(a => !a.temp).map(a => (
+            <div key={a.id} className="mono" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr 1fr 1fr 80px', gap: 10, padding: '12px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', fontSize: 11, alignItems: 'center' }}>
+              <span style={{ color: 'var(--text)' }}>@{a.name}</span>
+              <span className="neonc">{a.provider}</span>
+              <span style={{ color: 'var(--text-soft)' }}>{a.model}</span>
+              <span style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>{a.caps.slice(0,3).map(c => <span key={c} className="tag" style={{ fontSize: 8, padding: '0 4px' }}>{c}</span>)}</span>
+              <span className="muted">{a._raw?.provider || 'voidai'}</span>
+              <span><span className={`dot ${a.status === 'live' ? 'green' : a.status === 'busy' ? 'amber' : 'muted'} pulse`}/></span>
+            </div>
+          ))}
+        </div>
       </Section>
     </div>
   );

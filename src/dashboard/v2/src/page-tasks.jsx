@@ -118,7 +118,7 @@ const TaskEditModal = ({ open, task, projects, agents, onClose, onSaved }) => {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: '90%', maxWidth: 720, maxHeight: '88vh', overflow: 'auto', padding: 22 }}>
+      <div className="nc-panel" onClick={e => e.stopPropagation()} style={{ width: '90%', maxWidth: 720, maxHeight: '88vh', overflow: 'auto', padding: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div className="label-tiny neonc">{task ? 'EDIT TASK' : 'NEW TASK'}</div>
           <button className="nc-btn ghost" onClick={onClose}>✕</button>
@@ -254,7 +254,7 @@ const ProjectModal = ({ open, project, onClose, onSaved }) => {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: 480, padding: 20 }}>
+      <div className="nc-panel modal-fixed-width" onClick={e => e.stopPropagation()} style={{ width: 480, padding: 20 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 14 }}>{project ? 'EDIT PROJECT' : 'NEW PROJECT'}</div>
         {err && <div className="mono dangerc" style={{ fontSize: 11, marginBottom: 8 }}>// {err}</div>}
         <div className="field"><label>Title</label><input className="nc-input" value={title} onChange={e => setTitle(e.target.value)} autoFocus/></div>
@@ -281,11 +281,10 @@ const TaskCard = ({ task, agents, onEdit, onDragStart }) => {
   const sourcesCount = (task.sources || []).length;
   const examplesCount = (task.code_examples || []).length;
   return (
-    <div className="nc-panel tilt"
+    <div className="mc-card"
          draggable
          onDragStart={(e) => onDragStart(e, task)}
-         onClick={() => onEdit(task)}
-         style={{ padding: 10, background: 'rgba(2,6,23,0.7)', cursor: 'grab', userSelect: 'none' }}>
+         onClick={() => onEdit(task)}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, gap: 6 }}>
         <span className="mono muted" style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.shortId}</span>
         <span className={`tag ${pTone}`} style={{ fontSize: 9, padding: '0 5px' }}>{(task.priority_level || 'medium').toUpperCase()}</span>
@@ -358,7 +357,7 @@ const AutonomousBar = () => {
   const done    = worked.filter(w => w.outcome === 'done').length;
 
   return (
-    <div className="nc-panel" style={{ padding: '9px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderColor: running ? 'var(--accent)' : 'var(--line)' }}>
+    <div className={`mc-bar${running ? ' is-live' : ''}`}>
       <span className="label-tiny neonc" style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
         <span className={`dot ${running ? 'cyan pulse' : 'muted'}`}/> <Icon name="bolt" size={12}/> AUTONOMOUS MODE
       </span>
@@ -550,7 +549,7 @@ const Tasks = () => {
       <AutonomousBar />
 
       {/* Project switcher + view toggle */}
-      <div className="nc-panel" style={{ padding: 12, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <div className="mc-bar" style={{ marginBottom: 20 }}>
         <span className="label-tiny neonc">PROJECT</span>
         <select className="nc-select" value={activeProject} onChange={e => setActiveProject(e.target.value)} style={{ minWidth: 200 }}>
           <option value="">— All projects —</option>
@@ -591,11 +590,11 @@ const Tasks = () => {
             const isDropTarget = !c.statuses;
             return (
               <div key={c.id}
-                   className="nc-panel"
+                   className="mc-col"
                    onDragOver={isDropTarget ? ((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }) : undefined}
                    onDrop={isDropTarget ? ((e) => onDropColumn(e, c.id)) : undefined}
-                   style={{ padding: 0, minHeight: 380 }}>
-                <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                   style={{ minHeight: 380 }}>
+                <div className="mc-col-head">
                   <span className={`label-tiny ${c.tone === 'cyan' ? 'neonc' : c.tone === 'amber' ? 'amberc' : c.tone === 'green' ? 'greenc' : 'muted'}`}>{c.label}</span>
                   <span className={`tag ${c.tone === 'cyan' ? 'blue' : c.tone === 'amber' ? 'amber' : c.tone === 'green' ? 'green' : 'muted'}`} style={{ fontSize: 9 }}>{items.length}</span>
                 </div>
@@ -826,8 +825,8 @@ const AgentActivityPanel = () => {
   };
 
   return (
-    <div className="nc-panel glow" style={{
-      marginTop: 16, padding: 0,
+    <div className="nc-panel" style={{
+      marginTop: 16, padding: 0, borderColor: 'var(--line-soft)',
       flex: open ? '1' : 'none',
       height: open ? undefined : 32,
       minHeight: open ? 160 : 32,

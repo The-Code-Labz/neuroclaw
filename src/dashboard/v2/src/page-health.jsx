@@ -75,7 +75,7 @@ const Health = () => {
 
   const TimelineBar = () => {
     if (timeline.length === 0) return (
-      <div className="grid-bg" style={{ height: 24, border: '1px solid var(--line-soft)', borderRadius: 2, background: 'rgba(0,255,100,0.08)' }}/>
+      <div className="grid-bg" style={{ height: 24, border: '1px solid var(--line-soft)', borderRadius: 2, background: 'color-mix(in srgb, var(--success, #4ade80) 8%, transparent)' }}/>
     );
     const tStart = new Date(timeline[0].started_at).getTime();
     const tEnd   = new Date(timeline[timeline.length - 1].ended_at).getTime();
@@ -86,7 +86,7 @@ const Health = () => {
           const s = new Date(seg.started_at).getTime();
           const e = new Date(seg.ended_at).getTime();
           const pct = ((e - s) / total) * 100;
-          const bg = seg.status === 'up' ? 'rgba(0,255,100,0.5)'
+          const bg = seg.status === 'up' ? 'color-mix(in srgb, var(--success, #4ade80) 50%, transparent)'
                    : seg.status === 'down' ? 'var(--danger)'
                    : 'var(--amber)';
           const tip = seg.status === 'up' ? 'Online'
@@ -130,7 +130,7 @@ const Health = () => {
         </button>
       }/>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="UPTIME 7D" value={`${uptimePct}%`} tone={uptimePct >= 99 ? 'green' : uptimePct >= 95 ? 'amber' : 'red'}/>
         <StatCard label="DOWNTIME EVENTS" value={dtCount} tone={dtCount === 0 ? 'cyan' : 'red'}/>
         <StatCard label="ERRORS 24H" value={errors24h} tone={errors24h === 0 ? 'cyan' : 'amber'}/>
@@ -172,7 +172,7 @@ const Health = () => {
                   {new Date(d.started_at).toLocaleString()} — {d.duration_minutes ? `${d.duration_minutes}m` : 'ongoing'}
                 </div>
               </div>
-              <span style={{ background: `${sevColor(d.severity)}22`, color: sevColor(d.severity), padding: '2px 6px', fontSize: 9, borderRadius: 1 }}>
+              <span style={{ background: `color-mix(in srgb, ${sevColor(d.severity)} 15%, transparent)`, color: sevColor(d.severity), padding: '2px 6px', fontSize: 9, borderRadius: 1 }}>
                 {d.severity}
               </span>
             </div>
@@ -226,7 +226,7 @@ const Health = () => {
             </div>
           )}
           {chatMsgs.map((m, i) => (
-            <div key={i} style={{ borderLeft: `2px solid ${m.role === 'user' ? 'var(--accent)' : 'var(--violet)'}`, padding: '4px 8px', marginBottom: 6, background: 'rgba(255,255,255,0.02)' }}>
+            <div key={i} style={{ borderLeft: `2px solid ${m.role === 'user' ? 'var(--accent)' : 'var(--violet)'}`, padding: '4px 8px', marginBottom: 6, background: 'color-mix(in srgb, var(--text) 2%, transparent)' }}>
               <span className="mono muted" style={{ fontSize: 9 }}>{m.role === 'user' ? 'you' : 'loganalyst'} · </span>
               <span className="mono" style={{ fontSize: 11 }}>{m.text}{m.role === 'assistant' && chatBusy && i === chatMsgs.length - 1 && <span className="blink">▌</span>}</span>
             </div>

@@ -73,7 +73,7 @@ const BotLogPanel = ({ botId, botName }) => {
 
   return (
     <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-      <div className="nc-panel glow" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="cn-panel cn-panel--flush">
         <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div className="mono neonc" style={{ fontSize: 10 }}>$ tail · {botName}</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -336,7 +336,7 @@ const Channels = () => {
       {err && <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10 }}>// {err}</div>}
 
       {adding && (
-        <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
+        <div className="cn-panel" style={{ marginBottom: 14 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>NEW DISCORD BOT</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="field"><label>Name</label><input className="nc-input" value={newBot.name} onChange={e => setNewBot({ ...newBot, name: e.target.value })} placeholder="e.g. Coder Bot"/></div>
@@ -368,7 +368,7 @@ const Channels = () => {
       )}
 
       {bots.map(bot => (
-        <div key={bot.id} className="nc-panel" style={{ marginBottom: 10, padding: 14 }}>
+        <div key={bot.id} className={`cn-row${!bot.enabled ? ' is-disabled' : ''}`}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -426,7 +426,7 @@ const Channels = () => {
           )}
 
           {skillsOpen[bot.id] && (
-              <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 4 }}>
+              <div style={{ marginTop: 10, padding: '10px 12px', background: 'color-mix(in srgb, var(--text) 4%, transparent)', borderRadius: 4 }}>
                 <div className="label-tiny" style={{ marginBottom: 8 }}>SLASH SKILLS — toggled skills appear in Discord's / autocomplete (restart bot to apply)</div>
                 {skillsLoading[bot.id] && <span className="muted" style={{ fontSize: 12 }}>Loading…</span>}
                 {!skillsLoading[bot.id] && (

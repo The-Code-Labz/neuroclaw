@@ -167,7 +167,7 @@ const StatusStrip = ({ status, error, resetAt, now, onRetry, reason }) => {
 };
 
 const SkeletonCard = ({ ratio }) => (
-  <div className="nc-panel glow tilt" style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+  <div className="st-card" style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
     <div style={{
       aspectRatio: ratioToCss(ratio), background: 'rgba(0,4,12,0.5)', borderRadius: 3,
       backgroundImage: 'linear-gradient(90deg, color-mix(in srgb, var(--accent) 4%, transparent) 25%, color-mix(in srgb, var(--accent) 12%, transparent) 50%, color-mix(in srgb, var(--accent) 4%, transparent) 75%)',
@@ -202,7 +202,7 @@ const ResultCard = ({ item, onDiscard, isNew, onSendToEditor, staggerIndex, rati
   ].filter(Boolean).join(', ');
   return (
     <div
-      className="nc-panel glow tilt"
+      className="st-card"
       style={{
         padding: 8, display: 'flex', flexDirection: 'column', gap: 8,
         position: 'relative', overflow: 'hidden',
@@ -515,7 +515,7 @@ const ImageGen = () => {
       />
 
       {/* Composer */}
-      <div className="nc-panel glow" style={{ padding: 14, marginBottom: 14 }}>
+      <div className="st-panel" style={{ padding: 14, marginBottom: 14 }}>
         <textarea
           className="nc-textarea"
           placeholder="Describe the image you're imagining…"
@@ -664,7 +664,7 @@ const ImageGen = () => {
 
       {/* Empty state */}
       {!showGrid && history.length === 0 && (
-        <div className="nc-panel glow" style={{ padding: 40, textAlign: 'center' }}>
+        <div className="st-panel" style={{ padding: 40, textAlign: 'center' }}>
           <Icon name="image" size={48} className="neonc" style={{ opacity: 0.6 }}/>
           <div className="mono muted" style={{ marginTop: 14, fontSize: 12 }}>// nothing generated yet</div>
           <div className="mono muted" style={{ marginTop: 4, fontSize: 10 }}>pick a provider, write a prompt, and hit Generate</div>
@@ -683,12 +683,7 @@ const ImageGen = () => {
 
       {/* Current run */}
       {showGrid && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-          gap: 12,
-          alignContent: 'start',
-        }}>
+        <div className="st-grid" style={{ alignContent: 'start' }}>
           {status === 'loading' && Array.from({ length: loadingCount }).map((_, i) => <SkeletonCard key={`sk-${i}`} ratio={selectedRatio} />)}
           {currentRun.map((it, idx) => (
             <ResultCard
@@ -708,13 +703,7 @@ const ImageGen = () => {
       {history.length > 0 && (
         <>
           <SectionLabel>Earlier in this session</SectionLabel>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-            gap: 12,
-            alignContent: 'start',
-            opacity: 0.85,
-          }}>
+          <div className="st-grid" style={{ alignContent: 'start', opacity: 0.85 }}>
             {history.map((it, idx) => (
               <ResultCard
                 key={it._id || idx}

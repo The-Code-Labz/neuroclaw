@@ -2,6 +2,7 @@ import { getClient } from '../agent/openai-client';
 import { config } from '../config';
 import { type AgentRecord } from '../db';
 import { logger } from '../utils/logger';
+import { formatAgentCapabilities } from './agent-caps-format';
 import { getLangfuse, estimateTokens } from './langfuse';
 
 export interface RouteDecision {
@@ -21,8 +22,7 @@ export async function classifyRoute(
   if (!config.routing.enabled || candidates.length === 0) return null;
 
   const agentList = candidates.map(a => {
-    const caps = (() => { try { return JSON.parse(a.capabilities || '[]') as string[]; } catch { return []; } })();
-    return `- ${a.name}: ${a.description ?? 'No description'} [capabilities: ${caps.join(', ') || 'general'}]`;
+    return `- ${a.name}: ${a.description ?? 'No description'} [capabilities: ${formatAgentCapabilities(a.capabilities)}]`;
   }).join('\n');
 
   const systemPrompt =

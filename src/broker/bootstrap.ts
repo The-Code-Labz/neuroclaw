@@ -224,11 +224,15 @@ export const SECRET_REGISTRY: SecretRegistryEntry[] = [
   // consent flow (and on every subsequent refresh) — the broker stays the
   // source of truth across restarts, same contract as every other secret
   // here, just with a non-human writer.
-  { brokerNames: ['CANVA_CLIENT_ID',        'SHARED_CANVA_CLIENT_ID'],        envVar: 'CANVA_CLIENT_ID' },
-  { brokerNames: ['CANVA_CLIENT_SECRET',    'SHARED_CANVA_CLIENT_SECRET'],    envVar: 'CANVA_CLIENT_SECRET' },
-  { brokerNames: ['CANVA_ACCESS_TOKEN',     'SHARED_CANVA_ACCESS_TOKEN'],     envVar: 'CANVA_ACCESS_TOKEN' },
-  { brokerNames: ['CANVA_REFRESH_TOKEN',    'SHARED_CANVA_REFRESH_TOKEN'],    envVar: 'CANVA_REFRESH_TOKEN' },
-  { brokerNames: ['CANVA_TOKEN_EXPIRES_AT', 'SHARED_CANVA_TOKEN_EXPIRES_AT'], envVar: 'CANVA_TOKEN_EXPIRES_AT' },
+  { brokerNames: ['CANVA_CLIENT_ID',          'SHARED_CANVA_CLIENT_ID'],          envVar: 'CANVA_CLIENT_ID' },
+  { brokerNames: ['CANVA_CLIENT_SECRET',      'SHARED_CANVA_CLIENT_SECRET'],      envVar: 'CANVA_CLIENT_SECRET' },
+  { brokerNames: ['CANVA_ACCESS_TOKEN',       'SHARED_CANVA_ACCESS_TOKEN'],       envVar: 'CANVA_ACCESS_TOKEN' },
+  { brokerNames: ['CANVA_REFRESH_TOKEN',      'SHARED_CANVA_REFRESH_TOKEN'],      envVar: 'CANVA_REFRESH_TOKEN' },
+  { brokerNames: ['CANVA_TOKEN_EXPIRES_AT',   'SHARED_CANVA_TOKEN_EXPIRES_AT'],   envVar: 'CANVA_TOKEN_EXPIRES_AT' },
+  // Marks which CLIENT_ID was registered via loopback DCR (see
+  // mcp/canva-oauth.ts isLoopbackClientRegistered()) — rehydrated at boot so
+  // the invariant survives a restart, same as the creds above.
+  { brokerNames: ['CANVA_LOOPBACK_CLIENT_ID', 'SHARED_CANVA_LOOPBACK_CLIENT_ID'], envVar: 'CANVA_LOOPBACK_CLIENT_ID' },
 ];
 
 /**

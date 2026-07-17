@@ -48,7 +48,10 @@ export const falAdapter: MediaJobAdapter = {
       return typeof u === 'string' ? [u] : [];
     }
     if (kind === 'audio') {
-      const u = resultResp?.audio?.url ?? resultResp?.audio_url;
+      // fal music/audio models vary: {audio:{url}} | {audio_url} | {audio_file:{url}} (cassetteai)
+      const u = resultResp?.audio?.url ?? resultResp?.audio_url
+        ?? resultResp?.audio_file?.url ?? resultResp?.audio_file
+        ?? resultResp?.output?.url;
       return typeof u === 'string' ? [u] : [];
     }
     // image (default): images[].url

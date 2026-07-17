@@ -189,7 +189,7 @@ function HealthChips() {
     return <span className="mono muted" style={{ fontSize: 11 }}>No provider traffic recorded yet.</span>;
   }
 
-  const stateColor = s => s === 'ok' ? '#4ade80' : s === 'cooldown' ? '#f59e0b' : '#ef4444';
+  const stateColor = s => s === 'ok' ? 'var(--success, #4ade80)' : s === 'cooldown' ? 'var(--amber, #f59e0b)' : 'var(--danger, #ef4444)';
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -199,17 +199,17 @@ function HealthChips() {
           title={r.lastErrorClass ? `last error: ${r.lastErrorClass}${r.lastErrorAt ? ' @ ' + new Date(r.lastErrorAt).toLocaleTimeString() : ''} · ${r.requestCount} reqs` : `${r.requestCount} reqs`}
           style={{
             display: 'flex', alignItems: 'center', gap: 6,
-            border: `1px solid ${stateColor(r.state)}44`,
-            background: `${stateColor(r.state)}0d`,
+            border: `1px solid color-mix(in srgb, ${stateColor(r.state)} 27%, transparent)`,
+            background: `color-mix(in srgb, ${stateColor(r.state)} 5%, transparent)`,
             borderRadius: 4, padding: '4px 8px',
           }}
         >
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: stateColor(r.state), boxShadow: `0 0 5px ${stateColor(r.state)}`, display: 'inline-block' }}/>
           <span className="mono" style={{ fontSize: 11 }}>{providerLabel(r.provider)}</span>
           {r.state === 'cooldown' && r.cooldownUntil && (
-            <span className="mono" style={{ fontSize: 10, color: '#f59e0b' }}>cooldown {fmtCountdown(r.cooldownUntil)}</span>
+            <span className="mono" style={{ fontSize: 10, color: 'var(--amber, #f59e0b)' }}>cooldown {fmtCountdown(r.cooldownUntil)}</span>
           )}
-          {r.state === 'dead' && <span className="mono" style={{ fontSize: 10, color: '#ef4444' }}>dead</span>}
+          {r.state === 'dead' && <span className="mono" style={{ fontSize: 10, color: 'var(--danger, #ef4444)' }}>dead</span>}
           {r.state !== 'ok' && (
             <button
               className="nc-btn"
@@ -280,7 +280,7 @@ const Usage = () => {
       />
 
       {/* Summary stat cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="TOTAL TOKENS" value={fmtTokens(totalTokens, '')} sub={`${totalCalls} calls`} tone="cyan"/>
         <StatCard label="EST COST" value={'$' + totalCost.toFixed(4)} sub="API providers only" tone="cyan"/>
         <StatCard label="TOP PROVIDER" value={topProvider} sub={byProvider[0] ? fmtTokens(byProvider[0].total_tokens, byProvider[0].provider) + ' tokens' : '—'} tone="cyan"/>
@@ -294,7 +294,7 @@ const Usage = () => {
 
       {/* Subscription quota cards */}
       <Section title="SUBSCRIPTION QUOTA" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {QUOTA_PROVIDERS.map(p => <QuotaPanel key={p.key} providerCfg={p} />)}
         </div>
       </Section>
@@ -306,7 +306,7 @@ const Usage = () => {
             No usage recorded in this period.
           </div>
         ) : (
-          <div>
+          <div className="table-scroll">
             {/* Header row */}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 0.8fr 0.8fr 1.4fr', gap: 8, padding: '6px 8px', borderBottom: '1px solid var(--line-soft)' }} className="mono muted">
               <span style={{ fontSize: 10 }}>PROVIDER</span>
@@ -327,17 +327,14 @@ const Usage = () => {
                   {/* Provider row */}
                   <div
                     onClick={() => toggleExpand(row.provider)}
+                    className="ob-row"
                     style={{
                       display: 'grid',
                       gridTemplateColumns: '2fr 1.2fr 0.8fr 0.8fr 1.4fr',
                       gap: 8,
                       padding: '10px 8px',
                       borderBottom: '1px solid var(--line-soft)',
-                      cursor: 'pointer',
-                      transition: 'background 0.1s',
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 4%, transparent)'}
-                    onMouseLeave={e => e.currentTarget.style.background = ''}
                   >
                     <span className="mono" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 7 }}>
                       <span style={{ opacity: 0.6, fontSize: 10 }}>{isOpen ? '▼' : '▶'}</span>
@@ -357,7 +354,7 @@ const Usage = () => {
 
                   {/* Agent sub-rows */}
                   {isOpen && agents.length > 0 && (
-                    <div style={{ background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid var(--line-soft)' }}>
+                    <div className="ob-sub-row" style={{ borderBottom: '1px solid var(--line-soft)' }}>
                       {agents.map((a) => (
                         <div
                           key={`${row.provider}:${a.agent_id ?? 'null'}`}
@@ -366,7 +363,7 @@ const Usage = () => {
                             gridTemplateColumns: '2fr 1.2fr 0.8fr 0.8fr 1.4fr',
                             gap: 8,
                             padding: '7px 8px 7px 32px',
-                            borderBottom: '1px solid rgba(255,255,255,0.03)',
+                            borderBottom: '1px solid var(--line-soft)',
                           }}
                         >
                           <span className="mono muted" style={{ fontSize: 11 }}>{a.agent_name}</span>
@@ -379,7 +376,7 @@ const Usage = () => {
                     </div>
                   )}
                   {isOpen && agents.length === 0 && (
-                    <div style={{ padding: '8px 8px 8px 32px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                    <div style={{ padding: '8px 8px 8px 32px', borderBottom: '1px solid var(--line-soft)' }}>
                       <span className="mono muted" style={{ fontSize: 11 }}>No agent breakdown available.</span>
                     </div>
                   )}

@@ -25,11 +25,18 @@ const SCRUB_ENV_KEYS = [
   'OPENAI_API_KEY',
 ];
 
-function buildChildEnv(extra?: Record<string, string>): Record<string, string | undefined> {
+function buildChildEnv(
+  extra?: Record<string, string>,
+  agentId?: string,
+  sessionId?: string,
+): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = { ...process.env };
   for (const k of SCRUB_ENV_KEYS) delete out[k];
   // Never leak the supervisor token into child shells.
   delete out.NC_AGENT_TOKEN;
+  // Wire agent attribution so serialized git ops can identify the caller.
+  if (agentId !== undefined) out.NC_AGENT = agentId;
+  if (sessionId !== undefined) out.NC_SESSION = sessionId;
   if (extra) for (const [k, v] of Object.entries(extra)) out[k] = v;
   return out;
 }
@@ -156,7 +163,7 @@ export async function bashRun(opts: BashRunOpts): Promise<BashRunResult> {
     opts.agentId ?? null,
     opts.secrets,
     opts.purpose?.trim() || 'bash_run',
-    buildChildEnv(workspaceEnv(cwd)),
+    buildChildEnv(workspaceEnv(cwd), opts.agentId ?? '', opts.sessionId ?? ''),
   );
   const secretsMeta: Pick<BashRunResult, 'secrets_denied' | 'secrets_missing'> = {};
   if (sub.denied.length)  secretsMeta.secrets_denied  = sub.denied;

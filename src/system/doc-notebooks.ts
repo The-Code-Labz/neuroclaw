@@ -362,7 +362,7 @@ export async function askNotebook(input: {
     const completion = await Promise.race([
       bgChatCompletion(
         { model: 'x', messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: 1200 },
-        { label: 'notebook_ask' },
+        { preferMinimax: true, label: 'notebook_ask' },
       ),
       new Promise<never>((_, rej) => setTimeout(() => rej(new Error('notebook_ask synthesis timed out')), ASK_TIMEOUT_MS)),
     ]);

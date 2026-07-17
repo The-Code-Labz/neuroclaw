@@ -126,6 +126,18 @@ function repairJson(raw: string): string {
   return raw;
 }
 
+// entities/relationships are the LAST two keys in the prompt's JSON shape, so
+// a response cut off by finish_reason:'length' truncates them first while the
+// core fields (memorable/type/title/.../confidence) are already complete and
+// valid. Both trailing arrays are optional downstream (empty-array fallback
+// already exists), so recovering by dropping them and closing the object is
+// safe — same class of fix as the proven decomposer truncation recovery.
+function repairTruncatedTail(raw: string): string {
+  const cut = raw.search(/,\s*"(entities|relationships)"\s*:/);
+  if (cut === -1) return raw;
+  return raw.slice(0, cut) + '}';
+}
+
 export async function extract(input: ExtractInput): Promise<ExtractedMemory | null> {
   const text = input.assistant_text ?? '';
   if (text.length < config.memory.extractMinChars) {
@@ -221,7 +233,17 @@ export async function extract(input: ExtractInput): Promise<ExtractedMemory | nu
       parsed = JSON.parse(repairJson(raw));
       logger.debug('memory-extractor: recovered JSON after repair');
     } catch {
-      return FORCE_NULL('JSON parse failed');
+      try {
+        parsed = JSON.parse(repairTruncatedTail(repairJson(raw)));
+        logger.warn('memory-extractor: recovered JSON after dropping truncated entities/relationships tail', {
+          rawSnippet: raw.slice(-120),
+        });
+      } catch {
+        logger.warn('memory-extractor: JSON parse failed, raw response unrecoverable', {
+          rawLength: raw.length, rawSnippet: raw.slice(0, 200), rawTail: raw.slice(-120),
+        });
+        return FORCE_NULL('JSON parse failed');
+      }
     }
   }
 

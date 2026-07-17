@@ -940,6 +940,7 @@ const Chat = () => {
   const agentDefaultPlain = !!(activeAgentRaw?._raw?.chat_mode);
   const effectivePlain  = chatModeOverride !== null ? chatModeOverride : agentDefaultPlain;
   const [mobSessionsOpen, setMobSessionsOpen] = React.useState(false);
+  const [inspectorOpen, setInspectorOpen] = React.useState(false);
 
   React.useEffect(() => {
     window.NC_STATUS_CONTEXT = {
@@ -1004,9 +1005,9 @@ const Chat = () => {
     .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)); // pinned float to top
 
   return (
-    <div className="chat-layout" style={{ height: 'var(--chat-h)', minHeight: 'var(--chat-min-h)' }}>
+    <div className={`chat-layout ${inspectorOpen ? 'inspector-open' : ''}`} style={{ height: 'var(--chat-h)', minHeight: 'var(--chat-min-h)' }}>
       {/* Session list (mobile sessions toggle lives in the thread header below) */}
-      <div className={`nc-panel glow chat-sessions ${mobSessionsOpen ? 'mob-open' : ''}`} style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div className={`nc-panel chat-sessions ${mobSessionsOpen ? 'mob-open' : ''}`} style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span className="label-tiny neonc">SESSIONS</span>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -1028,27 +1029,22 @@ const Chat = () => {
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {railSessions.map(s => (
-            <div key={s.id} onClick={() => setActiveSession(s.id)} className="chat-sess-row" style={{
-              padding: '10px 14px',
-              borderLeft: `2px solid ${activeSession === s.id ? 'var(--accent)' : 'transparent'}`,
-              background: activeSession === s.id ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
-              borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
-              cursor: 'pointer',
-            }}>
-              <div className="mono" style={{ fontSize: 11, color: activeSession === s.id ? 'var(--text)' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+            <div key={s.id} onClick={() => setActiveSession(s.id)}
+                 className={`chat-rail-row ${activeSession === s.id ? 'active' : ''}`}>
+              <div className="chat-rail-title" style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
                 {s.active && <span className="dot cyan pulse"/>}
               </div>
-              <div className="mono muted" style={{ fontSize: 10, marginTop: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+              <div className="chat-rail-meta" style={{ marginTop: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span style={{ display: 'flex', gap: 6 }}>
                   <span>{s.last}</span>
                   {s.msgs != null && <span className="neonc">{s.msgs} msgs</span>}
                 </span>
-                <span className="chat-sess-actions" style={{ display: 'flex', gap: 4 }}>
-                  <button className="nc-btn ghost" style={{ fontSize: 9, padding: '2px 5px', color: s.pinned ? 'var(--accent)' : undefined }} onClick={e => onTogglePin(e, s)} title={s.pinned ? 'Unpin' : 'Pin'}>{s.pinned ? 'pinned' : 'pin'}</button>
-                  <button className="nc-btn ghost" style={{ fontSize: 9, padding: '2px 5px' }} onClick={e => onToggleArchive(e, s)} title={s.status === 'archived' ? 'Unarchive' : 'Archive'}>{s.status === 'archived' ? 'unarch' : 'arch'}</button>
-                  <button className="nc-btn ghost" style={{ fontSize: 9, padding: '2px 5px' }} onClick={e => onRenameSession(e, s)} title="Rename">ren</button>
-                  <button className="nc-btn ghost" style={{ fontSize: 9, padding: '2px 5px', color: 'var(--danger)' }} onClick={e => onDeleteSession(e, s)} title="Delete">del</button>
+                <span className="chat-sess-actions" style={{ display: 'flex', gap: 2 }}>
+                  <button className={`chat-rail-icon-btn ${s.pinned ? 'is-active' : ''}`} onClick={e => onTogglePin(e, s)} title={s.pinned ? 'Unpin' : 'Pin'}><Icon name="pin" size={13}/></button>
+                  <button className={`chat-rail-icon-btn ${s.status === 'archived' ? 'is-active' : ''}`} onClick={e => onToggleArchive(e, s)} title={s.status === 'archived' ? 'Unarchive' : 'Archive'}><Icon name="archive" size={13}/></button>
+                  <button className="chat-rail-icon-btn" onClick={e => onRenameSession(e, s)} title="Rename"><Icon name="edit" size={13}/></button>
+                  <button className="chat-rail-icon-btn" style={{ color: 'var(--danger)' }} onClick={e => onDeleteSession(e, s)} title="Delete"><Icon name="trash" size={13}/></button>
                 </span>
               </div>
             </div>
@@ -1062,27 +1058,28 @@ const Chat = () => {
       </div>
 
       {/* Main thread */}
-      <div className="nc-panel glow" style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className="nc-panel chat-thread" style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div className="chat-thread-header">
           {/* Mobile-only: open the sessions rail as a slide-over */}
           <button className="nc-btn ghost show-mobile" onClick={() => setMobSessionsOpen(true)}
                   title="Sessions" style={{ padding: '6px 9px', flex: '0 0 auto' }}>
             <Icon name="sessions" size={15}/>
           </button>
-          <div className="chat-thread-title" style={{ flex: 1, minWidth: 0 }}>
-            <div className="mono" style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session?.title || 'New chat'}</div>
-            <div className="mono muted" style={{ fontSize: 10, marginTop: 2, display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="chat-thread-name">{session?.title || 'New chat'}</div>
+            <div className="chat-thread-sub">
               <span>{messages.length} msgs</span>
-              <span>·</span>
-              <span style={{ color: streaming ? 'var(--amber)' : 'var(--accent-2)' }}>{streaming ? '● streaming' : '● live'}</span>
+              <span style={{ color: streaming ? 'var(--amber)' : 'var(--accent-2)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span className="dot" style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }}/>
+                {streaming ? 'streaming' : 'live'}
+              </span>
             </div>
           </div>
-          <select className="nc-select chat-agent-select" value={activeAgent || ''} onChange={e => setActiveAgent(e.target.value)} style={{ width: 160 }}>
+          <select className="chat-pill-select" value={activeAgent || ''} onChange={e => setActiveAgent(e.target.value)} style={{ width: 160 }}>
             {AGENTS.map(a => <option key={a.id} value={a.id}>@{a.name}</option>)}
           </select>
           <button
-            className="nc-btn ghost"
-            style={{ padding: '5px 11px', fontSize: 11, whiteSpace: 'nowrap' }}
+            className="chat-pill-btn"
             title="Open Chat Mode in new tab"
             onClick={() => {
               const t = window.NC_API?.token || new URLSearchParams(location.search).get('token') || '';
@@ -1090,6 +1087,12 @@ const Chat = () => {
             }}
           >
             ⚡ Chat Mode
+          </button>
+          <button className={`nc-btn ghost chat-inspector-toggle ${inspectorOpen ? 'is-active' : ''}`}
+                  onClick={() => setInspectorOpen(o => !o)}
+                  title={inspectorOpen ? 'Hide inspector' : 'Show inspector — route trace, tool calls, spawned agents'}
+                  style={{ padding: '6px 9px', flex: '0 0 auto' }}>
+            <Icon name="sliders" size={14}/>
           </button>
         </div>
 
@@ -1113,10 +1116,10 @@ const Chat = () => {
             if (m.kind === 'user') {
               return (
                 <div key={i} style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
-                  <div style={{ maxWidth: '70%', padding: '10px 14px', background: 'linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), color-mix(in srgb, var(--accent) 8%, transparent))', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)', borderRadius: '8px 8px 2px 8px' }}>
-                    <div style={{ display: 'flex', gap: 8, fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--accent-2)', marginBottom: 4, alignItems: 'center' }}>
-                      <span>@{m.who}</span><span className="muted">·</span><span className="muted">{m.t}</span>
-                      {m.slashSkill && <span className="tag cyan" style={{ fontSize: 9, padding: '1px 5px' }}>/{m.slashSkill}</span>}
+                  <div className="chat-bubble chat-bubble-user" style={{ maxWidth: '70%' }}>
+                    <div className="chat-bubble-meta" style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
+                      <span style={{ color: 'var(--accent-2)' }}>@{m.who}</span><span>·</span><span>{m.t}</span>
+                      {m.slashSkill && <span className="tag cyan mono" style={{ fontSize: 9, padding: '1px 5px' }}>/{m.slashSkill}</span>}
                     </div>
                     {((m.attachments?.length || 0) + (m.docs?.length || 0)) > 0 && (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
@@ -1124,13 +1127,13 @@ const Chat = () => {
                           <img key={ai} src={a.url} alt={a.name} style={{ height: 48, borderRadius: 4, border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' }} />
                         ))}
                         {(m.docs || []).map((d, di) => (
-                          <span key={di} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)', borderRadius: 4, padding: '2px 6px', fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--accent-2)' }}>
+                          <span key={di} className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)', borderRadius: 4, padding: '2px 6px', fontSize: 10, color: 'var(--accent-2)' }}>
                             📄 {d}
                           </span>
                         ))}
                       </div>
                     )}
-                    <div style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--text)', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{m.body}</div>
+                    <div className="chat-bubble-body" style={{ whiteSpace: 'pre-wrap' }}>{m.body}</div>
                   </div>
                 </div>
               );
@@ -1145,11 +1148,11 @@ const Chat = () => {
                     ? <img src={agentAvatarUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     : (m.agent || '?')[0].toUpperCase()}
                 </div>
-                <div style={{ maxWidth: '78%', padding: '10px 14px', background: 'linear-gradient(180deg, rgba(7,17,31,0.9), rgba(2,6,23,0.6))', border: '1px solid var(--line)', borderRadius: '8px 8px 8px 2px' }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
-                    <span className="mono" style={{ color: isTemp ? 'var(--violet)' : 'var(--accent)', fontSize: 11 }}>@{m.agent}</span>
-                    {m.model && <span className="tag muted" style={{ fontSize: 9, padding: '1px 5px' }}>{m.model}</span>}
-                    <span className="mono muted" style={{ fontSize: 10, marginLeft: 'auto' }}>{m.t}</span>
+                <div className="chat-bubble chat-bubble-agent" style={{ maxWidth: '78%' }}>
+                  <div className="chat-bubble-meta" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+                    <span style={{ color: isTemp ? 'var(--violet)' : 'var(--accent)', fontWeight: 600 }}>@{m.agent}</span>
+                    {m.model && <span className="tag muted mono" style={{ fontSize: 9, padding: '1px 5px' }}>{m.model}</span>}
+                    <span style={{ marginLeft: 'auto' }}>{m.t}</span>
                     {m.body && !m.streaming && (
                       <button className="nc-btn ghost" onClick={() => speakMessage(m, i)}
                               title={playingIdx === i ? 'Stop' : 'Speak this message'}
@@ -1189,18 +1192,18 @@ const Chat = () => {
                     </div>
                   )}
                   <div
-                    className="nc-md"
-                    style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text-soft)', lineHeight: 1.6, wordBreak: 'break-word' }}
+                    className="nc-md chat-bubble-body"
+                    style={{ wordBreak: 'break-word' }}
                     ref={el => {
                       if (!el) return;
                       if (m.body && window.marked) {
                         el.innerHTML = window.marked.parse(m.body) +
-                          (m.streaming ? '<span class="blink neonc">▌</span>' : '');
+                          (m.streaming ? '<span class="chat-cursor">▌</span>' : '');
                       } else {
                         el.textContent = m.body || '';
                         if (m.streaming) {
                           const cur = document.createElement('span');
-                          cur.className = 'blink neonc';
+                          cur.className = 'chat-cursor';
                           cur.textContent = '▌';
                           el.appendChild(cur);
                         }
@@ -1262,15 +1265,10 @@ const Chat = () => {
         </div>
 
         {/* Composer */}
-        <div style={{ padding: 12, borderTop: '1px solid var(--line-soft)', background: 'rgba(0,8,20,0.6)' }}>
-          {error && <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 6 }}>// {error}</div>}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-            <span className="tag cyan">@{AGENTS.find(a => a.id === activeAgent)?.name || 'auto'}</span>
-            <span className="tag muted">{streaming ? 'streaming' : 'idle'}</span>
-            <span style={{ flex: 1 }}/>
-          </div>
+        <div style={{ padding: 12, borderTop: '1px solid var(--line-soft)' }}>
+          {error && <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 8 }}>// {error}</div>}
           {(pendingImages.length > 0 || pendingDocs.length > 0) && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
               {pendingImages.map((p, i) => (
                 <div key={i} style={{ position: 'relative', display: 'inline-block' }}>
                   <img src={p.dataUrl} alt={p.name} style={{ height: 56, borderRadius: 4, border: '1px solid var(--line)' }}/>
@@ -1280,7 +1278,7 @@ const Chat = () => {
                 </div>
               ))}
               {pendingDocs.map((d, i) => (
-                <div key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--line)', borderRadius: 4, padding: '4px 8px', fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-soft)' }}>
+                <div key={i} className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--line)', borderRadius: 4, padding: '4px 8px', fontSize: 11, color: 'var(--text-soft)' }}>
                   📄 {d.name}
                   <button onClick={() => setPendingDocs(prev => prev.filter((_, j) => j !== i))}
                           title={`Remove ${d.name}`}
@@ -1289,9 +1287,8 @@ const Chat = () => {
               ))}
             </div>
           )}
-          <div className="chat-composer-row" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(2,6,23,0.85)', border: '1px solid var(--line)', borderRadius: 2, padding: '6px 10px' }}>
-            <span className="neonc mono chat-prompt-caret" style={{ fontSize: 14 }}>▸</span>
-            <div className="chat-composer-input" style={{ flex: 1, position: 'relative' }}>
+          <div className="chat-composer-shell">
+            <div style={{ position: 'relative' }}>
               {slashState.open && (
                 <div className="nc-panel" style={{ position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, right: 0, padding: 4, maxHeight: 280, overflow: 'auto', boxShadow: '0 6px 20px rgba(0,0,0,0.5)', zIndex: 5 }}>
                   {slashState.cmdMatches.length > 0 && (
@@ -1356,62 +1353,66 @@ const Chat = () => {
                 }
                 disabled={streaming}
                 rows={1}
-                style={{
-                  width: '100%', background: 'transparent', border: 0, outline: 0,
-                  color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 13,
-                  opacity: streaming ? 0.5 : 1, resize: 'none', lineHeight: 1.5,
-                  minHeight: 36, maxHeight: 140, overflowY: 'auto',
-                }}
+                className="chat-composer-textarea"
+                style={{ opacity: streaming ? 0.5 : 1 }}
               />
             </div>
-            <input ref={fileInputRef} type="file" accept="image/*,audio/*,video/*,.txt,.md,.csv,.json,.yaml,.yml,.xml,.py,.js,.ts,.css,.sh,.sql,.pdf,.docx,.epub,.html,.htm,.xhtml,*/*" multiple style={{ display: 'none' }} onChange={e => { onPickFiles(e.target.files); e.target.value = ''; }}/>
-            <button className="nc-btn ghost" onClick={() => fileInputRef.current?.click()} disabled={streaming} title="Attach image" style={{ padding: '4px 8px', fontSize: 11 }}>📎</button>
-            <button className="nc-btn ghost" onClick={() => setChatModeOverride(effectivePlain ? false : true)} disabled={streaming}
-                    title={effectivePlain
-                      ? 'Chat mode ON for this conversation — plain completion (no tools/skills/MCP). Click to switch to full agent mode.'
-                      : 'Full agent mode. Click to switch this conversation to plain chat mode.'}
-                    style={{ padding: '4px 8px', fontSize: 11, color: effectivePlain ? 'var(--accent)' : undefined, borderColor: effectivePlain ? 'var(--accent)' : undefined }}>
-              💬 {effectivePlain ? 'CHAT' : 'chat'}
-            </button>
-            <button className="nc-btn ghost" onClick={toggleRecording} disabled={streaming || transcribing}
-                    title={recording ? 'Stop recording' : transcribing ? 'Transcribing…' : 'Voice input'}
-                    style={{ padding: '4px 8px', fontSize: 11, color: recording ? 'var(--danger)' : undefined }}>
-              {recording ? '● REC' : transcribing ? '…' : '🎤'}
-            </button>
-            {streaming && <span className="blink neonc">▌</span>}
-            {streaming && (
-              <button className="nc-btn ghost" title="Continue in background — the run keeps going server-side and output keeps streaming into the bubble while you do other things"
-                onClick={() => {
-                  detachRequestedRef.current = true;
-                  abortRef.current?.abort();
-                }} style={{ marginLeft: 6 }}>
-                ⏏ BG
+            <div className="chat-composer-actions">
+              <input ref={fileInputRef} type="file" accept="image/*,audio/*,video/*,.txt,.md,.csv,.json,.yaml,.yml,.xml,.py,.js,.ts,.css,.sh,.sql,.pdf,.docx,.epub,.html,.htm,.xhtml,*/*" multiple style={{ display: 'none' }} onChange={e => { onPickFiles(e.target.files); e.target.value = ''; }}/>
+              <button className="chat-icon-btn" onClick={() => fileInputRef.current?.click()} disabled={streaming} title="Attach a file or image">
+                <Icon name="paperclip" size={15}/>
               </button>
-            )}
-            {streaming && (
-              <button className="nc-btn ghost" onClick={() => {
-                abortRef.current?.abort();
-                if (activeSession) {
-                  fetch('/api/chat/stop', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ sessionId: activeSession }),
-                  }).catch(() => {});
-                }
-              }} style={{ marginLeft: 6, color: 'var(--danger)', borderColor: 'var(--danger)' }}>
-                ■ STOP
+              <button className={`chat-icon-btn ${effectivePlain ? 'is-active' : ''}`} onClick={() => setChatModeOverride(effectivePlain ? false : true)} disabled={streaming}
+                      title={effectivePlain
+                        ? 'Chat mode ON for this conversation — plain completion (no tools/skills/MCP). Click to switch to full agent mode.'
+                        : 'Full agent mode. Click to switch this conversation to plain chat mode.'}>
+                <Icon name="bolt" size={15}/>
               </button>
-            )}
-            <button className="nc-btn primary" onClick={send} disabled={streaming} style={{ marginLeft: 6, opacity: streaming ? 0.5 : 1 }}><Icon name="send" size={12}/> {streaming ? 'STREAMING' : 'SEND'}</button>
+              <button className={`chat-icon-btn ${recording ? 'is-active' : ''}`} onClick={toggleRecording} disabled={streaming || transcribing}
+                      title={recording ? 'Stop recording' : transcribing ? 'Transcribing…' : 'Voice input'}
+                      style={{ color: recording ? 'var(--danger)' : undefined }}>
+                {transcribing ? <span className="mono" style={{ fontSize: 11 }}>…</span> : <Icon name="mic" size={15}/>}
+              </button>
+              {!streaming && <span className="chat-kbd-hint">⏎ send · ⇧⏎ newline</span>}
+              {streaming && (
+                <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="chat-cursor mono" style={{ fontSize: 14 }}>▌</span>
+                  <button className="chat-pill-btn" title="Continue in background — the run keeps going server-side and output keeps streaming into the bubble while you do other things"
+                    onClick={() => {
+                      detachRequestedRef.current = true;
+                      abortRef.current?.abort();
+                    }}>
+                    Background
+                  </button>
+                  <button className="chat-pill-btn" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={() => {
+                    abortRef.current?.abort();
+                    if (activeSession) {
+                      fetch('/api/chat/stop', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ sessionId: activeSession }),
+                      }).catch(() => {});
+                    }
+                  }}>
+                    Stop
+                  </button>
+                </span>
+              )}
+              <span className="mono muted" style={{ fontSize: 10, marginLeft: streaming ? 8 : 'auto' }}>@{AGENTS.find(a => a.id === activeAgent)?.name || 'auto'}</span>
+              <button className="chat-send-btn" onClick={send} disabled={streaming}>
+                <Icon name="send" size={13}/> {streaming ? 'Sending…' : 'Send'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Inspector */}
-      <div className="nc-panel glow chat-inspector" style={{ padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line-soft)' }}>
+      {/* Inspector — collapsed by default, opt-in via the sliders icon in the thread header */}
+      <div className="nc-panel chat-inspector">
+        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div className="label-tiny neonc">INSPECTOR · ROUTE TRACE</div>
+          <button className="chat-rail-icon-btn" onClick={() => setInspectorOpen(false)} title="Hide inspector"><Icon name="close" size={13}/></button>
         </div>
         <div style={{ padding: 14, flex: 1, overflow: 'auto' }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.7 }}>

@@ -12,6 +12,7 @@
  * See docs/superpowers/specs/2026-05-15-agent-broker-secret-injection-design.md
  */
 import { resolveEnvBundle, listAccessible } from './agentSecrets';
+import { gitIdentityEnv } from './git-identity';
 
 export interface SubprocessSecrets {
   /** Base env merged with resolved secret values — pass straight to spawn({ env }). */
@@ -37,12 +38,16 @@ export async function buildSubprocessEnv(
   purpose: string,
   baseEnv: Record<string, string | undefined>,
 ): Promise<SubprocessSecrets> {
+  // Per-agent git author/committer identity — applied on BOTH return paths
+  // (incl. the no-secrets fast path), spread LAST so it always wins. {} for a
+  // null/unknown agent → falls through to global config.
+  const gitEnv = gitIdentityEnv(agentId);
   if (!names || names.length === 0) {
-    return { env: baseEnv, resolved: {}, denied: [], missing: [] };
+    return { env: { ...baseEnv, ...gitEnv }, resolved: {}, denied: [], missing: [] };
   }
   const bundle = await resolveEnvBundle(agentId, names, purpose);
   return {
-    env: { ...baseEnv, ...bundle.env },
+    env: { ...baseEnv, ...bundle.env, ...gitEnv },
     resolved: bundle.env,
     denied: bundle.denied,
     missing: bundle.missing,

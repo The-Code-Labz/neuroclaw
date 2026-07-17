@@ -12,6 +12,8 @@ import { Tui, installGlobalHandlers } from './cli/tui';
 import { initBrokerStorage, resolveAllSecretsFromBroker } from './broker/bootstrap';
 import { initAntigravityModel } from './providers/antigravity';
 import { startCleanupScheduler } from './system/cleanup';
+import { checkStandardsFreshness } from './standards/freshness';
+import { initStandardsHookRegistration } from './standards/hook-registration';
 
 async function main(): Promise<void> {
   setCliMode(true);
@@ -41,8 +43,10 @@ async function main(): Promise<void> {
   syncSkillExports({ refresh: true })
     .catch((err: unknown) => logger.warn('skill export sync failed on CLI startup', { err: (err as Error).message }));
   initAntigravityModel();
+  initStandardsHookRegistration();
   startLogAnalyzer();
   startCleanupScheduler();
+  checkStandardsFreshness();
 
   // ── TUI init ─────────────────────────────────────────────────────────────
   const tui = new Tui(process.stdin, process.stdout);

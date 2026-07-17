@@ -22,6 +22,7 @@ import { sendAlert } from './alert-dispatcher';
 import { isTaskLive } from './task-liveness';
 import { classifyFailure } from './failure-classifier';
 import { stopStream } from './stream-control';
+import { checkAgentBudget, AGENT_BUDGET_INTERRUPT } from './model-spend';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -289,6 +290,55 @@ async function processRunawayTask(task: RunawayTask): Promise<boolean> {
     title:    `Sentinel interrupted runaway task "${task.title}"`,
     body:     `Task ran ~${elapsedMin}m (budget ${budgetMin}m) while still live — interrupted and parked at 'blocked'. Reply to continue from where it stopped.`,
     dedupKey: `sentinel_runaway_${task.id}`,
+  }).catch(err => logger.warn('sentinel: sendAlert failed', { error: (err as Error).message }));
+  return true;
+}
+
+// ── Wave-3 Item F3.3: in-flight spend interrupt (double-gated OFF) ────────────
+// The aggressive lever: interrupt a LIVE task whose owning agent has blown its
+// per-agent cumulative token budget. Highest blast radius of Item F (kills a
+// running generation on SPEND, not wall-clock), so it's gated by BOTH
+// AGENT_BUDGET_ENABLED (checkAgentBudget) AND its own AGENT_BUDGET_INTERRUPT.
+// The claim gate (registry.ts) is the safe primary; this is opt-in on top.
+function findBudgetOverrunTasks(): RunawayTask[] {
+  const rows = getDb().prepare(`
+    SELECT id, title, agent_id, session_id, doing_since, last_heartbeat_at, failure_count
+    FROM tasks
+    WHERE status = 'doing' AND agent_id IS NOT NULL
+  `).all() as RunawayTask[];
+  return rows.filter(t => {
+    // Only LIVE tasks — a dead one is the stale pass's job (no double-processing).
+    if (!isTaskLive({ id: t.id, agent_id: t.agent_id, session_id: t.session_id, last_heartbeat_at: t.last_heartbeat_at })) return false;
+    const name = t.agent_id ? getAgentById(t.agent_id)?.name ?? null : null;
+    const b = checkAgentBudget(t.agent_id!, name);
+    return b.enabled && b.over;
+  });
+}
+
+async function processBudgetOverrunTask(task: RunawayTask): Promise<boolean> {
+  if (inCooldown(task.id)) return false;
+  const agent = task.agent_id ? getAgentById(task.agent_id) : null;
+  const b = checkAgentBudget(task.agent_id!, agent?.name ?? null);
+
+  // 1. Interrupt the live run (same Item-C arm the runaway pass uses).
+  const interrupted = task.session_id ? stopStream(task.session_id) : false;
+
+  // 2. Park the row: blocked + agent_id=null so the zombie run can't overwrite
+  //    'blocked' back to review/done when it finally resolves (stillOwner()=false).
+  const reason = `budget: agent spent ${b.spent.toLocaleString()} tok (budget ${b.budget.toLocaleString()}) in window, interrupted by Sentinel`;
+  updateTask(task.id, { status: 'blocked', agent_id: null, last_error: reason });
+
+  // 3. Telemetry + cooldown.
+  bumpFailureCount(task.id);
+  markEscalated(task.id);
+  logHive('agent_budget', `sentinel: interrupted over-budget task "${task.title}" (${b.spent.toLocaleString()}/${b.budget.toLocaleString()} tok)`, getSentinelAgent()?.id, { taskId: task.id, spent: b.spent, budget: b.budget, pct: b.pct, interrupted });
+  logger.warn('sentinel: over-budget task interrupted + blocked', { taskId: task.id, spent: b.spent, budget: b.budget, pct: b.pct, interrupted, agentName: agent?.name ?? null });
+  sendAlert({
+    severity: 'warn',
+    source:   'sentinel',
+    title:    `Sentinel interrupted over-budget task "${task.title}"`,
+    body:     `Agent "${agent?.name ?? '?'}" spent ${b.spent.toLocaleString()} tok (budget ${b.budget.toLocaleString()}) in the rolling window — interrupted and parked at 'blocked'. Budget self-resets as spend ages out of the window.`,
+    dedupKey: `sentinel_budget_${task.id}`,
   }).catch(err => logger.warn('sentinel: sendAlert failed', { error: (err as Error).message }));
   return true;
 }
@@ -735,6 +785,25 @@ export async function runSentinelScan(): Promise<{ checked: number; actedOn: num
         }
       } catch (err) {
         logger.warn('sentinel: runaway pass failed', { error: (err as Error).message });
+      }
+    }
+
+    // Wave-3 Item F3.3: in-flight spend-interrupt pass (double-gated OFF via
+    // AGENT_BUDGET_ENABLED + AGENT_BUDGET_INTERRUPT). Interrupts a LIVE task
+    // whose owning agent has blown its per-agent token budget. Own try/catch.
+    if (AGENT_BUDGET_INTERRUPT) {
+      try {
+        const overrunTasks = findBudgetOverrunTasks();
+        checked += overrunTasks.length;
+        for (const task of overrunTasks) {
+          try {
+            if (await processBudgetOverrunTask(task)) actedOn++;
+          } catch (err) {
+            logger.warn('sentinel: error processing over-budget task', { taskId: task.id, error: (err as Error).message });
+          }
+        }
+      } catch (err) {
+        logger.warn('sentinel: budget-interrupt pass failed', { error: (err as Error).message });
       }
     }
   } catch (err) {

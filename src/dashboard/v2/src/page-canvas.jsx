@@ -121,8 +121,8 @@ function activityLineFor(evt) {
 }
 
 // ─── Brief / Discovery / Direction (left panel) ──────────────────────────
-const BriefPanel = ({ form, setForm, onSubmit, busy }) => (
-  <div className="nc-panel glow" style={{ padding: 14 }}>
+const BriefPanel = ({ form, setForm, onSubmit, busy, agents, agentName, setAgent }) => (
+  <div className="st-panel" style={{ padding: 14 }}>
     <div className="label-tiny" style={{ color: 'var(--accent)' }}>// BRIEF</div>
     <textarea
       value={form.brief}
@@ -130,7 +130,7 @@ const BriefPanel = ({ form, setForm, onSubmit, busy }) => (
       placeholder='e.g. "design a magazine-style pitch deck for our seed round"'
       rows={4}
       style={{
-        width: '100%', marginTop: 8, background: 'rgba(2,6,23,0.6)',
+        width: '100%', marginTop: 8, background: 'color-mix(in srgb, var(--text) 4%, transparent)',
         color: 'var(--text)', border: '1px solid var(--line)',
         padding: 10, fontFamily: 'var(--mono)', fontSize: 12, resize: 'vertical',
         borderRadius: 3,
@@ -177,6 +177,24 @@ const BriefPanel = ({ form, setForm, onSubmit, busy }) => (
       ))}
     </div>
 
+    <div className="label-tiny" style={{ marginTop: 10 }}>BUILT BY</div>
+    <select
+      value={agentName}
+      onChange={e => setAgent(e.target.value)}
+      disabled={busy}
+      title="Any registered agent can build — pick a strong code/HTML model, or leave on the reliable default. Your choice is remembered as the default."
+      style={{
+        width: '100%', marginTop: 6, background: 'rgba(2,6,23,0.6)',
+        color: 'var(--text)', border: '1px solid var(--line)',
+        padding: '6px 8px', fontFamily: 'var(--mono)', fontSize: 11, borderRadius: 3,
+      }}
+    >
+      <option value="">⚡ Default (fast &amp; reliable)</option>
+      {(agents || []).map(a => (
+        <option key={a.id || a.name} value={a.name}>{a.name}{a.model ? ` · ${a.model}` : ''}</option>
+      ))}
+    </select>
+
     <button onClick={onSubmit}
       disabled={busy || !form.brief?.trim()}
       style={{
@@ -201,7 +219,7 @@ const DirectionPicker = ({ directions, active, onPick }) => (
           style={{
             textAlign: 'left',
             padding: '8px 10px',
-            background: active === d.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'rgba(2,6,23,0.55)',
+            background: active === d.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'color-mix(in srgb, var(--text) 4%, transparent)',
             border: '1px solid ' + (active === d.id ? 'var(--accent)' : 'var(--line)'),
             borderRadius: 3, cursor: 'pointer', color: 'var(--text)',
           }}>
@@ -431,7 +449,7 @@ const IterateChat = ({ artifact, onIterate, busy, messages }) => {
           placeholder='e.g. "make the hero darker"'
           disabled={busy}
           style={{
-            flex: 1, padding: '6px 8px', background: 'rgba(2,6,23,0.6)',
+            flex: 1, padding: '6px 8px', background: 'color-mix(in srgb, var(--text) 4%, transparent)',
             color: 'var(--text)', border: '1px solid var(--line)',
             fontFamily: 'var(--mono)', fontSize: 11, borderRadius: 3,
           }}
@@ -528,7 +546,7 @@ const ActivityLog = ({ entries, open, onToggle }) => {
         <span className="mono muted" style={{ fontSize: 11 }}>{open ? '▾' : '▸'}</span>
       </div>
       {open && (
-        <div style={{ background: 'rgba(0,4,12,0.7)', padding: '8px 12px', maxHeight: 220, overflow: 'auto' }}>
+        <div style={{ background: 'color-mix(in srgb, var(--text) 3%, transparent)', padding: '8px 12px', maxHeight: 220, overflow: 'auto' }}>
           {entries.length === 0 && (
             <div className="mono muted" style={{ fontSize: 11 }}>// no activity yet</div>
           )}
@@ -573,6 +591,15 @@ const Canvas = () => {
   const [form, setForm] = React.useState({ brief: '', surface: 'web', audience: 'Investors', tone: 'Cinematic', scale: 'single' });
   const [directions, setDirections] = React.useState([]);
   const [activeDirection, setActiveDirection] = React.useState(null);
+  // "Built by" agent picker. The choice is persisted in localStorage → it acts
+  // as the remembered default for this tab. '' = the reliable default model.
+  const [agents, setAgents] = React.useState([]);
+  const [agentName, setAgent] = React.useState(() => {
+    try { return localStorage.getItem('nc_canvas_agent') || ''; } catch { return ''; }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem('nc_canvas_agent', agentName); } catch { /* noop */ }
+  }, [agentName]);
   const [project, setProject] = React.useState(null);   // current full project
   const [artifact, setArtifact] = React.useState(null); // latest emitted artifact
   const [todos, setTodos] = React.useState([]);
@@ -616,6 +643,10 @@ const Canvas = () => {
   React.useEffect(() => {
     (async () => {
       try { setDirections(await window.NC_API.get('/api/canvas/directions')); } catch { /* noop */ }
+      try {
+        const all = await window.NC_API.get('/api/agents');
+        setAgents((Array.isArray(all) ? all : []).filter(a => (a.status || 'active') === 'active'));
+      } catch { /* noop */ }
       loadProjects();
     })();
   }, [loadProjects]);
@@ -647,6 +678,7 @@ const Canvas = () => {
         tone:      form.tone,
         scale:     form.scale,
         direction: activeDirection || undefined,
+        agentName: agentName || undefined,   // '' → backend reliable default
         // Intentionally omit projectId — a fresh GENERATE is a new project.
       }, (evt) => {
         pushActivity(evt);
@@ -706,7 +738,7 @@ const Canvas = () => {
       }
     }
     setBusy(false);
-  }, [busy, form, activeDirection, project, loadProjects, pushActivity]);
+  }, [busy, form, activeDirection, agentName, project, loadProjects, pushActivity]);
 
   const onIterate = React.useCallback(async (instruction) => {
     if (!artifact || iterBusy) return;
@@ -833,7 +865,8 @@ const Canvas = () => {
       }}>
         {/* LEFT: brief + direction + plan */}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <BriefPanel form={form} setForm={setForm} onSubmit={onSubmit} busy={busy} />
+          <BriefPanel form={form} setForm={setForm} onSubmit={onSubmit} busy={busy}
+            agents={agents} agentName={agentName} setAgent={setAgent} />
           <DirectionPicker directions={directions} active={activeDirection} onPick={setActiveDirection} />
           <LivePlanCard todos={todos} status={status} errors={errors} />
         </div>
@@ -855,7 +888,7 @@ const Canvas = () => {
           <div className="nc-panel" style={{ padding: 12 }}>
             <ProjectHistory projects={projects} activeId={project?.id} onPick={onPickProject} onDelete={onDeleteProject} />
           </div>
-          <div className="nc-panel glow" style={{ padding: 12 }}>
+          <div className="st-panel" style={{ padding: 12 }}>
             <IterateChat artifact={artifact} onIterate={onIterate} busy={iterBusy} messages={chatLog} />
           </div>
         </div>

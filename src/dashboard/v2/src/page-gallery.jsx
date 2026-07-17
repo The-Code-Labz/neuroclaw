@@ -321,7 +321,7 @@ const Gallery = () => {
       )}
 
       {items.length === 0 && !loading && (
-        <div className="nc-panel glow" style={{ padding: 40, textAlign: 'center' }}>
+        <div className="st-panel" style={{ padding: 40, textAlign: 'center' }}>
           <Icon name="image" size={48} className="neonc" style={{ opacity: 0.6 }}/>
           <div className="mono muted" style={{ marginTop: 14, fontSize: 12 }}>// no archived images yet</div>
           <div className="mono muted" style={{ marginTop: 4, fontSize: 10 }}>agent-generated images land here automatically — or upload your own above</div>
@@ -329,16 +329,11 @@ const Gallery = () => {
       )}
 
       {items.length > 0 && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-          gap: 12,
-          alignContent: 'start',
-        }}>
+        <div className="st-grid" style={{ alignContent: 'start' }}>
           {items.map((it, idx) => (
             <div
               key={it.id}
-              className="nc-panel glow tilt"
+              className="st-card"
               onClick={() => setLightboxIndex(idx)}
               style={{
                 padding: 8, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 8,

@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# update.sh — pull the latest NeuroClaw release, rebuild, and restart.
+# update.sh — fetch the latest NeuroClaw release, rebuild, and restart.
 #
 # Safe by design:
 #   • Records the current commit for one-line rollback.
 #   • Refuses to clobber uncommitted local changes (stash or abort — never
 #     force-resets over your edits).
 #   • Your config and data are gitignored (.env, *.db, backups/, workspaces/,
-#     dist/) so a pull can't touch them.
+#     dist/) so a fetch/checkout can't touch them.
 #   • Schema migrations run automatically on next boot.
+#   • All git fetch/checkout operations route through scripts/nc-git.sh with
+#     NC_GIT_SELF_UPDATE=1 so they are serialized but the drift guard knows the
+#     resulting detached HEAD is sanctioned.
 #
 # Channels:
 #   stable (default) — checks out the latest vX.Y.Z release tag. Predictable.
@@ -46,7 +49,35 @@ restart_service() {
   fi
 }
 
+# ── Node version guard (Vite build needs Node 20+) ─────────────────────────
+# The build (esbuild/Vite) requires Node >= 20. A box may default to an older
+# `node` on PATH even when Node 20 is installed via nvm (e.g. the systemd
+# service pins Node 20 but a plain shell does not). Activate Node 20 here so
+# the build never silently fails on an old runtime.
+ensure_node() {
+  local major
+  major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+  if [ -n "$major" ] && [ "$major" -ge 20 ]; then
+    ok "Node $(node -v) is OK for the build."
+    return 0
+  fi
+  warn "Active node ($(node -v 2>/dev/null || echo none)) is < 20 — the build needs Node 20+. Trying nvm ..."
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    set +eu
+    . "$NVM_DIR/nvm.sh"
+    nvm use 20 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || nvm use node >/dev/null 2>&1
+    set -eu
+  fi
+  major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+  if [ -z "$major" ] || [ "$major" -lt 20 ]; then
+    die "Build requires Node >= 20 but the active node is $(node -v 2>/dev/null || echo none). Install/enable it (e.g. 'nvm install 20 && nvm use 20') and re-run ./update.sh"
+  fi
+  ok "Using Node $(node -v) for the build."
+}
+
 rebuild_and_restart() {
+  ensure_node
   local lockfile_after
   lockfile_after="$(git hash-object package-lock.json 2>/dev/null || echo none)"
   if [ -n "$LOCKFILE_BEFORE" ] && [ "$LOCKFILE_BEFORE" != "$lockfile_after" ]; then
@@ -91,7 +122,7 @@ CURRENT_SHORT="$(git rev-parse --short HEAD)"
 if [ -n "$ROLLBACK_TO" ]; then
   LOCKFILE_BEFORE="$(git hash-object package-lock.json 2>/dev/null || echo none)"
   say "Rolling back to $ROLLBACK_TO ..."
-  git checkout -q "$ROLLBACK_TO" || die "Could not check out $ROLLBACK_TO"
+  NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh checkout -q "$ROLLBACK_TO" || die "Could not check out $ROLLBACK_TO"
   ok "Checked out $ROLLBACK_TO. Rebuilding ..."
   rebuild_and_restart
   ok "Rolled back to $ROLLBACK_TO."
@@ -115,7 +146,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 say "Fetching latest from $REMOTE (channel: $CHANNEL) ..."
-git fetch --tags --prune "$REMOTE"
+NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh fetch --tags --prune "$REMOTE"
 
 # ── Resolve the target ref ─────────────────────────────────────────────────
 if [ "$CHANNEL" = "edge" ]; then
@@ -163,7 +194,7 @@ echo ""
 LOCKFILE_BEFORE="$(git hash-object package-lock.json 2>/dev/null || echo none)"
 
 say "Checking out $TARGET_LABEL ..."
-git checkout -q "$TARGET_REF"
+NC_GIT_SELF_UPDATE=1 ./scripts/nc-git.sh checkout -q "$TARGET_REF"
 
 rebuild_and_restart
 restore_stash_if_any

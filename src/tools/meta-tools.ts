@@ -17,7 +17,7 @@ import { getMcpRegistryTools, findMcpRegistryTool, type SynthesizedMcpTool } fro
 import { dispatchComposioTool, getCachedComposioToolSummaries } from './adapters/composio';
 import type { ToolContext } from './context';
 import { logToolCall } from '../system/hive-mind';
-import { maybeCompressToolResult } from './tool-middleware';
+import { invokeTool, type ToolCategory } from './tool-middleware';
 
 // ── schemas ────────────────────────────────────────────────────────────────
 
@@ -258,11 +258,16 @@ export async function handleCallTool(
     if (!v.success) {
       return { error: `Invalid args for ${name}: ${v.error.message}${paramHint(name, staticTool.schema)}` };
     }
-    // Output compression w/ retrieval exemption — the single boundary, applied
-    // here for the call_tool path (trace already emitted above). Dynamic classes
-    // (agent__*, mcp__*, COMPOSIO_*) below are exempt-by-default, so only the
-    // static-registry path needs the wrap.
-    return maybeCompressToolResult(name, staticTool.category, await staticTool.handler(v.data, ctx), ctx);
+    // Static registry: route through the unified boundary so classification,
+    // retry, and compression are applied exactly once (F8).
+    return invokeTool({
+      name,
+      args: v.data,
+      ctx,
+      category: staticTool.category as ToolCategory,
+      trace: false,
+      run: () => staticTool.handler(v.data, ctx),
+    });
   }
 
   // 2. MCP-backed agents (agent__<name> tools)
@@ -283,7 +288,15 @@ export async function handleCallTool(
     if (!v.success) {
       return { error: `Invalid args for ${name}: ${v.error.message}${paramHint(name, mcpRegTool.schema)}` };
     }
-    return await mcpRegTool.handler(v.data, ctx);
+    // Route through the unified boundary so the RETRY_SAFE_MUTATE allowlist
+    // (e.g. mcp__canva__generate-design) gets spaced retries (F3/F8).
+    return invokeTool({
+      name,
+      args: v.data,
+      ctx,
+      trace: false,
+      run: () => mcpRegTool.handler(v.data, ctx),
+    });
   }
 
   // 4. Composio (COMPOSIO_* tools)

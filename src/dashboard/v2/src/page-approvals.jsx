@@ -94,8 +94,7 @@ const Approvals = () => {
       )}
 
       {/* Pending */}
-      <div className="nc-panel glow" style={{ padding: 0, marginBottom: 16, overflow: 'hidden' }}>
-        <div className="scan-line"/>
+      <div className="sec-panel sec-panel--flush" style={{ marginBottom: 16 }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div className="label-tiny neonc">
             <span className={`dot ${pending.length > 0 ? 'amber pulse' : 'muted'}`} style={{ marginRight: 6 }}/>
@@ -121,13 +120,13 @@ const Approvals = () => {
             // no pending approvals — agents are running freely
           </div>
         ) : (
-          <div>
+          <div className="table-scroll">
             {pending.map((a) => {
               const rawInput = (() => { try { return JSON.parse(a.tool_input); } catch { return a.tool_input; } })();
               const inputPreview = fmtInput(a.tool_input);
               const fullInput = typeof rawInput === 'object' ? JSON.stringify(rawInput, null, 2) : String(rawInput);
               return (
-                <div key={a.id} style={{ padding: '14px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 8%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 1fr auto', gap: 12, alignItems: 'center' }}>
+                <div key={a.id} className="sec-row" style={{ display: 'grid', gridTemplateColumns: '80px 120px 100px 1fr auto', gap: 12, alignItems: 'center' }}>
                   <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.created_at)}</span>
                   <span className="mono" style={{ fontSize: 11, color: 'var(--accent-2)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
                   <span className="tag amber" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
@@ -158,22 +157,24 @@ const Approvals = () => {
       </div>
 
       {/* Resolved history */}
-      <div className="nc-panel glow" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="sec-panel sec-panel--flush">
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)' }}>
           <div className="label-tiny neonc">RECENT RESOLVED · {resolved.length}</div>
         </div>
         {resolved.length === 0 ? (
           <div className="mono muted" style={{ padding: 20, textAlign: 'center', fontSize: 12 }}>// no history yet</div>
         ) : (
-          resolved.map((a) => (
-            <div key={a.id} style={{ padding: '10px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
-              <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.resolved_at || a.created_at)}</span>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
-              <span className="tag" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
-              <span className="mono" style={{ fontSize: 11, color: statusColor(a.status) }}>{a.status}</span>
-              <span className="mono muted" style={{ fontSize: 11 }} title={fmtInput(a.tool_input)}>{fmtInput(a.tool_input)}</span>
-            </div>
-          ))
+          <div className="table-scroll">
+            {resolved.map((a) => (
+              <div key={a.id} className="sec-row" style={{ padding: '10px 16px', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
+                <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.resolved_at || a.created_at)}</span>
+                <span className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
+                <span className="tag" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
+                <span className="mono" style={{ fontSize: 11, color: statusColor(a.status) }}>{a.status}</span>
+                <span className="mono muted" style={{ fontSize: 11 }} title={fmtInput(a.tool_input)}>{fmtInput(a.tool_input)}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>

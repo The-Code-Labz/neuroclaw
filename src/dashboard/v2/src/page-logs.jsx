@@ -165,16 +165,15 @@ const Logs = () => {
         }
       </div>
 
-      <div className="nc-panel glow" style={{ padding: 0, position: 'relative', overflow: 'hidden' }}>
-        <div className="scan-line"/>
-        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between' }}>
+      <div className="ob-console">
+        <div className="ob-console-head">
           <div className="mono neonc" style={{ fontSize: 11 }}>$ tail -f logs/neuroclaw.log</div>
           <div className="mono muted" style={{ fontSize: 10 }}>
             {loading ? 'loading...' : `${filtered.length} of ${activeLines.length} lines`}
           </div>
         </div>
 
-        <div style={{ background: 'rgba(0,4,12,0.7)', padding: '10px 14px', maxHeight: 560, overflow: 'auto' }}>
+        <div className="ob-console-body">
           {loading && (
             <div className="mono muted" style={{ padding: '20px 0', fontSize: 11 }}>// loading logs...</div>
           )}

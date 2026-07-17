@@ -751,6 +751,72 @@ body {
   display: flex; flex-direction: column;
   min-height: 0;
 }
+.nt-mobile-tabs { display: none; gap: 6px; margin-bottom: 12px; }
+.nt-mobile-tabs button { flex: 1; }
+
+/* ── Notes — "Calm Instrument" card/panel vocabulary ───────────────────────── */
+.nt-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  padding: 12px; cursor: pointer; position: relative;
+  background: var(--panel);
+  transition: background 160ms ease-out, border-color 160ms ease-out;
+}
+.nt-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--border-default); }
+.nt-card.is-active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle)); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.nt-card.is-pinned { border-left: 2px solid var(--accent-2); }
+.nt-card.is-archived { opacity: 0.55; }
+
+.nt-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  padding: 16px;
+  background: var(--panel);
+}
+.nt-panel--flush { padding: 0; overflow: hidden; }
+
+.nt-toolbar-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border-subtle);
+  background: transparent; color: var(--icon-default); cursor: pointer;
+  transition: background 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+}
+.nt-toolbar-btn:hover { background: color-mix(in srgb, var(--text-primary) 5%, transparent); color: var(--text-primary); border-color: var(--border-default); }
+.nt-toolbar-btn.is-danger:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border-subtle)); }
+.nt-toolbar-btn.is-active { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, var(--border-subtle)); }
+
+/* ── Connect — "Calm Instrument" (Providers/MCP/Skills/Channels/Composio/Machines) ── */
+.cn-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 16px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md, 10px);
+}
+.cn-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-bottom: 16px; }
+.cn-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  padding: 14px;
+  background: var(--panel);
+  transition: background 160ms ease-out, border-color 160ms ease-out;
+}
+.cn-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--border-default); }
+.cn-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  padding: 16px;
+  background: var(--panel);
+}
+.cn-panel--flush { padding: 0; overflow: hidden; }
+.cn-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  padding: 14px;
+  margin-bottom: 10px;
+  background: var(--panel);
+  transition: background 160ms ease-out, border-color 160ms ease-out;
+}
+.cn-row:hover { background: color-mix(in srgb, var(--accent) 2%, transparent); }
+.cn-row.is-disabled { opacity: 0.55; }
 
 /* ── Canvas three-column workspace ─────────────────────────────────────────── */
 .canvas-grid {
@@ -798,6 +864,111 @@ body {
 .card-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
 .grid-responsive { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .kanban-grid { display: grid; gap: 14px; grid-template-columns: repeat(4, 1fr); }
+
+/* ── Agents roster (parity with v2 index.html "Calm Instrument" pass) ────── */
+.ag-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 20px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); }
+.ag-toolbar-spacer { flex: 1; }
+.ag-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+@media (max-width: 640px) { .ag-grid { grid-template-columns: 1fr; } }
+.ag-card { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 16px; background: var(--surface-1, var(--panel)); transition: background 160ms ease-out, border-color 160ms ease-out; }
+.ag-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+.ag-card.is-temp { border-color: color-mix(in srgb, var(--violet, var(--accent)) 32%, var(--line-soft)); }
+.ag-card.is-inactive { opacity: 0.5; }
+.ag-head { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.ag-avatar { width: 40px; height: 40px; flex: none; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; overflow: hidden; font-family: var(--display); font-weight: 600; font-size: 15px; background: color-mix(in srgb, var(--ag-accent, var(--accent)) 16%, transparent); color: var(--ag-accent, var(--accent)); border: 1px solid color-mix(in srgb, var(--ag-accent, var(--accent)) 32%, transparent); }
+.ag-name { font-family: var(--display); font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
+.ag-role { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+.ag-desc { font-size: 12px; color: var(--text-soft); line-height: 1.5; margin-bottom: 12px; min-height: 18px; }
+.ag-meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 3px 0; margin-bottom: 12px; }
+.ag-meta b { color: var(--text-soft); font-weight: 500; }
+.ag-meta .sep { margin: 0 7px; opacity: 0.5; }
+.ag-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; min-height: 20px; }
+.ag-actions { display: flex; align-items: center; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.ag-actions .nc-btn.grow { flex: 1; }
+.ag-actions .nc-btn.icon-only { flex: none; width: 32px; height: 32px; padding: 0; display: flex; align-items: center; justify-content: center; }
+
+/* ── Mission Control (parity with v2 index.html "Calm Instrument" pass) ──── */
+.mc-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 11px 16px; margin-bottom: 14px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); transition: border-color 200ms ease-out, background 200ms ease-out; }
+.mc-bar.is-live { border-color: color-mix(in srgb, var(--accent) 32%, var(--line-soft)); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.mc-col { border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; }
+.mc-col-head { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); display: flex; justify-content: space-between; align-items: center; }
+.mc-card { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 11px; background: var(--surface-1, var(--panel)); cursor: grab; user-select: none; transition: background 160ms ease-out, border-color 160ms ease-out; }
+.mc-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+.mc-rail-row { padding: 10px 14px; cursor: pointer; position: relative; border-left: 2px solid transparent; transition: background 140ms ease-out, border-color 140ms ease-out; }
+.mc-rail-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.mc-rail-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.mc-rail-row .mc-rail-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px; opacity: 0; transition: opacity 140ms; }
+
+/* ── Memory hub — RAG Docs/Notebooks/Dream reuse v2's page-*.jsx directly,
+   so they need the same .mem-* "Calm Instrument" classes as v2 index.html. ── */
+.mem-panel { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 14px; background: var(--surface-1, var(--panel)); }
+.mem-rail { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 12px; }
+.mem-type-row { padding: 7px 10px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; border-left: 2px solid transparent; transition: background 140ms ease-out, border-color 140ms ease-out; }
+.mem-type-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.mem-type-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.mem-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.mem-card { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 12px; background: var(--surface-1, var(--panel)); cursor: pointer; transition: background 160ms ease-out, border-color 160ms ease-out; }
+.mem-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+.mem-card.is-active { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft)); }
+.mem-card.is-high-salience { border-left: 2px solid var(--accent); }
+.mc-rail-row:hover .mc-rail-actions, .mc-rail-row.is-active .mc-rail-actions { opacity: 1; }
+.mc-rail-row .mc-rail-actions button { background: transparent; border: none; cursor: pointer; padding: 2px 4px; color: var(--muted); }
+.mc-rail-row .mc-rail-actions button:hover { color: var(--text); }
+.mc-pill { font-size: 9px; font-family: var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-soft); background: transparent; color: var(--muted); cursor: pointer; text-transform: uppercase; letter-spacing: 0.08em; transition: all 140ms ease-out; }
+.mc-pill.is-active { border-color: color-mix(in srgb, var(--pill-accent, var(--accent)) 55%, transparent); color: var(--pill-accent, var(--accent)); background: color-mix(in srgb, var(--pill-accent, var(--accent)) 10%, transparent); }
+
+/* ── Studio hub — NeuroLab/Terminal/NeuroRoom/Interactive/Generate/Editor/
+   Gallery/Media/Backlot reuse v2's page-*.jsx directly, so they need the
+   same .st-* "Calm Instrument" classes as v2 index.html. Backfilled here —
+   a prior pass claimed these shipped to v4.css but they never actually did,
+   so Studio rendered unstyled on /dashboard-v4 until now. ── */
+.st-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 16px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); transition: border-color 200ms ease-out, background 200ms ease-out; }
+.st-toolbar.is-live { border-color: color-mix(in srgb, var(--accent) 32%, var(--line-soft)); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.st-panel { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 16px; background: var(--surface-1, var(--panel)); }
+.st-panel--flush { padding: 0; overflow: hidden; }
+.st-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); }
+.st-panel-title { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+.st-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+@media (max-width: 640px) { .st-grid { grid-template-columns: 1fr; } }
+.st-card { border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; background: var(--surface-1, var(--panel)); transition: background 160ms ease-out, border-color 160ms ease-out; }
+.st-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+.st-split { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 900px) { .st-split { grid-template-columns: 1fr; } }
+.st-rail-row { padding: 10px 14px; cursor: pointer; position: relative; border-left: 2px solid transparent; transition: background 140ms ease-out, border-color 140ms ease-out; }
+.st-rail-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.st-rail-row.is-active { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* ── Security hub — Sentinel/Approvals reuse v2's page-*.jsx directly, so
+   they need the same .sec-* classes as v2 index.html. Same backfill as
+   .st-* above — never actually shipped to v4.css despite a prior claim. ── */
+.sec-panel { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 16px; background: var(--surface-1, var(--panel)); }
+.sec-panel--flush { padding: 0; overflow: hidden; }
+.sec-card { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 14px; background: var(--surface-1, var(--panel)); transition: background 160ms ease-out, border-color 160ms ease-out; }
+.sec-card:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); border-color: var(--line); }
+.sec-row { padding: 14px 16px; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 8%, transparent); transition: background 160ms ease-out; }
+.sec-row:last-child { border-bottom: none; }
+.sec-row:hover { background: color-mix(in srgb, var(--accent) 2%, transparent); }
+.sec-scope-header { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); background: var(--surface-1, var(--panel)); display: flex; align-items: center; gap: 10px; }
+
+/* ── Observability hub — Analytics/Usage/Health/Artifacts/Logs/Compression
+   reuse v2's page-*.jsx directly via page-observability.jsx, so they need
+   the same .ob-* classes as v2 index.html. ── */
+.ob-console { border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; background: var(--surface-1, var(--panel)); }
+.ob-console-head { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; }
+.ob-console-body { background: color-mix(in srgb, var(--bg-0) 45%, transparent); padding: 10px 14px; max-height: 560px; overflow: auto; }
+.ob-row { padding: 10px 8px; cursor: pointer; border-radius: 2px; transition: background 140ms ease-out; }
+.ob-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.ob-sub-row { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.ob-active-row { background: color-mix(in srgb, var(--accent) 5%, transparent); border-left: 2px solid var(--accent); }
+.ob-preview-box { background: color-mix(in srgb, var(--bg-0) 30%, transparent); border: 1px solid var(--line-soft); border-radius: 2px; }
+
+/* ── Settings hub — page-settings.jsx (v2/v3) is reused directly by the
+   Live .env / Routing / Spawn / Sub-Agents / Memory / Dream / Providers /
+   MCP / Exec / Dashboard tabs; v4's own page-settings.jsx (Themes tab) also
+   needs the same .se-* classes. ── */
+.se-panel { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 18px; background: var(--surface-1, var(--panel)); }
+.se-well { background: color-mix(in srgb, var(--bg-0) 45%, transparent); border-radius: 2px; }
+.se-banner-danger { background: color-mix(in srgb, var(--danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); border-radius: 4px; }
 
 /* ── Chat layout ───────────────────────────────────────────────────────────── */
 .chat-layout {
@@ -1365,6 +1536,12 @@ input.nc-input::placeholder { color: var(--text-tertiary); }
   .split-view { flex-direction: column; }
   .split-sidebar { width: 100%; max-width: none; max-height: 40vh; }
   .split-main { min-height: 50vh; }
+  /* Notes: below this width only one pane shows at a time (List/Note
+     toggle) instead of forcing a scroll past the whole list to reach
+     the viewer. Scoped to .notes-list/.notes-editor so Memory's shared
+     .split-view usage is unaffected. */
+  .nt-mobile-tabs { display: flex !important; }
+  .nt-mobile-hide { display: none !important; }
   .canvas-grid { grid-template-columns: 1fr; }
   .health-strip { flex-wrap: wrap; }
   .health-tile { flex: 1 1 40%; border-right: none; border-bottom: 1px solid var(--border-subtle); }
@@ -1430,6 +1607,33 @@ input.nc-input::placeholder { color: var(--text-tertiary); }
   .main { padding-bottom: 52px !important; }
 }
 
+/* Topbar-anchored dropdown panels (notification bell): the inline
+   `position:absolute; right:0; width:360` popup overflows a 320-375px
+   phone since the bell isn't at the viewport edge. Clamp to a
+   viewport-anchored sheet below the topbar instead. */
+@media (max-width: 480px) {
+  .notif-panel {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: calc(52px + env(safe-area-inset-top, 0px) + 4px) !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 96px) !important;
+  }
+}
+
+/* Label + control form rows (Settings, Secrets): stack on mobile instead of
+   squeezing a 220-240px label column into a 320px viewport. */
+@media (max-width: 640px) {
+  .setting-row { grid-template-columns: 1fr !important; gap: 6px !important; }
+}
+
+/* Modal dialogs with a fixed desktop pixel width: clamp to viewport. */
+@media (max-width: 640px) {
+  .modal-fixed-width { width: calc(100vw - 32px) !important; max-width: none !important; }
+}
+
 @supports (padding: max(0px)) {
   .app .topbar {
     padding-top: max(0px, env(safe-area-inset-top));
@@ -1449,3 +1653,11 @@ input.nc-input::placeholder { color: var(--text-tertiary); }
   .pulse, .orb, .orb::before, .orb.busy::before, .blink { animation: none !important; }
   .nc-btn, .nc-panel, .stat-card, .agent-card, .agent-row, .provider-row, .hive-row { transition: none !important; }
 }
+
+/* Native select popup contrast fix — see v2/index.html for full explanation. */
+select { color-scheme: dark; }
+
+/* Global button text-color reset — see v2/index.html for full explanation.
+   Browsers give unstyled <button> elements a default near-black text color
+   independent of the page theme; this makes them inherit instead. */
+button { color: inherit; }

@@ -117,6 +117,9 @@ import {
   createNote as createAgentNote, updateNote as updateAgentNote, deleteNote as deleteAgentNote,
 } from '../system/notes-store';
 import {
+  listWorkspaces, listWorkspaceFiles, readWorkspaceFile, resolveWorkspaceFile, fileKind as wsFileKind,
+} from '../system/workspace-browser';
+import {
   mediaEnabled, listMedia, getMediaItem, presignDownload as presignMediaDownload,
   setArchived as setMediaArchived, deleteMedia, registerMediaFromUrl, registerMediaFromBase64,
   type MediaKind,
@@ -857,7 +860,11 @@ export function registerApiRoutes(app: Hono<any>): void {
   app.use('/api/*', async (c, next) => {
     const cookie = c.req.header('cookie') ?? '';
     const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
-    const token = c.req.query('token') ?? c.req.header('x-dashboard-token') ?? cookieToken ?? '';
+    // `||` (not `??`): an EMPTY-string `?token=` (from a standalone PWA whose
+    // client token resolved to '' — URL token gone + HttpOnly cookie unreadable
+    // by JS) must fall through to the HttpOnly cookie, the intended single source
+    // of truth. With `??`, an empty '' shadows the cookie and forces a spurious 401.
+    const token = c.req.query('token') || c.req.header('x-dashboard-token') || cookieToken || '';
     if (!tokenMatches(token, config.dashboard.token)) return c.json({ error: 'Unauthorized' }, 401);
     await next();
   });
@@ -1262,6 +1269,18 @@ export function registerApiRoutes(app: Hono<any>): void {
     }
   });
 
+  app.get('/api/providers/higgsfield/usage', async (c) => {
+    try {
+      // Higgsfield subscription credit balance via the OAuth-gated MCP
+      // (balance → { credits, subscription_plan_type }). Capless → high-water-mark
+      // gauge, same as OpenArt/KIE. See src/infra/higgsfield-usage.ts.
+      const { fetchHiggsfieldUsage } = await import('../infra/higgsfield-usage');
+      return c.json(await fetchHiggsfieldUsage());
+    } catch (err) {
+      return c.json({ ok: false, provider: 'higgsfield', windows: [], error: (err as Error).message }, 500);
+    }
+  });
+
   // ── Provider health (WS2 cooldown layer) ──────────────────────────────────
   app.get('/api/providers/health', async (c) => {
     try {
@@ -1382,6 +1401,29 @@ export function registerApiRoutes(app: Hono<any>): void {
     'kling-3-omni',
   ];
 
+  // Higgsfield model catalogs — live-verified 2026-07-16 via models_explore.
+  // IMAGE: text-to-image generation set (utilities excluded). EDIT: the models
+  // tagged image-to-image by the API. VIDEO: text-to-video generation set (kept
+  // here for the forthcoming Video Studio tab; utilities/upscalers excluded).
+  const HIGGSFIELD_IMAGE_MODELS = [
+    'nano_banana_2', 'nano_banana_pro', 'soul_2', 'soul_cinematic', 'gpt_image_2',
+    'cinematic_studio_2_5', 'marketing_studio_image', 'ms_image', 'image_auto',
+    'autosprite', 'soul_cast', 'soul_location', 'soul_v2', 'z_image', 'nano_banana',
+    'nano_banana_2_shots', 'nano_banana_2_lite', 'seedream_v4_5', 'flux_2',
+    'flux_kontext', 'kling_omni_image', 'openai_hazel', 'seedream_v5_lite',
+    'seedream_v5_pro', 'grok_image', 'recraft_v4_1',
+  ];
+  const HIGGSFIELD_EDIT_MODELS = [
+    'nano_banana_2', 'nano_banana_pro', 'nano_banana', 'nano_banana_2_lite',
+  ];
+  const HIGGSFIELD_VIDEO_MODELS = [
+    'cinematic_studio_3_0', 'cinematic_studio_video', 'cinematic_studio_video_v2',
+    'marketing_studio_video', 'clipify', 'higgsfield_preset', 'grok_video_v15',
+    'minimax_hailuo', 'wan2_6', 'seedance1_5', 'seedance_2_0', 'seedance_2_0_mini',
+    'kling2_6', 'kling3_0', 'kling3_0_turbo', 'grok_video', 'gemini_omni', 'wan2_7',
+    'veo3', 'veo3_1', 'veo3_1_lite',
+  ];
+
   type StudioProviderMode = 'generate' | 'edit';
   interface StudioProviderMeta {
     id:              string;
@@ -1415,6 +1457,11 @@ export function registerApiRoutes(app: Hono<any>): void {
     { id: 'kie_image', label: 'KIE AI', tier: 1, models: STATIC_KIE_IMAGE_MODELS, requiresSession: false, argHint: 'premium catalog · 1 image per prompt' },
     { id: 'fal_image', label: 'fal.ai', tier: 1, modelsSource: 'fal', models: STATIC_FAL_IMAGE_MODELS, requiresSession: false, argHint: 'fast FLUX / Nano-Banana · 1 image per prompt', supportsSafety: true },
     { id: 'openart_image', label: 'OpenArt', tier: 1, models: STATIC_OPENART_IMAGE_MODELS, requiresSession: false, argHint: 'MCP · subscription credits · 1 image per prompt' },
+    // Higgsfield (MCP · OAuth · subscription credits). Model catalog live-verified
+    // 2026-07-16 via models_explore (text-to-image set; utilities like upscalers /
+    // background-removers / outpaint excluded — those are edit-tab / phase-2). The
+    // higgsfield_image tool delivers+archives internally (same pattern as openart_image).
+    { id: 'higgsfield_image', label: 'Higgsfield', tier: 1, models: HIGGSFIELD_IMAGE_MODELS, requiresSession: false, argHint: 'MCP · subscription credits · 1 image per prompt', resolutions: ['1k', '2k', '4k'] },
     { id: 'gpt_image_generate', label: 'ChatGPT · DALL·E (session)', tier: 2, models: ['dall-e-3'], requiresSession: true, note: 'Requires a provisioned ChatGPT browser session.' },
     { id: 'gemini_image_generate', label: 'Gemini · Nano Banana (session)', tier: 2, models: ['gemini-generate'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
     { id: 'gemini_web_generate_image', label: 'Gemini Web · Imagen (session)', tier: 2, models: ['imagen-3'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
@@ -1423,6 +1470,84 @@ export function registerApiRoutes(app: Hono<any>): void {
   ];
 
   const STUDIO_IMAGE_PROVIDER_IDS = new Set(STUDIO_IMAGE_PROVIDERS.map(p => p.id));
+
+  // ── Studio › Video — text/image → video generation providers ────────────────
+  // Parallel manifest to STUDIO_IMAGE_PROVIDERS, consumed by the Video Studio tab.
+  // Each provider maps to a registered video tool (fal_video / kie_video /
+  // higgsfield_video). All three deliver to Studio › Media internally, so the
+  // /api/studio/video-gen route just dispatches the tool and returns the media.
+  // Curated fal/kie catalogs (schema-derived); Higgsfield live-verified 2026-07-16.
+  const STATIC_FAL_VIDEO_MODELS = [
+    'fal-ai/wan/v2.2-5b/text-to-video',
+    'fal-ai/minimax/hailuo-02/standard/text-to-video',
+    'fal-ai/kling-video/v2/master/text-to-video',
+    'fal-ai/ltx-video-13b-098/text-to-video',
+  ];
+  const STATIC_KIE_VIDEO_MODELS = [
+    'veo3_fast', 'veo3', 'sora-2-text-to-video', 'runway/gen4-turbo', 'kling/v2-1-master',
+  ];
+
+  interface StudioVideoProviderMeta {
+    id:              string;   // registered tool name
+    label:           string;
+    models:          string[];
+    defaultModel:    string;
+    requiresSession: boolean;  // false — all three are key/token backed
+    healthKey:       'fal' | 'kie' | 'higgsfield';
+    note:            string;
+    supportsImageInit: boolean; // image-to-video (first-frame → motion)
+  }
+
+  const STUDIO_VIDEO_PROVIDERS: StudioVideoProviderMeta[] = [
+    { id: 'fal_video', label: 'fal.ai', models: STATIC_FAL_VIDEO_MODELS, defaultModel: config.fal.videoModel, requiresSession: false, healthKey: 'fal', note: 'Async queue · text→video + image→video · ~1-4 min.', supportsImageInit: true },
+    { id: 'kie_video', label: 'KIE AI', models: STATIC_KIE_VIDEO_MODELS, defaultModel: config.kie.videoModel, requiresSession: false, healthKey: 'kie', note: 'Unified job API · veo3/sora/runway/kling · ~1-4 min. Model ids pending live verification.', supportsImageInit: true },
+    { id: 'higgsfield_video', label: 'Higgsfield', models: HIGGSFIELD_VIDEO_MODELS, defaultModel: config.higgsfield.videoModel, requiresSession: false, healthKey: 'higgsfield', note: 'MCP · subscription credits · cinematic text→video · ~1-4 min.', supportsImageInit: false },
+  ];
+  const STUDIO_VIDEO_PROVIDER_IDS = new Set(STUDIO_VIDEO_PROVIDERS.map(p => p.id));
+
+  function isVideoProviderHealthy(healthKey: 'fal' | 'kie' | 'higgsfield'): boolean {
+    if (!mediaEnabled()) return false; // videos need R2 to land
+    if (healthKey === 'fal') return !!config.fal.apiKey;
+    if (healthKey === 'kie') return !!config.kie.apiKey;
+    if (healthKey === 'higgsfield') return !!config.higgsfield.enabled;
+    return false;
+  }
+
+  // ── Studio Music/Audio generation ──────────────────────────────────────────
+  const STATIC_FAL_AUDIO_MODELS = [
+    'cassetteai/music-generator',
+    'fal-ai/minimax-music',
+    'fal-ai/stable-audio-25/text-to-audio',
+    'fal-ai/lyria2',
+    'fal-ai/diffrhythm',
+    'fal-ai/ace-step',
+  ];
+  const STATIC_KIE_AUDIO_MODELS = [
+    'suno/v5',
+    'suno/v4-5',
+    'music-u',
+  ];
+  interface StudioAudioProviderMeta {
+    id:              string;   // registered tool name
+    label:           string;
+    models:          string[];
+    defaultModel:    string;
+    requiresSession: boolean;  // false — key/token backed
+    healthKey:       'fal' | 'kie';
+    note:            string;
+    supportsLyrics:  boolean;
+  }
+  const STUDIO_AUDIO_PROVIDERS: StudioAudioProviderMeta[] = [
+    { id: 'fal_audio', label: 'fal.ai', models: STATIC_FAL_AUDIO_MODELS, defaultModel: config.fal.audioModel, requiresSession: false, healthKey: 'fal', note: 'Async queue · text→music (+lyrics on ace-step/minimax-music/diffrhythm) · ~15-90s.', supportsLyrics: true },
+    { id: 'kie_audio', label: 'KIE AI', models: STATIC_KIE_AUDIO_MODELS, defaultModel: config.kie.audioModel, requiresSession: false, healthKey: 'kie', note: 'Unified job API · Suno-style songs · ~30-120s. Model ids pending live verification.', supportsLyrics: true },
+  ];
+  const STUDIO_AUDIO_PROVIDER_IDS = new Set(STUDIO_AUDIO_PROVIDERS.map(p => p.id));
+  function isAudioProviderHealthy(healthKey: 'fal' | 'kie'): boolean {
+    if (!mediaEnabled()) return false; // audio needs R2 to land
+    if (healthKey === 'fal') return !!config.fal.apiKey;
+    if (healthKey === 'kie') return !!config.kie.apiKey;
+    return false;
+  }
 
   function getAbacusImageModels(): string[] {
     try {
@@ -1549,6 +1674,8 @@ export function registerApiRoutes(app: Hono<any>): void {
         return config.fal.enabled;
       case 'openart_image':
         return config.openart.enabled;
+      case 'higgsfield_image':
+        return config.higgsfield.enabled;
       case 'gpt_image_generate':
         return mcpServers.some(s => s.name === 'gpt_image' && s.enabled);
       case 'gemini_image_generate':
@@ -1714,6 +1841,9 @@ export function registerApiRoutes(app: Hono<any>): void {
         toolArgs = { prompt, model, aspect_ratio: aspectRatio, output_format: 'png' };
       } else if (provider === 'openart_image') {
         toolArgs = { operation: 'generate', model, prompt, aspect_ratio: aspectRatio };
+      } else if (provider === 'higgsfield_image') {
+        // higgsfield_image reads aspect_ratio/resolution/count and delivers+archives internally.
+        toolArgs = { prompt, model, aspect_ratio: aspectRatio, count: 1, ...(resolution ? { resolution } : {}) };
       } else if (provider === 'fal_image') {
         const falSizeMap: Record<string, string> = {
           '1:1': 'square_hd', '9:16': 'portrait_16_9', '16:9': 'landscape_16_9',
@@ -1793,6 +1923,195 @@ export function registerApiRoutes(app: Hono<any>): void {
     }
   });
 
+  // ── Studio › Video — text/image → video generation ──────────────────────────
+  app.get('/api/studio/video-providers', async (c) => {
+    try {
+      const providers = STUDIO_VIDEO_PROVIDERS.map(meta => {
+        const healthy = isVideoProviderHealthy(meta.healthKey);
+        return {
+          id: meta.id,
+          label: meta.label,
+          models: meta.models,
+          defaultModel: meta.defaultModel,
+          requiresSession: meta.requiresSession,
+          healthy,
+          degraded: !healthy,
+          supportsImageInit: meta.supportsImageInit,
+          note: healthy ? meta.note
+            : !mediaEnabled() ? 'Media storage (R2) not configured — videos have nowhere to land.'
+            : `${meta.label} is not configured (missing API key/token). Provision and restart.`,
+        };
+      });
+      const firstHealthy = providers.find(p => p.healthy)?.id || providers[0]?.id || 'fal_video';
+      return c.json({ ok: true, providers, defaultProvider: firstHealthy });
+    } catch (err) {
+      logger.warn('studio/video-providers failed', { error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message, providers: [] }, 500);
+    }
+  });
+
+  app.post('/api/studio/video-gen', async (c) => {
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+
+    const prompt = String(body.prompt ?? '').trim();
+    if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+    const provider = String(body.provider ?? 'fal_video').toLowerCase();
+    if (!STUDIO_VIDEO_PROVIDER_IDS.has(provider)) {
+      return c.json({ ok: false, error: `unsupported video provider: ${provider}` }, 400);
+    }
+    const meta = STUDIO_VIDEO_PROVIDERS.find(p => p.id === provider)!;
+    if (!isVideoProviderHealthy(meta.healthKey)) {
+      return c.json({ ok: false, error: `${meta.label} is not configured or media storage is unavailable.` }, 503);
+    }
+
+    const tool = registry.find(t => t.name === provider);
+    if (!tool) return c.json({ ok: false, error: `provider ${provider} is not registered` }, 502);
+
+    const sessionId = String(body.sessionId ?? '').trim() || 'default';
+    const model = String(body.model ?? '').trim() || undefined;
+    const aspectRatio = String(body.aspect_ratio ?? body.aspectRatio ?? '16:9').trim();
+    const duration = String(body.duration ?? '').trim() || undefined;
+    const inputImage = meta.supportsImageInit ? (String(body.input_image ?? '').trim() || undefined) : undefined;
+
+    const estUsd = estimateCost(provider, model);
+    const gate = gateSpendBreaker({ userId: sessionId, tool: provider, model, operation: 'generate', estUsd });
+    if (!gate.ok) {
+      return c.json({ ...gate.body, rateLimited: true }, gate.status);
+    }
+    const inFlightId = gate.inFlightId;
+    const released = { done: false };
+    const finish = (actualUsd?: number) => { if (!released.done) { released.done = true; releaseSpendBreaker(inFlightId, actualUsd); } };
+
+    try {
+      const toolArgs: Record<string, unknown> = { prompt, model, aspect_ratio: aspectRatio };
+      if (duration) toolArgs.duration = duration;
+      if (inputImage) toolArgs.input_image = inputImage;
+
+      const ctx: ToolContext = { sessionId, agentId: null, runId: null, spawnDepth: 0 };
+      if (tool.gate) {
+        const gateRes = tool.gate(ctx);
+        if (!gateRes.allowed) throw new Error(gateRes.reason || `${provider} is gated.`);
+      }
+
+      const rawResult = await tool.handler(toolArgs as never, ctx);
+      if (!rawResult || typeof rawResult !== 'object' || (rawResult as { ok?: boolean }).ok === false) {
+        throw new Error((rawResult as { error?: string })?.error || `${provider} returned no video.`);
+      }
+      const result = rawResult as { media?: Array<{ id: string; url: string }>; model?: string };
+      const media = Array.isArray(result.media) ? result.media : [];
+      if (media.length === 0) throw new Error(`${provider} succeeded but returned no video.`);
+
+      try {
+        logSpend({ provider, model_id: model || provider, input_tokens: 0, output_tokens: 0, cost_usd: estUsd, session_id: sessionId });
+      } catch (spendErr) {
+        logger.warn('studio/video-gen: model_spend logging failed', { error: (spendErr as Error).message, sessionId });
+      }
+
+      finish(estUsd);
+      return c.json({ ok: true, media, provider, model: result.model || model || 'default', prompt });
+    } catch (err) {
+      finish(0);
+      logger.warn('studio/video-gen failed', { provider, model, sessionId, error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message }, 502);
+    }
+  });
+
+  // ── Studio Music providers manifest ───────────────────────────────────────
+  app.get('/api/studio/audio-providers', async (c) => {
+    try {
+      const providers = STUDIO_AUDIO_PROVIDERS.map(meta => {
+        const healthy = isAudioProviderHealthy(meta.healthKey);
+        return {
+          id: meta.id,
+          label: meta.label,
+          models: meta.models,
+          defaultModel: meta.defaultModel,
+          requiresSession: meta.requiresSession,
+          healthy,
+          degraded: !healthy,
+          supportsLyrics: meta.supportsLyrics,
+          note: healthy ? meta.note
+            : !mediaEnabled() ? 'Media storage (R2) not configured — audio has nowhere to land.'
+            : `${meta.label} is not configured (missing API key/token). Provision and restart.`,
+        };
+      });
+      const firstHealthy = providers.find(p => p.healthy)?.id || providers[0]?.id || 'fal_audio';
+      return c.json({ ok: true, providers, defaultProvider: firstHealthy });
+    } catch (err) {
+      logger.warn('studio/audio-providers failed', { error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message, providers: [] }, 500);
+    }
+  });
+
+  app.post('/api/studio/audio-gen', async (c) => {
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'invalid body' }, 400); }
+
+    const prompt = String(body.prompt ?? '').trim();
+    if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+    const provider = String(body.provider ?? 'fal_audio').toLowerCase();
+    if (!STUDIO_AUDIO_PROVIDER_IDS.has(provider)) {
+      return c.json({ ok: false, error: `unsupported audio provider: ${provider}` }, 400);
+    }
+    const meta = STUDIO_AUDIO_PROVIDERS.find(p => p.id === provider)!;
+    if (!isAudioProviderHealthy(meta.healthKey)) {
+      return c.json({ ok: false, error: `${meta.label} is not configured or media storage is unavailable.` }, 503);
+    }
+
+    const tool = registry.find(t => t.name === provider);
+    if (!tool) return c.json({ ok: false, error: `provider ${provider} is not registered` }, 502);
+
+    const sessionId = String(body.sessionId ?? '').trim() || 'default';
+    const model = String(body.model ?? '').trim() || undefined;
+    const duration = String(body.duration ?? '').trim() || undefined;
+    const lyrics = meta.supportsLyrics ? (String(body.lyrics ?? '').trim() || undefined) : undefined;
+
+    const estUsd = estimateCost(provider, model);
+    const gate = gateSpendBreaker({ userId: sessionId, tool: provider, model, operation: 'generate', estUsd });
+    if (!gate.ok) {
+      return c.json({ ...gate.body, rateLimited: true }, gate.status);
+    }
+    const inFlightId = gate.inFlightId;
+    const released = { done: false };
+    const finish = (actualUsd?: number) => { if (!released.done) { released.done = true; releaseSpendBreaker(inFlightId, actualUsd); } };
+
+    try {
+      const toolArgs: Record<string, unknown> = { prompt, model };
+      if (duration) toolArgs.duration = duration;
+      if (lyrics) toolArgs.lyrics = lyrics;
+
+      const ctx: ToolContext = { sessionId, agentId: null, runId: null, spawnDepth: 0 };
+      if (tool.gate) {
+        const gateRes = tool.gate(ctx);
+        if (!gateRes.allowed) throw new Error(gateRes.reason || `${provider} is gated.`);
+      }
+
+      const rawResult = await tool.handler(toolArgs as never, ctx);
+      if (!rawResult || typeof rawResult !== 'object' || (rawResult as { ok?: boolean }).ok === false) {
+        throw new Error((rawResult as { error?: string })?.error || `${provider} returned no audio.`);
+      }
+      const result = rawResult as { media?: Array<{ id: string; url: string }>; model?: string };
+      const media = Array.isArray(result.media) ? result.media : [];
+      if (media.length === 0) throw new Error(`${provider} succeeded but returned no audio.`);
+
+      try {
+        logSpend({ provider, model_id: model || provider, input_tokens: 0, output_tokens: 0, cost_usd: estUsd, session_id: sessionId });
+      } catch (spendErr) {
+        logger.warn('studio/audio-gen: model_spend logging failed', { error: (spendErr as Error).message, sessionId });
+      }
+
+      finish(estUsd);
+      return c.json({ ok: true, media, provider, model: result.model || model || 'default', prompt });
+    } catch (err) {
+      finish(0);
+      logger.warn('studio/audio-gen failed', { provider, model, sessionId, error: (err as Error).message });
+      return c.json({ ok: false, error: (err as Error).message }, 502);
+    }
+  });
+
   // ── Studio Edit — prompt-based image editing via provider edit APIs ─────────
   // Reuses the same registered image tools as Generate, but dispatches with
   // operation:'edit' + an input_image. The reliable path is the direct-API
@@ -1830,6 +2149,10 @@ export function registerApiRoutes(app: Hono<any>): void {
     // the live-verified prompt-editable subset (2026-07-14).
     { id: 'fal_image', label: 'fal.ai', tier: 1, modelsSource: 'fal-edit', models: ['fal-ai/nano-banana/edit', 'fal-ai/nano-banana-2/edit', 'fal-ai/nano-banana-pro/edit', 'fal-ai/flux-pro/kontext', 'fal-ai/flux-pro/kontext/max', 'fal-ai/flux-2/edit', 'fal-ai/flux-2-pro/edit', 'fal-ai/bytedance/seedream/v4/edit', 'fal-ai/bytedance/seedream/v4.5/edit', 'bytedance/seedream/v5/pro/edit', 'openai/gpt-image-2/edit', 'fal-ai/gpt-image-1.5/edit', 'xai/grok-imagine-image/edit'], requiresSession: false, supportsSafety: true },
     { id: 'openart_image', label: 'OpenArt', tier: 1, models: STATIC_OPENART_IMAGE_MODELS, requiresSession: false, note: 'MCP · image2image · subscription credits.' },
+    // Higgsfield image-to-image. The source image is imported (media_import_url →
+    // media_id) then passed to generate_image as a media ref. Only the API-tagged
+    // image-to-image models are offered here (verified 2026-07-16).
+    { id: 'higgsfield_image', label: 'Higgsfield', tier: 1, models: HIGGSFIELD_EDIT_MODELS, requiresSession: false, resolutions: ['1k', '2k', '4k'], note: 'MCP · image2image · subscription credits.' },
     // Venice /image/edit — dedicated edit endpoint (peer of generate_image_venice).
     // Model catalog mirrors veniceImageEditShape (schemas.ts). Omit model → Venice
     // built-in default (qwen-edit). NOTE: the edit tool takes NO `operation` field.
@@ -1953,6 +2276,10 @@ export function registerApiRoutes(app: Hono<any>): void {
         toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, aspect_ratio: aspectRatio, output_format: 'png' };
       } else if (provider === 'fal_image') {
         toolArgs = { operation: 'edit', prompt, input_image: inputImage, model, ...(FAL_SAFETY_LEVELS.includes(safety) ? { safety_tolerance: safety } : {}) };
+      } else if (provider === 'higgsfield_image') {
+        // higgsfield_image is dual-mode: passing input_image switches it to
+        // image-to-image (imports the source → media_id internally). NO `operation` field.
+        toolArgs = { prompt, input_image: inputImage, model, aspect_ratio: aspectRatio, ...(resolution ? { resolution } : {}) };
       } else if (provider === 'venice_image_edit') {
         // Venice's edit tool is a dedicated endpoint — NO `operation` field.
         toolArgs = { prompt, input_image: inputImage, model, aspect_ratio: aspectRatio, ...(resolution ? { resolution } : {}) };
@@ -2248,7 +2575,26 @@ except Exception as e:
     try {
       const r = await runNodePython(OM_GATE_PY, [id, stage, action, reason], 40_000);
       if (!r.ok) return c.json({ ok: false, error: r.error || 'gate exec failed' });
-      return c.json(parseLastJson(r.stdout));
+      const result = parseLastJson(r.stdout);
+      // Re-trigger Sachi to advance to the next gate — ONLY on a genuine first
+      // approval. OM_GATE_PY rejects a non-awaiting_human stage (status!=completed),
+      // so a double-click's second call returns ok:false and never re-enqueues —
+      // that IS the idempotency guard (spec §5#4). Reject holds the gate; no advance.
+      if (action === 'approve' && result?.ok === true && result?.status === 'completed') {
+        try {
+          const sachi = getAgentByName('Sachi Komine');
+          if (sachi && sachi.status === 'active') {
+            const taskTitle = `Advance montage ${id} to next gate`;
+            const taskDesc = `Stage "${stage}" was approved in Backlot. Resume OpenMontage project "${id}" and drive it to its next awaiting_human gate using the openmontage-sachi-stage-loop-procedure skill. END YOUR TURN at any awaiting_human gate — do NOT self-approve.`;
+            const task = await createTask(taskTitle, taskDesc, undefined, sachi.id, 55);
+            enqueueJob('agent_task', {
+              taskId: task.id, agentId: sachi.id, agentName: sachi.name,
+              taskTitle, taskDescription: taskDesc,
+            });
+          }
+        } catch { /* re-trigger is best-effort; the gate flip itself already succeeded */ }
+      }
+      return c.json(result);
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message });
     }
@@ -2583,6 +2929,59 @@ except Exception as e:
   app.delete('/api/notes/:id', (c) => {
     const removed = deleteAgentNote(c.req.param('id'));
     return c.json(removed ? { ok: true } : { ok: false, error: 'not found' }, removed ? 200 : 404);
+  });
+
+  // ── Workspace artifacts (read-only introspection) ─────────────────────────
+  // Browse what agents actually wrote into the scoped file sandbox
+  // (`workspaces/<session>/<agent>/`), even when a mid-task error swallowed the
+  // chat reply. List → files → read/preview. Read-only; traversal-guarded.
+  app.get('/api/workspace-artifacts', async (c) => {
+    try {
+      return c.json({ ok: true, items: await listWorkspaces() });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err), items: [] }, 500);
+    }
+  });
+
+  app.get('/api/workspace-artifacts/:session/:agent/files', async (c) => {
+    const r = await listWorkspaceFiles(c.req.param('session'), c.req.param('agent'));
+    return r ? c.json({ ok: true, ...r }) : c.json({ ok: false, error: 'workspace not found' }, 404);
+  });
+
+  app.get('/api/workspace-artifacts/:session/:agent/file', async (c) => {
+    const rel = c.req.query('path');
+    if (!rel) return c.json({ ok: false, error: 'path required' }, 400);
+    const f = await readWorkspaceFile(c.req.param('session'), c.req.param('agent'), rel);
+    return f ? c.json({ ok: true, ...f }) : c.json({ ok: false, error: 'file not found' }, 404);
+  });
+
+  // Raw byte serve for inline preview (images / pdf / html). Traversal-guarded
+  // by resolveWorkspaceFile; served no-store and nosniff.
+  app.get('/api/workspace-artifacts/:session/:agent/raw', async (c) => {
+    const rel = c.req.query('path');
+    if (!rel) return c.json({ ok: false, error: 'path required' }, 400);
+    const abs = resolveWorkspaceFile(c.req.param('session'), c.req.param('agent'), rel);
+    if (!abs || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      return c.json({ ok: false, error: 'file not found' }, 404);
+    }
+    const MIME: Record<string, string> = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+      '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif', '.pdf': 'application/pdf',
+      '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+      '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg',
+    };
+    const ext = path.extname(abs).toLowerCase();
+    const kind = wsFileKind(abs);
+    const buf = fs.readFileSync(abs);
+    return new Response(new Uint8Array(buf), {
+      status: 200,
+      headers: {
+        'Content-Type': MIME[ext] || (kind === 'text' ? 'text/plain; charset=utf-8' : 'application/octet-stream'),
+        'Content-Length': String(buf.length),
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
   });
 
   // ── Media gallery (agent_media) ───────────────────────────────────────────
@@ -5167,6 +5566,11 @@ except Exception as e:
     return c.json({
       ok: true,
       configured:    config.canva.configured, // DCR client_id/secret present in process.env
+      // loopbackReady: the configured client_id was actually registered via
+      // loopback DCR (not a stale public-host client left over from an
+      // earlier attempt). The card must gate the authorize link on THIS,
+      // not on `configured` — see mcp/canva-oauth.ts isLoopbackClientRegistered().
+      loopbackReady: config.canva.loopbackReady,
       hasToken:      config.canva.hasToken,    // a user has completed consent
       pendingRestart: brokerConfigured && !config.canva.configured, // saved to broker, awaiting boot re-hydrate
       serverStatus:  row?.status ?? null,
@@ -5200,7 +5604,16 @@ except Exception as e:
   });
 
   app.get('/api/oauth/canva/start', async (c) => {
-    const { startAuthorize } = await import('../mcp/canva-oauth');
+    const { startAuthorize, isLoopbackClientRegistered } = await import('../mcp/canva-oauth');
+    // Hard gate: never build an authorize URL against a client that wasn't
+    // registered via THIS module's loopback DCR step (register-dcr above).
+    // Without this, a stale non-loopback client left in .env/broker from an
+    // earlier attempt pairs with the loopback redirect_uri at /authorize and
+    // Canva returns HTTP 500 (proven live 2026-07-15). configured:true is
+    // not sufficient — see mcp/canva-oauth.ts isLoopbackClientRegistered().
+    if (!isLoopbackClientRegistered()) {
+      return c.json({ ok: false, error: 'register a loopback client first — click "Register Canva App" before connecting' }, 400);
+    }
     const start = startAuthorize();
     if (!start) return c.json({ ok: false, error: 'canva_oauth_not_configured — set CANVA_CLIENT_ID/CANVA_CLIENT_SECRET via the broker first' }, 400);
     return c.redirect(start.url, 302);
@@ -7196,6 +7609,7 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
       scale?: string;
       direction?: string;
       projectId?: string;
+      agentName?: string;
     }>().catch(() => ({} as any));
 
     if (!body.brief || typeof body.brief !== 'string') {
@@ -7221,6 +7635,7 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
           tone:      body.tone,
           scale:     body.scale     as any,
           direction: body.direction,
+          agentName: body.agentName || undefined,
         }, { projectId: body.projectId })) {
           if (clientGone) break;
           try { await stream.writeSSE({ data: JSON.stringify(evt) }); }
@@ -7235,6 +7650,124 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
       }
       try { await stream.writeSSE({ data: '[DONE]' }); } catch { /* client gone */ }
     });
+  });
+
+  // ── Game Studio ──────────────────────────────────────────────────────────
+  // Games are Canvas projects tagged brief.kind='game'. They reuse the whole
+  // Canvas engine (generate → store → CSP-sandboxed /view) with a game-tuned
+  // prompt. Play via /api/canvas/artifact/:id/view; delete via the canvas route.
+  app.get('/api/game/projects', async (c) => {
+    const { listProjects } = await import('../skills/canvas');
+    const list = listProjects()
+      .filter(p => p.brief?.kind === 'game')
+      .map(p => ({
+        ...p,
+        artifacts: p.artifacts.map(a => ({ ...a, content: a.type === 'html' ? `[${a.content.length} bytes]` : a.content })),
+      }));
+    return c.json(list);
+  });
+
+  app.post('/api/game/generate', async (c) => {
+    const body = await c.req.json<{ brief: string; projectId?: string }>().catch(() => ({} as any));
+    if (!body.brief || typeof body.brief !== 'string') {
+      return c.json({ error: 'brief is required' }, 400);
+    }
+    const { generate } = await import('../skills/canvas');
+    return streamSSE(c, async (stream) => {
+      let clientGone = false;
+      c.req.raw.signal.addEventListener('abort', () => { clientGone = true; }, { once: true });
+      const keepalive = setInterval(() => {
+        stream.write(': keepalive\n\n').catch(() => { clientGone = true; });
+      }, 15000);
+      try {
+        for await (const evt of generate({ brief: body.brief, kind: 'game' }, { projectId: body.projectId })) {
+          if (clientGone) break;
+          try { await stream.writeSSE({ data: JSON.stringify(evt) }); }
+          catch { clientGone = true; break; }
+        }
+      } catch (err) {
+        try { await stream.writeSSE({ data: JSON.stringify({ type: 'error', payload: { message: (err as Error).message } }) }); }
+        catch { /* client gone */ }
+      } finally {
+        clearInterval(keepalive);
+      }
+      try { await stream.writeSSE({ data: '[DONE]' }); } catch { /* client gone */ }
+    });
+  });
+
+  // ── WebApp Studio ────────────────────────────────────────────────────────
+  // A "lovable/bolt"-style tab: any registered agent builds a genuinely
+  // functional single-file modern web app (React+Tailwind via CDN). WebApps are
+  // Canvas projects tagged brief.kind='webapp' — reusing the whole Canvas engine
+  // (generate/iterate/store) with a web-app prompt and a per-call agent choice.
+  // Preview via the relaxed-CSP /api/webapp/artifact/:id/file (allows CDN scripts
+  // + https fetch, still sandboxed with NO same-origin). Delete via canvas route.
+  app.get('/api/webapp/projects', async (c) => {
+    const { listProjects } = await import('../skills/canvas');
+    const list = listProjects()
+      .filter(p => p.brief?.kind === 'webapp')
+      .map(p => ({
+        ...p,
+        artifacts: p.artifacts.map(a => ({ ...a, content: a.type === 'html' ? `[${a.content.length} bytes]` : a.content })),
+      }));
+    return c.json(list);
+  });
+
+  app.post('/api/webapp/generate', async (c) => {
+    const body = await c.req.json<{ brief: string; agentName?: string; projectId?: string }>().catch(() => ({} as any));
+    if (!body.brief || typeof body.brief !== 'string') {
+      return c.json({ error: 'brief is required' }, 400);
+    }
+    const agentName = typeof body.agentName === 'string' && body.agentName.trim() ? body.agentName.trim() : undefined;
+    const { generate } = await import('../skills/canvas');
+    return streamSSE(c, async (stream) => {
+      let clientGone = false;
+      c.req.raw.signal.addEventListener('abort', () => { clientGone = true; }, { once: true });
+      const keepalive = setInterval(() => {
+        stream.write(': keepalive\n\n').catch(() => { clientGone = true; });
+      }, 15000);
+      try {
+        for await (const evt of generate({ brief: body.brief, kind: 'webapp', agentName }, { projectId: body.projectId })) {
+          if (clientGone) break;
+          try { await stream.writeSSE({ data: JSON.stringify(evt) }); }
+          catch { clientGone = true; break; }
+        }
+      } catch (err) {
+        try { await stream.writeSSE({ data: JSON.stringify({ type: 'error', payload: { message: (err as Error).message } }) }); }
+        catch { /* client gone */ }
+      } finally {
+        clearInterval(keepalive);
+      }
+      try { await stream.writeSSE({ data: '[DONE]' }); } catch { /* client gone */ }
+    });
+  });
+
+  // Relaxed-CSP preview for WebApp artifacts. Distinct from the canvas /file
+  // route: a real React+Tailwind app needs external CDN scripts and https fetch,
+  // which the strict canvas CSP blocks. Safety is preserved by the iframe
+  // sandbox (allow-scripts, NO allow-same-origin) — even with CDN + fetch the
+  // app cannot read our cookies, DOM, storage, or reach our own origin. There is
+  // no sensitive data in scope for a user-generated app, so this is contained.
+  // ('unsafe-eval' is required by Babel-standalone compiling JSX in-browser.)
+  app.get('/api/webapp/artifact/:id/file', async (c) => {
+    const { getArtifact } = await import('../skills/canvas');
+    const a = getArtifact(c.req.param('id'));
+    if (!a) return c.text('not found', 404);
+
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    c.header('Content-Security-Policy', [
+      "default-src 'none'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com https://cdn.tailwindcss.com",
+      "font-src https://fonts.gstatic.com data:",
+      "img-src data: https: blob:",
+      "media-src data: https: blob:",
+      "script-src 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://esm.sh https://cdn.tailwindcss.com",
+      "connect-src https:",
+      "frame-ancestors 'self'",
+    ].join('; '));
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('Referrer-Policy', 'no-referrer');
+    return c.body(a.content);
   });
 
   app.post('/api/canvas/iterate', async (c) => {
@@ -7320,6 +7853,46 @@ Voice output is NOT enabled for this turn — you only have a text channel back 
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     return c.body(a.content);
+  });
+
+  // ── Studio: deploy an artifact to GitHub ─────────────────────────────────
+  // Push any Studio artifact (design / game / web app) to a GitHub repo via the
+  // REST API — broker PAT (SHARED_GITHUB_PAT), no local git. Optionally enables
+  // GitHub Pages so it's instantly live. Backs the "Deploy to GitHub" button in
+  // Game Studio and WebApp Studio.
+  app.post('/api/studio/deploy-github', async (c) => {
+    const body = await c.req.json<{
+      artifactId?: string; repoName?: string; private?: boolean; pages?: boolean;
+    }>().catch(() => ({} as any));
+    const artifactId = (body.artifactId || '').trim();
+    const repoName   = (body.repoName || '').trim();
+    if (!artifactId) return c.json({ error: 'artifactId is required' }, 400);
+    if (!repoName)   return c.json({ error: 'repoName is required' }, 400);
+
+    const { getArtifact, deployHtmlToGithub } = await import('../skills/canvas');
+    const a = getArtifact(artifactId);
+    if (!a) return c.json({ error: 'artifact not found' }, 404);
+    if (a.type !== 'html') return c.json({ error: 'only HTML artifacts can be deployed to GitHub' }, 400);
+
+    // withSecrets needs a broker agent context (AsyncLocalStorage); a raw HTTP
+    // route has none, so establish a system-scoped one. SHARED_GITHUB_PAT is a
+    // shared-scope secret → resolvable under any agent identity.
+    const { agentStore } = await import('../broker');
+    try {
+      const result = await agentStore.run(
+        { agentName: 'studio', sessionId: 'studio-deploy' },
+        () => deployHtmlToGithub({
+          html: a.content,
+          repoName,
+          title: a.title,
+          isPrivate: body.private !== false,   // default private
+          enablePages: !!body.pages,
+        }),
+      );
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
+    }
   });
 
   // New-tab artifact viewer — opened by the ⧉ button in the /canvas tab.

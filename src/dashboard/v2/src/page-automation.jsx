@@ -3,7 +3,7 @@
 const JOB_TYPES = [
   { id: 'agent_message',    label: 'Agent',   color: 'var(--accent)' },
   { id: 'outbound_webhook', label: 'Webhook', color: 'var(--accent-2)' },
-  { id: 'shell_command',    label: 'Shell',   color: '#f59e0b' },
+  { id: 'shell_command',    label: 'Shell',   color: 'var(--amber)' },
   { id: 'n8n_workflow',     label: 'n8n',     color: 'var(--violet)' },
 ];
 
@@ -15,9 +15,9 @@ function jobTypeLabel(type) {
 }
 
 function RunStatusIcon({ status }) {
-  if (status === 'running') return <span style={{ color: '#f59e0b', animation: 'blink 1s step-end infinite' }}>●</span>;
+  if (status === 'running') return <span style={{ color: 'var(--amber)', animation: 'blink 1s step-end infinite' }}>●</span>;
   if (status === 'success') return <span style={{ color: 'var(--accent-2)' }}>✓</span>;
-  if (status === 'error')   return <span style={{ color: '#ef4444' }}>✗</span>;
+  if (status === 'error')   return <span style={{ color: 'var(--danger)' }}>✗</span>;
   return <span style={{ color: 'var(--muted)' }}>—</span>;
 }
 
@@ -140,7 +140,7 @@ function JobModal({ job, agents, onSave, onClose }) {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()}
+      <div className="nc-panel modal-fixed-width" onClick={e => e.stopPropagation()}
            style={{ width: 560, maxHeight: '88vh', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span className="mono" style={{ fontSize: 13, color: 'var(--accent)' }}>{isEdit ? 'EDIT JOB' : 'NEW JOB'}</span>
@@ -162,7 +162,7 @@ function JobModal({ job, agents, onSave, onClose }) {
             <label style={labelStyle}>Job Type</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {JOB_TYPES.map(t => (
-                <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', padding: '5px 10px', borderRadius: 4, border: `1px solid ${type === t.id ? t.color : 'rgba(255,255,255,0.1)'}`, background: type === t.id ? `${t.color}18` : 'transparent', fontSize: 11, fontFamily: 'var(--mono)', color: type === t.id ? t.color : 'rgba(255,255,255,0.5)' }}>
+                <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', padding: '5px 10px', borderRadius: 4, border: `1px solid ${type === t.id ? t.color : 'var(--line-soft)'}`, background: type === t.id ? `color-mix(in srgb, ${t.color} 14%, transparent)` : 'transparent', fontSize: 11, fontFamily: 'var(--mono)', color: type === t.id ? t.color : 'var(--muted)' }}>
                   <input type="radio" value={t.id} checked={type === t.id} onChange={() => setType(t.id)} style={{ display: 'none' }} />
                   {t.label}
                 </label>
@@ -171,9 +171,9 @@ function JobModal({ job, agents, onSave, onClose }) {
           </div>
 
           <div style={rowStyle}>
-            <label style={labelStyle}>Schedule <span style={{ color: 'rgba(255,255,255,0.35)', textTransform: 'none', letterSpacing: 0, marginLeft: 4 }}>(cron expression — leave blank for inbound-only)</span></label>
+            <label style={labelStyle}>Schedule <span style={{ color: 'var(--muted)', textTransform: 'none', letterSpacing: 0, marginLeft: 4 }}>(cron expression — leave blank for inbound-only)</span></label>
             <input style={inputStyle} value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="0 9 * * *" />
-            {schedule.trim() && <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 3, fontFamily: 'var(--mono)' }}>{cronHint(schedule)}</div>}
+            {schedule.trim() && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3, fontFamily: 'var(--mono)' }}>{cronHint(schedule)}</div>}
           </div>
 
           {type === 'agent_message' && (
@@ -252,13 +252,13 @@ function JobModal({ job, agents, onSave, onClose }) {
           )}
 
           <div style={{ ...rowStyle, borderTop: '1px solid var(--line-soft)', paddingTop: 14 }}>
-            <label style={labelStyle}>On-Completion Webhook URL <span style={{ color: 'rgba(255,255,255,0.35)', textTransform: 'none', letterSpacing: 0 }}>(optional, any type)</span></label>
+            <label style={labelStyle}>On-Completion Webhook URL <span style={{ color: 'var(--muted)', textTransform: 'none', letterSpacing: 0 }}>(optional, any type)</span></label>
             <input style={inputStyle} value={onComplete} onChange={e => setOnComplete(e.target.value)} placeholder="https://..." />
           </div>
 
           {!isEdit && (
             <div style={{ ...rowStyle, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12, fontFamily: 'var(--mono)', color: 'rgba(255,255,255,0.7)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--text-soft)' }}>
                 <input type="checkbox" checked={inbound} onChange={e => setInbound(e.target.checked)} />
                 Generate inbound webhook URL
               </label>
@@ -266,13 +266,13 @@ function JobModal({ job, agents, onSave, onClose }) {
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12, fontFamily: 'var(--mono)', color: 'rgba(255,255,255,0.7)' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--text-soft)' }}>
               <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
               Enabled
             </label>
           </div>
 
-          {err && <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 10, fontFamily: 'var(--mono)' }}>{err}</div>}
+          {err && <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 10, fontFamily: 'var(--mono)' }}>{err}</div>}
 
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="submit" className="nc-btn" disabled={saving} style={{ flex: 1 }}>
@@ -305,8 +305,12 @@ function Automation() {
   const [error,         setError]         = React.useState(null);
   const [agents,        setAgents]        = React.useState([]);
 
+  // Cookie-first: only append ?token= when we actually have one (standalone PWA
+  // resolves TOKEN='' — URL token gone + HttpOnly cookie unreadable by JS), and
+  // ALWAYS send credentials so the HttpOnly auth cookie carries the request.
   const api = (path, opts) =>
-    fetch(path + (path.includes('?') ? '&' : '?') + `token=${TOKEN}`, opts)
+    fetch(TOKEN ? path + (path.includes('?') ? '&' : '?') + `token=${TOKEN}` : path,
+          { credentials: 'same-origin', ...opts })
       .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); });
 
   function fetchJobs() {
@@ -334,7 +338,7 @@ function Automation() {
   }, [selectedJobId]);
 
   React.useEffect(() => {
-    const es = new EventSource(`/api/crons/stream?token=${TOKEN}`);
+    const es = new EventSource(TOKEN ? `/api/crons/stream?token=${TOKEN}` : '/api/crons/stream');
     es.addEventListener('run_started', e => {
       const d = JSON.parse(e.data);
       setRunningJobId(d.jobId);
@@ -429,8 +433,7 @@ function Automation() {
         {/* Filter tabs */}
         <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid var(--line-soft)', flexWrap: 'wrap' }}>
           {[{ id: 'all', label: 'All' }, ...JOB_TYPES.map(t => ({ id: t.id, label: t.label }))].map(f => (
-            <button key={f.id} onClick={() => setFilter(f.id)}
-              style={{ fontSize: 9, fontFamily: 'var(--mono)', padding: '2px 7px', borderRadius: 3, border: `1px solid ${filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: filter === f.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', color: filter === f.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 1 }}>
+            <button key={f.id} onClick={() => setFilter(f.id)} className={`mc-pill${filter === f.id ? ' is-active' : ''}`}>
               {f.label}
             </button>
           ))}
@@ -446,31 +449,28 @@ function Automation() {
             const isRunning  = runningJobId === job.id;
             return (
               <div key={job.id} onClick={() => setSelectedJobId(job.id)}
-                style={{ padding: '10px 14px', cursor: 'pointer', borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`, background: isSelected ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'transparent', position: 'relative' }}
-                onMouseOver={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
-                onMouseOut={e =>  { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}>
+                className={`mc-rail-row${isSelected ? ' is-active' : ''}`}>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: isRunning ? '#f59e0b' : job.enabled ? 'var(--accent-2)' : 'rgba(255,255,255,0.2)', flexShrink: 0, boxShadow: isRunning ? '0 0 5px #f59e0b' : job.enabled ? '0 0 4px var(--accent-2)' : 'none' }} />
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: isRunning ? 'var(--amber)' : job.enabled ? 'var(--accent-2)' : 'var(--line-hard)', flexShrink: 0, boxShadow: isRunning ? '0 0 5px var(--amber)' : job.enabled ? '0 0 4px var(--accent-2)' : 'none' }} />
                   <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.name}</span>
                   <TypeBadge type={job.job_type} />
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 14 }}>
-                  <span style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'rgba(255,255,255,0.35)' }}>
+                  <span style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
                     {job.schedule ?? 'manual'}
                   </span>
                 </div>
 
                 {/* Hover actions */}
-                <div className="job-hover-actions" style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', display: 'flex', gap: 4, opacity: isSelected ? 1 : 0, transition: 'opacity 0.15s' }}>
+                <div className="mc-rail-actions">
                   <button title={job.enabled ? 'Disable' : 'Enable'}
                     onClick={e => handleToggle(job, e)}
-                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, color: job.enabled ? 'var(--accent-2)' : 'rgba(255,255,255,0.3)', padding: '2px 4px' }}>
+                    style={{ fontSize: 11, color: job.enabled ? 'var(--accent-2)' : 'var(--muted)' }}>
                     {job.enabled ? '⏸' : '▶'}
                   </button>
-                  <button title="Delete" onClick={e => handleDelete(job, e)}
-                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, color: 'rgba(255,255,255,0.3)', padding: '2px 4px' }}>
+                  <button title="Delete" onClick={e => handleDelete(job, e)} style={{ fontSize: 11 }}>
                     ✕
                   </button>
                 </div>
@@ -493,7 +493,7 @@ function Automation() {
         {!selectedJob ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10 }}>
             <div className="mono muted" style={{ fontSize: 12 }}>Select a job to view logs</div>
-            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', fontFamily: 'var(--mono)' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''} total</div>
+            <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''} total</div>
           </div>
         ) : (
           <>
@@ -501,7 +501,7 @@ function Automation() {
             <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: 'var(--text)', fontWeight: 600 }}>{selectedJob.name}</span>
               <TypeBadge type={selectedJob.job_type} />
-              {runs.length > 0 && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--mono)' }}>{runs.length} run{runs.length !== 1 ? 's' : ''}</span>}
+              {runs.length > 0 && <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{runs.length} run{runs.length !== 1 ? 's' : ''}</span>}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
                 <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 9px' }}
                   onClick={() => { setEditJob(selectedJob); setShowModal(true); }}>
@@ -526,7 +526,7 @@ function Automation() {
               <div style={{ display: 'flex', gap: 4, padding: '8px 18px', borderBottom: '1px solid var(--line-soft)', overflowX: 'auto', flexShrink: 0 }}>
                 {runs.map((run, i) => (
                   <button key={run.id} onClick={() => setSelectedRunId(run.id)}
-                    style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '3px 9px', borderRadius: 3, border: `1px solid ${selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`, background: selectedRunId === run.id ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent', color: selectedRunId === run.id ? 'var(--accent)' : 'rgba(255,255,255,0.45)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    style={{ fontFamily: 'var(--mono)', fontSize: 10, padding: '3px 9px', borderRadius: 3, border: `1px solid ${selectedRunId === run.id ? 'var(--accent)' : 'var(--line-soft)'}`, background: selectedRunId === run.id ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent', color: selectedRunId === run.id ? 'var(--accent)' : 'var(--muted)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
                     <RunStatusIcon status={run.status} />
                     #{runs.length - i}
                   </button>
@@ -536,10 +536,10 @@ function Automation() {
 
             {/* Log body */}
             <div style={{ flex: 1, overflow: 'auto', padding: 18 }}>
-              {error && <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 10, fontFamily: 'var(--mono)' }}>{error}</div>}
+              {error && <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 10, fontFamily: 'var(--mono)' }}>{error}</div>}
 
               {logText ? (
-                <pre style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'rgba(255,255,255,0.8)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, lineHeight: 1.6 }}>
+                <pre style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-soft)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, lineHeight: 1.6 }}>
                   {logText}{isLive ? <span style={{ opacity: 0.7, animation: 'blink 1s step-end infinite' }}>▌</span> : null}
                 </pre>
               ) : (
@@ -551,11 +551,11 @@ function Automation() {
 
             {/* Metadata strip */}
             {selectedRun && !isLive && (
-              <div style={{ padding: '8px 18px', borderTop: '1px solid var(--line-soft)', display: 'flex', gap: 16, fontSize: 10, fontFamily: 'var(--mono)', color: 'rgba(255,255,255,0.4)', flexWrap: 'wrap' }}>
-                <span>triggered: <span style={{ color: 'rgba(255,255,255,0.6)' }}>{selectedRun.triggered_by}</span></span>
-                {selectedRun.duration_ms != null && <span>duration: <span style={{ color: 'rgba(255,255,255,0.6)' }}>{selectedRun.duration_ms}ms</span></span>}
-                {selectedRun.outbound_webhook_status != null && <span>webhook: <span style={{ color: selectedRun.outbound_webhook_status < 300 ? 'var(--accent-2)' : '#ef4444' }}>{selectedRun.outbound_webhook_status}</span></span>}
-                <span>started: <span style={{ color: 'rgba(255,255,255,0.6)' }}>{selectedRun.started_at?.replace('T', ' ').slice(0, 19)}</span></span>
+              <div style={{ padding: '8px 18px', borderTop: '1px solid var(--line-soft)', display: 'flex', gap: 16, fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', flexWrap: 'wrap' }}>
+                <span>triggered: <span style={{ color: 'var(--text-soft)' }}>{selectedRun.triggered_by}</span></span>
+                {selectedRun.duration_ms != null && <span>duration: <span style={{ color: 'var(--text-soft)' }}>{selectedRun.duration_ms}ms</span></span>}
+                {selectedRun.outbound_webhook_status != null && <span>webhook: <span style={{ color: selectedRun.outbound_webhook_status < 300 ? 'var(--accent-2)' : 'var(--danger)' }}>{selectedRun.outbound_webhook_status}</span></span>}
+                <span>started: <span style={{ color: 'var(--text-soft)' }}>{selectedRun.started_at?.replace('T', ' ').slice(0, 19)}</span></span>
               </div>
             )}
           </>

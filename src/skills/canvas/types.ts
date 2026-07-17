@@ -21,6 +21,16 @@ export interface DesignBrief {
   scale?:    'single' | 'multi-page' | 'prototype';
   direction?: string;     // chosen direction key from DirectionPicker
   brandKit?: BrandKit;
+  /** 'game' switches the engine to Game Studio mode (single-file HTML5 game,
+   *  game-tuned system prompt, no design critique). 'webapp' switches to
+   *  WebApp Studio mode (self-contained modern web app, agent-selectable,
+   *  relaxed-CSP preview). Default 'design'. */
+  kind?:     'design' | 'game' | 'webapp';
+  /** WebApp Studio only: the registered agent NAME whose provider+model should
+   *  build this app (e.g. 'Jarvis', 'F.R.I.D.A.Y'). Resolved per-call so the end
+   *  user can pick any agent they have — not everyone has a 'Jarvis'. When unset
+   *  the engine falls back to its default (the 'Asia' design agent). */
+  agentName?: string;
 }
 
 export interface DiscoveryForm {

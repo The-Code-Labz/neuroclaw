@@ -106,19 +106,19 @@ const Notebooks = () => {
       </>}/>
 
       {!enabled && (
-        <div className="nc-panel glow" style={{ padding: 16, marginBottom: 12 }}>
+        <div className="mem-panel" style={{ marginBottom: 12 }}>
           <div className="mono" style={{ fontSize: 12, color: 'var(--text-soft)' }}>
             Notebooks are disabled. Set <span className="neonc">DOC_NOTEBOOKS_ENABLED=true</span> (with <span className="neonc">DOC_ARCHIVE_ENABLED</span> + <span className="neonc">DOC_RAG_ENABLED</span>) and restart.
           </div>
         </div>
       )}
 
-      {msg && <div className="nc-panel" style={{ padding: '8px 12px', marginBottom: 12, borderColor: msg.ok ? 'var(--accent-2)' : 'var(--danger)' }}>
+      {msg && <div className="mem-panel" style={{ padding: '8px 12px', marginBottom: 12, borderLeft: `2px solid ${msg.ok ? 'var(--accent-2)' : 'var(--danger)'}` }}>
         <span className="mono" style={{ fontSize: 12, color: msg.ok ? 'var(--accent-2)' : 'var(--danger)' }}>{msg.text}</span>
       </div>}
 
       {creating && enabled && (
-        <div className="nc-panel" style={{ padding: 14, marginBottom: 12, display: 'grid', gap: 8, maxWidth: 520 }}>
+        <div className="mem-panel" style={{ marginBottom: 12, display: 'grid', gap: 8, maxWidth: 520 }}>
           <input className="nc-input" placeholder="notebook title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
           <input className="nc-input" placeholder="description (optional)" value={newDesc} onChange={e => setNewDesc(e.target.value)} />
           <button className="nc-btn" onClick={create} disabled={busy === 'create'} style={{ justifySelf: 'start' }}>{busy === 'create' ? 'Creating…' : 'Create notebook'}</button>
@@ -126,16 +126,14 @@ const Notebooks = () => {
       )}
 
       {enabled && (
-      <div className="stack" style={{ gap: 12, alignItems: 'flex-start' }}>
+      <div className="stack" style={{ gap: 16, alignItems: 'flex-start' }}>
         {/* Notebook list */}
         <div style={{ flex: '0 0 300px', maxWidth: 340, display: 'grid', gap: 8, alignContent: 'start' }}>
-          {notebooks.length === 0 && <div className="nc-panel" style={{ padding: 14 }}>
+          {notebooks.length === 0 && <div className="mem-panel">
             <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.6 }}>No notebooks yet.<br/><span className="muted">Create one, then add documents to it.</span></div>
           </div>}
           {notebooks.map(n => (
-            <div key={n.id} className="nc-panel glow tilt" onClick={() => setActive(n.id)}
-              style={{ padding: 12, cursor: 'pointer', position: 'relative',
-                boxShadow: active === n.id ? '0 0 0 1px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent)' : undefined }}>
+            <div key={n.id} className={`mem-card${active === n.id ? ' is-active' : ''}`} onClick={() => setActive(n.id)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                 <div className="mono" style={{ fontSize: 13, color: 'var(--text)', wordBreak: 'break-word' }}>{n.title}</div>
                 <button className="nc-btn ghost" onClick={e => { e.stopPropagation(); del(n.id, n.title); }} style={{ fontSize: 9, padding: '1px 7px', color: 'var(--danger)' }}>✕</button>
@@ -151,20 +149,20 @@ const Notebooks = () => {
 
         {/* Selected notebook */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          {!active && <div className="nc-panel" style={{ padding: 20, textAlign: 'center' }}>
+          {!active && <div className="mem-panel" style={{ textAlign: 'center' }}>
             <div className="mono muted" style={{ fontSize: 11 }}>← select a notebook, or create one</div>
           </div>}
           {active && activeNb && (
             <>
-              <div className="nc-panel glow" style={{ padding: 12, marginBottom: 12 }}>
-                <div className="label-tiny neonc" style={{ marginBottom: 6 }}>NOTEBOOK</div>
+              <div className="mem-panel" style={{ marginBottom: 12 }}>
+                <div className="label-tiny" style={{ marginBottom: 6 }}>Notebook</div>
                 <div className="mono" style={{ fontSize: 14, color: 'var(--text)' }}>{activeNb.title}</div>
                 <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>{sources.length} source{sources.length === 1 ? '' : 's'} · ask questions across all of them</div>
               </div>
 
               {/* Add sources */}
-              <div className="nc-panel" style={{ padding: 12, marginBottom: 12 }}>
-                <div className="label-tiny neonc" style={{ marginBottom: 8 }}>ADD SOURCES</div>
+              <div className="mem-panel" style={{ marginBottom: 12 }}>
+                <div className="label-tiny" style={{ marginBottom: 8 }}>Add sources</div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <input className="nc-input" placeholder="paste a URL (PDF/DOCX/HTML/MD) or an attachment_id" value={srcInput} onChange={e => setSrcInput(e.target.value)} style={{ flex: 1, minWidth: 240 }} onKeyDown={e => e.key === 'Enter' && addSource()} />
                   <button className="nc-btn" onClick={addSource} disabled={busy === 'addsrc'}>{busy === 'addsrc' ? 'Adding…' : 'Add'}</button>
@@ -184,8 +182,8 @@ const Notebooks = () => {
               </div>
 
               {/* Ask */}
-              <div className="nc-panel glow" style={{ padding: 12 }}>
-                <div className="label-tiny neonc" style={{ marginBottom: 8 }}>ASK</div>
+              <div className="mem-panel">
+                <div className="label-tiny" style={{ marginBottom: 8 }}>Ask</div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input className="nc-input" placeholder="ask a question across this notebook's documents…" value={question} onChange={e => setQuestion(e.target.value)} style={{ flex: 1 }} onKeyDown={e => e.key === 'Enter' && ask()} disabled={sources.length === 0} />
                   <button className="nc-btn" onClick={ask} disabled={busy === 'ask' || sources.length === 0}>{busy === 'ask' ? 'Thinking…' : 'Ask'}</button>

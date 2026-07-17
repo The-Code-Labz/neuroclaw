@@ -142,6 +142,14 @@ html,body{height:100%;background:var(--bg-dark);color:var(--text);font-family:va
 .cm-error{padding:8px 12px;background:rgba(224,80,80,.1);border:1px solid rgba(224,80,80,.3);border-radius:6px;color:#e05050;font-size:12px;font-family:var(--mono);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
 /* Scrollbar */
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,240,210,.1);border-radius:2px}
+  /* Narrow tablet / phablet: keep the persistent sidebar but narrow it so the
+     thread + composer don't get squeezed on a 641-768px viewport (portrait
+     iPad-mini-class devices, folded/split-screen tablets). Below 640 the
+     sidebar switches to the off-canvas drawer handled in the block below. */
+@media(max-width:768px) and (min-width:641px){
+  .cm-sidebar{width:180px}
+  .cm-thread{padding:16px 18px}
+}
   /* Mobile */
 @media(max-width:640px){
   /* Safe-area aware shell */
