@@ -21,6 +21,9 @@ export interface DesignBrief {
   scale?:    'single' | 'multi-page' | 'prototype';
   direction?: string;     // chosen direction key from DirectionPicker
   brandKit?: BrandKit;
+  /** 'game' switches the engine to Game Studio mode (single-file HTML5 game,
+   *  game-tuned system prompt, no design critique). Default 'design'. */
+  kind?:     'design' | 'game';
 }
 
 export interface DiscoveryForm {

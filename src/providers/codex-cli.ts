@@ -48,6 +48,8 @@ export interface CodexCliOptions {
   /** Override sandbox for this call (default from config.codex.sandboxMode). */
   sandbox?:      'read-only' | 'workspace-write' | 'danger-full-access';
   onUsage?:      (u: CodexCliUsage) => void;
+  /** External abort (runaway/stop). SIGKILLs the codex exec child. [Item I] */
+  signal?:       AbortSignal;
 }
 
 // ── Concurrency gate ───────────────────────────────────────────────────────
@@ -214,6 +216,13 @@ async function* runQuery(opts: CodexCliOptions): AsyncGenerator<string, void, vo
   const scrubber = createStreamScrubber(sub.resolved);
   const child: ChildProcess = spawn(cmd, args, { env: sub.env });
   let timedOut = false;
+  let aborted = false;
+  // External abort (runaway/stop): SIGKILL the child. codex-cli's exit check
+  // (below) has no signalCode branch, so we track `aborted` and throw explicitly
+  // after close — otherwise a partial-output kill is recorded as success. [Item I]
+  const onAbort = () => { aborted = true; try { child.kill('SIGKILL'); } catch { /* ignore */ } };
+  if (opts.signal?.aborted) onAbort();
+  else opts.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGKILL'); } catch { /* ignore */ } }, config.codex.timeoutMs);
 
   // Write the prompt and close stdin.
@@ -282,6 +291,14 @@ async function* runQuery(opts: CodexCliOptions): AsyncGenerator<string, void, vo
     // Wait for child to actually close so we can read exit code.
     await new Promise<void>(resolve => child.on('close', () => resolve()));
 
+    // External abort (runaway/stop) SIGKILLs the child, leaving exitCode === null
+    // which the non-zero check below deliberately skips. Without this throw, an
+    // aborted run that had already streamed partial output would be recorded as a
+    // normal success and the run never closed as error. [Item I / ASAGI FATAL fix]
+    if (aborted) {
+      throw new Error('codex-cli aborted by external signal (runaway/stop)');
+    }
+
     // Timeout SIGKILL leaves exitCode === null, which the non-zero check below
     // deliberately skips — so a timed-out run used to END SILENTLY with
     // truncated output and no signal to the user. Report back instead.
@@ -327,6 +344,7 @@ async function* runQuery(opts: CodexCliOptions): AsyncGenerator<string, void, vo
     }
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
   }
 }
 

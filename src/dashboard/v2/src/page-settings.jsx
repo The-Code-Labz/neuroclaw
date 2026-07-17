@@ -2,7 +2,7 @@
 import { THEMES, DEFAULT_THEME_ID, LAYOUTS, DEFAULT_LAYOUT_ID } from './themes/registry.ts';
 
 const SettingRow = ({ label, hint, children }) => (
-  <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, padding: '12px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center' }}>
+  <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, padding: '12px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center' }}>
     <div>
       <div className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>{label}</div>
       {hint && <div className="mono muted" style={{ fontSize: 10, marginTop: 2 }}>{hint}</div>}
@@ -379,10 +379,10 @@ const EnvEditorTab = () => {
             const showValue = !isSecret || showSecrets[v.key];
 
             return (
-              <div key={v.key} style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '200px 1fr auto', 
-                gap: 12, 
+              <div key={v.key} className="setting-row" style={{
+                display: 'grid',
+                gridTemplateColumns: '200px 1fr auto',
+                gap: 12,
                 padding: '10px 0', 
                 borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
                 alignItems: 'center',
@@ -964,9 +964,19 @@ const ProvidersTab = () => {
  * it never writes secrets directly. config.canva.configured flips true in
  * the same request — no restart step between Register and Connect.
  * pendingRestart only appears as a fallback for creds landed out-of-band
- * (e.g. via the Live .env tab). */
+ * (e.g. via the Live .env tab).
+ *
+ * loopbackReady gate (2026-07-15, proven live): `configured` only means
+ * SOME client_id/secret pair is present — it does NOT mean that client was
+ * ever registered against the loopback redirect_uri. A stale non-loopback
+ * client left in .env from an earlier attempt is `configured:true` but
+ * pairing it with the loopback redirect_uri at /authorize gets a 500 from
+ * Canva. So the authorize link is gated on `status.loopbackReady`
+ * (backed by mcp/canva-oauth.ts isLoopbackClientRegistered()), never on
+ * `configured` alone — when configured but not loopbackReady we show the
+ * Register button again instead of a link that would 500. */
 const CanvaConnectCard = () => {
-  const [status, setStatus]   = React.useState(null); // { configured, hasToken, pendingRestart, serverStatus, toolsCount }
+  const [status, setStatus]   = React.useState(null); // { configured, loopbackReady, hasToken, pendingRestart, serverStatus, toolsCount }
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy]       = React.useState(null);  // 'register' | 'restart' | 'exchange' | null
   const [pasted, setPasted]   = React.useState('');
@@ -1025,8 +1035,13 @@ const CanvaConnectCard = () => {
 
   const connected = !!status?.hasToken;
   const configured = !!status?.configured;
+  const loopbackReady = !!status?.loopbackReady;
   const pendingRestart = !!status?.pendingRestart;
-  const awaitingPaste = configured && !pendingRestart && !connected;
+  // Stale client: creds present, not pending a restart, but NOT registered
+  // against the loopback redirect_uri — the authorize link must never show
+  // for this state (see loopbackReady gate note above the component).
+  const staleClient = configured && !pendingRestart && !loopbackReady;
+  const awaitingPaste = configured && !pendingRestart && loopbackReady && !connected;
 
   return (
     <div className="nc-panel" style={{ padding: 16, marginBottom: 20, border: '1px solid var(--line-soft)' }}>
@@ -1038,6 +1053,8 @@ const CanvaConnectCard = () => {
               <span className="tag" style={{ fontSize: 8, color: 'var(--accent-2)', borderColor: 'var(--accent-2)' }}>CONNECTED</span>
             ) : pendingRestart ? (
               <span className="tag amber" style={{ fontSize: 8 }}>RESTART REQUIRED</span>
+            ) : staleClient ? (
+              <span className="tag amber" style={{ fontSize: 8 }}>RE-REGISTER REQUIRED</span>
             ) : (
               <span className="tag" style={{ fontSize: 8, color: 'var(--muted)' }}>NOT CONNECTED</span>
             )}
@@ -1047,16 +1064,18 @@ const CanvaConnectCard = () => {
               ? `Official Canva MCP (mcp.canva.com) · ${status.toolsCount} tool${status.toolsCount === 1 ? '' : 's'} registered${status.serverStatus ? ` · ${status.serverStatus}` : ''}`
               : pendingRestart
                 ? 'DCR client saved out-of-band — restart the server to load it before connecting'
-                : configured
-                  ? 'App registered — sign in on Canva, then paste the redirected URL back here'
-                  : 'One-time DCR self-registration required before the consent screen can be shown'}
+                : staleClient
+                  ? 'Saved client was not registered against the loopback redirect — click Register to get a fresh one before connecting'
+                  : configured
+                    ? 'App registered — sign in on Canva, then paste the redirected URL back here'
+                    : 'One-time DCR self-registration required before the consent screen can be shown'}
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {!configured && !pendingRestart && (
+          {(!configured || staleClient) && !pendingRestart && (
             <button className="nc-btn primary" disabled={busy === 'register'} onClick={register}>
-              {busy === 'register' ? 'registering…' : 'Register Canva App'}
+              {busy === 'register' ? 'registering…' : staleClient ? 'Re-register Canva App' : 'Register Canva App'}
             </button>
           )}
           {pendingRestart && (
@@ -1071,7 +1090,7 @@ const CanvaConnectCard = () => {
               1. Sign in on Canva ↗
             </a>
           )}
-          {connected && (
+          {connected && loopbackReady && (
             <a className="nc-btn ghost" href={authorizeHref} target="_blank" rel="noopener noreferrer"
               onClick={() => setErr(null)}
               title="Re-run consent, e.g. after a scope change">

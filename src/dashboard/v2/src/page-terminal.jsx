@@ -184,7 +184,7 @@ const InstallAppButton = () => {
       </div>
       {showModal && (
         <div className="modal-back" onClick={() => setShowModal(false)}>
-          <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: 420 }}>
+          <div className="nc-panel glow modal-fixed-width" onClick={e => e.stopPropagation()} style={{ width: 420 }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label-tiny neonc">INSTALL NEUROCLAW PWA</div>
             </div>
@@ -448,7 +448,7 @@ const AgentPickerModal = ({ onPick, onClose }) => {
   const agents = (window.NC_DATA.AGENTS || []).filter(a => a.status === 'active' || a.status === 'live');
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: 400 }}>
+      <div className="nc-panel glow modal-fixed-width" onClick={e => e.stopPropagation()} style={{ width: 400 }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)' }}>
           <div className="label-tiny neonc">NEW TERMINAL TAB · SELECT AGENT</div>
         </div>
@@ -503,7 +503,7 @@ const SessionPicker = ({ onClose, onResume }) => {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()}
+      <div className="nc-panel glow modal-fixed-width" onClick={e => e.stopPropagation()}
         style={{ width: 480, maxHeight: '75vh', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div className="label-tiny neonc">

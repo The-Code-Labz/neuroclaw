@@ -298,7 +298,7 @@ const NotificationBell = () => {
       </button>
 
       {open && (
-        <div style={{
+        <div className="notif-panel" style={{
           position: 'absolute', right: 0, top: 'calc(100% + 4px)',
           width: 360, maxHeight: 420, overflow: 'auto',
           background: 'var(--surface-1)', border: '1px solid var(--border-default)',

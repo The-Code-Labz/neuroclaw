@@ -100,7 +100,7 @@ const MCP = () => {
       {editing && (
         <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
           <div className="label-tiny neonc" style={{ marginBottom: 10 }}>{editing.id ? 'EDIT MCP SERVER' : 'NEW MCP SERVER'}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', gap: 10 }}>
+          <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', gap: 10 }}>
             <div className="field">
               <label>Name <span className="muted" style={{ fontSize: 10 }}>(tool prefix)</span></label>
               <input className="nc-input" value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} placeholder="archon"/>

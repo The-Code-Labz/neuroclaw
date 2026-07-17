@@ -105,7 +105,7 @@ async function generate(context: string, sessionId: string, agentId?: string): P
       logHive('skill_forge_fallback', 'skill-forge: antigravity failed, falling back to OpenRouter', agentId,
         { reason: String(agErr), sessionId, fallbackModel });
       try {
-        // VoidAI (haiku) first, OpenRouter (fallbackModel) on any error.
+        // Native MiniMax-M3 lane — off VoidAI's flaky proxy path.
         const resp = await bgChatCompletion({
           model: fallbackModel,
           messages: [
@@ -113,7 +113,7 @@ async function generate(context: string, sessionId: string, agentId?: string): P
             { role: 'user',   content: context },
           ],
           temperature: 0.3,
-        }, { openrouterModel: fallbackModel, label: 'skill-forge' });
+        }, { preferMinimax: true, label: 'skill-forge' });
         raw = (resp.choices[0]?.message?.content ?? '{}')
           .replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim();
       } catch (fbErr) {
@@ -124,7 +124,7 @@ async function generate(context: string, sessionId: string, agentId?: string): P
     }
   } else {
     try {
-      // VoidAI (haiku) first, OpenRouter (fallbackModel) on any error.
+      // Native MiniMax-M3 lane — off VoidAI's flaky proxy path.
       const resp = await bgChatCompletion({
         model: fallbackModel,
         messages: [
@@ -132,7 +132,7 @@ async function generate(context: string, sessionId: string, agentId?: string): P
           { role: 'user',   content: context },
         ],
         temperature: 0.3,
-      }, { openrouterModel: fallbackModel, label: 'skill-forge' });
+      }, { preferMinimax: true, label: 'skill-forge' });
       raw = (resp.choices[0]?.message?.content ?? '{}')
         .replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim();
     } catch (err) {

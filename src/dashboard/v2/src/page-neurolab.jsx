@@ -643,7 +643,7 @@ const NeuroLab = () => {
           <button className="nc-btn primary" onClick={addRoom}><Icon name="plus" size={12}/> Room</button>
         </>}
       />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 290px', gap: 12 }}>
+      <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 290px', gap: 12 }}>
         <FloorCanvas
           rooms={rooms} agents={AGENTS} agentRooms={agentRooms}
           agentBehavior={agentBehavior} beams={beams} hiveActivity={hiveActivity}

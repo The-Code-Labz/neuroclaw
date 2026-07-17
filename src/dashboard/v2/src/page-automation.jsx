@@ -140,7 +140,7 @@ function JobModal({ job, agents, onSave, onClose }) {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()}
+      <div className="nc-panel glow modal-fixed-width" onClick={e => e.stopPropagation()}
            style={{ width: 560, maxHeight: '88vh', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span className="mono" style={{ fontSize: 13, color: 'var(--accent)' }}>{isEdit ? 'EDIT JOB' : 'NEW JOB'}</span>
@@ -305,8 +305,12 @@ function Automation() {
   const [error,         setError]         = React.useState(null);
   const [agents,        setAgents]        = React.useState([]);
 
+  // Cookie-first: only append ?token= when we actually have one (standalone PWA
+  // resolves TOKEN='' — URL token gone + HttpOnly cookie unreadable by JS), and
+  // ALWAYS send credentials so the HttpOnly auth cookie carries the request.
   const api = (path, opts) =>
-    fetch(path + (path.includes('?') ? '&' : '?') + `token=${TOKEN}`, opts)
+    fetch(TOKEN ? path + (path.includes('?') ? '&' : '?') + `token=${TOKEN}` : path,
+          { credentials: 'same-origin', ...opts })
       .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); });
 
   function fetchJobs() {
@@ -334,7 +338,7 @@ function Automation() {
   }, [selectedJobId]);
 
   React.useEffect(() => {
-    const es = new EventSource(`/api/crons/stream?token=${TOKEN}`);
+    const es = new EventSource(TOKEN ? `/api/crons/stream?token=${TOKEN}` : '/api/crons/stream');
     es.addEventListener('run_started', e => {
       const d = JSON.parse(e.data);
       setRunningJobId(d.jobId);

@@ -55,7 +55,7 @@ const Interactive = () => {
         subtitle="// live claude + antigravity REPL sessions · tmux watch (read-only)"
         right={<button className="nc-btn" onClick={loadList}><Icon name="refresh" size={12}/> Refresh</button>}
       />
-      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, height: '70vh', minHeight: 420 }}>
+      <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, height: '70vh', minHeight: 420 }}>
         {/* Session list */}
         <div className="nc-panel" style={{ padding: 0, overflow: 'auto' }}>
           <div className="label-tiny" style={{ padding: '10px 14px', borderBottom: '1px solid var(--line-soft)', color: 'var(--accent)' }}>SESSIONS · {sessions.length}</div>

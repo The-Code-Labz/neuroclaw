@@ -8,6 +8,9 @@ import './page-terminal.jsx';
 import './page-neuroroom.jsx';
 import './page-interactive.jsx';
 import './page-imagegen.jsx';
+import './page-videogen.jsx';
+import './page-musicgen.jsx';
+import './page-gamestudio.jsx';
 import './page-editor.jsx';
 import './page-photopea.jsx';
 import './page-gallery.jsx';
@@ -22,6 +25,9 @@ const Studio = () => (
     { id: 'neuroroom',   label: 'Neuro Room',  render: () => <NeuroRoom/> },
     { id: 'interactive', label: 'Interactive', render: () => <Interactive/> },
     { id: 'imagegen',    label: 'Generate',    render: () => <ImageGen/> },
+    { id: 'videogen',    label: 'Video',       render: () => <VideoGen/> },
+    { id: 'musicgen',    label: 'Music',       render: () => <MusicGen/> },
+    { id: 'gamestudio',  label: 'Games',       render: () => <GameStudio/> },
     { id: 'editor',      label: 'Editor',      render: () => <ImageEditor/> },
     { id: 'photopea',    label: 'Photopea',    render: () => <Photopea/> },
     { id: 'gallery',     label: 'Gallery',     render: () => <Gallery/> },

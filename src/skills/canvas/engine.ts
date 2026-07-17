@@ -178,6 +178,30 @@ function systemPromptFor(brief: DesignBrief, direction: Direction): string {
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * Game Studio system prompt — produces ONE self-contained, playable HTML5
+ * browser game. Tuned for the sandboxed `allow-scripts` (no same-origin) view:
+ * inline JS is allowed, but localStorage/fetch throw — so state stays in-memory.
+ */
+function gameSystemPromptFor(brief: DesignBrief): string {
+  return [
+    'You are a senior JavaScript game developer. You build complete, polished, PLAYABLE browser games as a single self-contained HTML document.',
+    '',
+    'Constraints (non-negotiable):',
+    '- Output ONE complete HTML document. <!doctype html> through </html>. No surrounding markdown, no commentary, no code fences.',
+    '- The ENTIRE game — HTML, CSS, and JavaScript — lives in this one file. Inline CSS in a <style> block and JS in an inline <script> block. No external files, no imports, no CDNs, no external assets.',
+    '- Render with an HTML5 <canvas> and a requestAnimationFrame game loop. Draw all art programmatically (shapes, gradients, text) — do NOT load external images, audio files, or fonts.',
+    '- The game runs inside a sandboxed iframe with `sandbox="allow-scripts"` and NO same-origin. Therefore: NO fetch(), NO localStorage/sessionStorage, NO cookies, NO parent-window calls. Keep ALL state (including high score) in plain JS variables — session-only is fine.',
+    '- Fully self-starting and self-contained: on load, show a title/start screen, then play. Include a visible score/HUD and a game-over + restart flow.',
+    '- Controls: support keyboard (Arrow keys / WASD / Space) AND pointer/touch where it makes sense, so it works on desktop and mobile. Prevent default scrolling on gameplay keys.',
+    '- Make it genuinely fun and responsive: smooth 60fps loop, clear feedback, escalating difficulty. Size the canvas responsively to the viewport.',
+    '- Polished visuals: cohesive color palette, particles/juice where appropriate, readable typography drawn on canvas.',
+    '',
+    `Game to build: ${brief.brief}`,
+    'Build the complete, playable game now. Return only the HTML document.',
+  ].filter(Boolean).join('\n');
+}
+
 function buildTodos(brief: DesignBrief): TodoItem[] {
   return [
     { id: 't1', text: 'Lock brief & direction',           status: 'completed'   },
@@ -367,15 +391,16 @@ export async function* generate(
   let html = '';
   const t0 = Date.now();
   logger.info(`canvas/generate: llm.complete start — model=${canvasModel()}`);
+  const isGame = brief.kind === 'game';
   try {
-    const sys = systemPromptFor(brief, direction);
+    const sys = isGame ? gameSystemPromptFor(brief) : systemPromptFor(brief, direction);
     let raw = '';
     for await (const delta of streamModelText(
       [
         { role: 'system', content: sys },
-        { role: 'user',   content: 'Design now. Return only the HTML document.' },
+        { role: 'user',   content: isGame ? 'Build the game now. Return only the HTML document.' : 'Design now. Return only the HTML document.' },
       ],
-      { temperature: 0.65, max_tokens: 16000 },
+      { temperature: isGame ? 0.7 : 0.65, max_tokens: isGame ? 32000 : 16000 },
     )) {
       raw += delta;
       yield { type: 'chunk', payload: { text: delta } };
@@ -431,18 +456,21 @@ export async function* generate(
 
   // Critique is a blocking (non-streamed) call — bracket it with tool.call
   // start/end markers so the activity log + stream meter show it's alive
-  // rather than a silent 5–15s gap.
-  yield { type: 'tool.call', payload: { name: 'llm.critique', args: { persona: 'asia' } } };
-  const tc = Date.now();
-  try {
-    const c = await callModelForCritique(html, brief, 'asia');
-    setArtifactCritique(artifact.id, c);
-    yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: true } };
-    yield { type: 'critique.result', payload: c };
-    logger.info('canvas/generate: critique done');
-  } catch (err) {
-    yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: false } };
-    logger.warn('canvas/generate: critique failed', { err: (err as Error).message });
+  // rather than a silent 5–15s gap. Games skip it: the design critique scores
+  // brand-fit/emotion, which is meaningless for a playable game.
+  if (!isGame) {
+    yield { type: 'tool.call', payload: { name: 'llm.critique', args: { persona: 'asia' } } };
+    const tc = Date.now();
+    try {
+      const c = await callModelForCritique(html, brief, 'asia');
+      setArtifactCritique(artifact.id, c);
+      yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: true } };
+      yield { type: 'critique.result', payload: c };
+      logger.info('canvas/generate: critique done');
+    } catch (err) {
+      yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: false } };
+      logger.warn('canvas/generate: critique failed', { err: (err as Error).message });
+    }
   }
 
   for (const t of todos) {

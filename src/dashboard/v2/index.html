@@ -664,6 +664,74 @@
     }
   }
 
+  /* ── Fixed-sidebar + flex/grid content split (Backlot, Dream journal, Interactive,
+     NeuroLab, MCP form rows). Pages set their own desktop widths inline
+     (width:260, gridTemplateColumns:'220px 1fr', etc) — these !important rules
+     beat that inline style at narrow widths, same pattern as .chat-layout above. */
+  @media (max-width: 768px) {
+    .split-flex { flex-direction: column !important; }
+    .split-flex-fixed {
+      width: 100% !important;
+      max-width: none !important;
+      flex-shrink: 1 !important;
+    }
+    .split-grid { grid-template-columns: 1fr !important; }
+  }
+
+  /* ── Label + control form rows (Settings, MCP editor, Secrets forms): the
+     inline gridTemplateColumns (e.g. '220px 1fr') is too tight under ~360px
+     of viewport width, so stack label above control. */
+  @media (max-width: 640px) {
+    .setting-row { grid-template-columns: 1fr !important; gap: 6px !important; }
+  }
+
+  /* ── Dense data-table rows (Providers/Usage/Comms/Hivemind/Logs/Channels/
+     Approvals): many fixed-px columns for alignment don't reflow into a
+     stacked card view safely, so scroll the row horizontally instead of
+     silently clipping or squeezing data unreadable on a phone. */
+  .table-scroll { overflow-x: visible; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 768px) {
+    .table-scroll { overflow-x: auto !important; overflow-y: visible; }
+  }
+
+  /* ── Secrets audit-row (5 fixed-px columns): reduce column count instead of
+     squeezing, matching the v4 dashboard's equivalent .audit-row treatment. */
+  @media (max-width: 768px) {
+    .audit-row { grid-template-columns: 70px 90px 1fr 60px !important; }
+    .audit-row span:nth-child(3) { display: none; }
+  }
+  @media (max-width: 640px) {
+    /* 3 spans remain visible (event, message, outcome) once time+agent are
+       hidden below — 3 tracks, not 2, so the outcome badge doesn't get
+       squeezed into the message column. */
+    .audit-row { grid-template-columns: auto 1fr auto !important; gap: 6px !important; }
+    .audit-row span:nth-child(1),
+    .audit-row span:nth-child(3) { display: none; }
+  }
+
+  /* ── Modal dialogs with a fixed desktop pixel width (Cmd palette, etc):
+     .modal-back has no padding, so a `width:560` child overflows a
+     320-375px phone unclipped. Clamp to viewport width. */
+  @media (max-width: 640px) {
+    .modal-fixed-width { width: calc(100vw - 32px) !important; max-width: none !important; }
+  }
+
+  /* ── Topbar-anchored dropdown panels (notification bell, etc): the inline
+     `position:absolute; right:0; width:360` popup overflows a 320-375px
+     phone since it's anchored to an icon that isn't at the viewport edge.
+     Detach it into a viewport-clamped sheet below the topbar instead. */
+  @media (max-width: 480px) {
+    .notif-panel {
+      position: fixed !important;
+      left: 8px !important;
+      right: 8px !important;
+      top: calc(48px + env(safe-area-inset-top, 0px) + 4px) !important;
+      width: auto !important;
+      max-width: none !important;
+      max-height: calc(100dvh - 96px) !important;
+    }
+  }
+
   /* Flex utilities */
   .flex-wrap-mobile {
     display: flex;

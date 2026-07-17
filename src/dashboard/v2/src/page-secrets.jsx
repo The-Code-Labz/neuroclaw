@@ -626,7 +626,7 @@ const AgentPrefixRow = ({ agent, onSave }) => {
     finally { setSaving(false); }
   };
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 10, alignItems: 'center' }}>
+    <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 10, alignItems: 'center' }}>
       <span className="mono" style={{ fontSize: 11 }}>{agent.name}</span>
       <input
         className="nc-input"
@@ -693,7 +693,7 @@ const SecretRow = ({
   const typeColor = TYPE_BADGE_COLOR[secret.type] || 'var(--muted)';
   const isRevealed = revealedValue !== undefined;
   return (
-    <div style={{
+    <div className="split-grid" style={{
       display: 'grid',
       gridTemplateColumns: '260px 1fr auto',
       gap: 12,
@@ -826,7 +826,7 @@ const AuditRow = ({ row }) => {
     'var(--muted)';
   const ts = row.ts ? new Date(row.ts).toLocaleTimeString() : '';
   return (
-    <div style={{
+    <div className="audit-row" style={{
       padding: '6px 0',
       borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
       display: 'grid',

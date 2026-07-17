@@ -457,7 +457,277 @@ const GLACIER: ThemeDef = {
   },
 };
 
-export const THEMES: ThemeDef[] = [NEON_GRID, ODYSSEY, SANCTUARY, PHOSPHOR, GLACIER];
+// ── AIOS — crimson command-center on deep charcoal ──────────────────────────
+// Token values from Asia's design deliverable, mapped 1:1 onto the Odyssey
+// token surface. Oracle contrast gate 2026-07-16 (recomputed independently
+// via WCAG relative-luminance): text-primary/bg 18.17:1 (AAA), tertiary/bg
+// 7.22:1 (AAA), icon-on-accent(#fff)/accent 4.20:1, accent/surface-1 4.27:1
+// — all pass. Per-accent --icon-on-accent = white (crimson needs light icon).
+const AIOS: ThemeDef = {
+  id: 'aios',
+  label: 'AIOS',
+  description: 'AI OS command center. Crimson on deep charcoal-black — cinematic, high-contrast, and operations-serious.',
+  mode: 'dark',
+  preview: { bg: '#090A0D', surface: '#15171C', accent: '#E33B4F', text: '#F5F5F6' },
+  tokens: {
+    // Backgrounds
+    '--bg-canvas': '#090A0D',
+    '--bg-base': '#0F1014',
+    '--surface-1': '#15171C',
+    '--surface-2': '#1D2026',
+    '--surface-elevated': '#272A32',
+    // Text
+    '--text-primary': '#F5F5F6',
+    '--text-secondary': '#C6C7CB',
+    '--text-tertiary': '#9A9CA3',
+    '--text-disabled': '#656870',
+    '--text-inverted': '#0B0C10',
+    // Borders
+    '--border-subtle': 'rgba(245, 245, 246, 0.08)',
+    '--border-default': 'rgba(245, 245, 246, 0.16)',
+    '--border-strong': 'rgba(245, 245, 246, 0.28)',
+    // Accent
+    '--accent': '#E33B4F',
+    '--accent-hover': '#F04D61',
+    '--accent-active': '#BF293C',
+    '--accent-soft': 'rgba(227, 59, 79, 0.14)',
+    '--accent-soft-strong': 'rgba(227, 59, 79, 0.26)',
+    // Semantic
+    '--success': '#63D69A',
+    '--warning': '#F1B84B',
+    '--error': '#FF6678',
+    '--info': '#72B7FF',
+    // Icon ramp
+    '--icon-default': '#B9BBC1',
+    '--icon-hover': '#F5F5F6',
+    '--icon-active': 'var(--accent)',
+    '--icon-disabled': '#656870',
+    '--icon-on-accent': '#fff',
+    // Interaction states
+    '--state-hover-bg': 'rgba(245, 245, 246, 0.06)',
+    '--state-active-bg': 'rgba(245, 245, 246, 0.10)',
+    '--focus-ring': '0 0 0 2px rgba(227, 59, 79, 0.45)',
+    // Legacy aliases — keep every existing v2 var name resolvable
+    '--accent-2': 'var(--accent)',
+    '--accent-muted-bg': 'var(--accent-soft)',
+    '--green': 'var(--success)',
+    '--amber': 'var(--warning)',
+    '--danger': 'var(--error)',
+    '--violet': '#A78BFA',
+    '--boundary': 'var(--warning)',
+    '--text': 'var(--text-primary)',
+    '--text-soft': 'var(--text-secondary)',
+    '--text-muted': 'var(--text-tertiary)',
+    '--muted': 'var(--text-tertiary)',
+    '--muted-2': 'var(--text-disabled)',
+    '--bg-void': 'var(--bg-canvas)',
+    '--bg-0': 'var(--bg-canvas)',
+    '--bg-1': 'var(--bg-base)',
+    '--bg-hover': 'var(--state-hover-bg)',
+    '--bg-elevated': 'var(--surface-2)',
+    '--panel': 'var(--surface-1)',
+    '--line': 'var(--border-default)',
+    '--line-soft': 'var(--border-subtle)',
+    '--line-hard': 'var(--border-strong)',
+    '--border': 'var(--border-default)',
+    // Elevation
+    '--shadow-sm': '0 1px 2px rgba(3, 0, 1, 0.34), 0 1px 4px rgba(54, 4, 12, 0.10)',
+    '--shadow-md': '0 4px 12px rgba(3, 0, 1, 0.42), 0 2px 8px rgba(54, 4, 12, 0.14)',
+    '--shadow-lg': '0 12px 32px rgba(3, 0, 1, 0.54), 0 4px 14px rgba(54, 4, 12, 0.18)',
+    '--glow-soft': '0 0 24px rgba(227, 59, 79, 0.08)',
+    '--glow-neon': 'inset 0 0 0 1px var(--border-strong)',
+    // Type
+    '--mono': "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    '--display': "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    // Radius — Odyssey verbatim
+    '--radius-sm': '10px',
+    '--radius-md': '14px',
+    '--radius-lg': '18px',
+    '--radius-xl': '24px',
+    '--radius-full': '999px',
+  },
+};
+
+// ── Monitor — amber analytics terminal, monospace-forward ────────────────────
+// Oracle contrast gate 2026-07-16: text-primary/bg 16.72:1 (AAA), tertiary/bg
+// 6.65:1, icon-on-accent(#11100D)/accent 8.85:1, accent/surface-1 8.53:1 —
+// all pass. --icon-on-accent = near-black (amber needs a dark icon). --display
+// is the mono stack, intentional for the analytics-terminal read.
+const MONITOR: ThemeDef = {
+  id: 'monitor',
+  label: 'Monitor',
+  description: 'Analytics terminal. Amber signal color, warm-black surfaces, and monospace-forward operational clarity.',
+  mode: 'dark',
+  preview: { bg: '#0B0A08', surface: '#18140E', accent: '#F0A02B', text: '#F3EBDD' },
+  tokens: {
+    // Backgrounds
+    '--bg-canvas': '#0B0A08',
+    '--bg-base': '#110F0B',
+    '--surface-1': '#18140E',
+    '--surface-2': '#211B12',
+    '--surface-elevated': '#2C2417',
+    // Text
+    '--text-primary': '#F3EBDD',
+    '--text-secondary': '#C9BBA4',
+    '--text-tertiary': '#A69375',
+    '--text-disabled': '#6E604C',
+    '--text-inverted': '#11100D',
+    // Borders
+    '--border-subtle': 'rgba(243, 235, 221, 0.08)',
+    '--border-default': 'rgba(243, 235, 221, 0.16)',
+    '--border-strong': 'rgba(243, 235, 221, 0.28)',
+    // Accent
+    '--accent': '#F0A02B',
+    '--accent-hover': '#FFB747',
+    '--accent-active': '#C97C17',
+    '--accent-soft': 'rgba(240, 160, 43, 0.14)',
+    '--accent-soft-strong': 'rgba(240, 160, 43, 0.26)',
+    // Semantic
+    '--success': '#76D49B',
+    '--warning': '#F4C35B',
+    '--error': '#F2766D',
+    '--info': '#70B7DB',
+    // Icon ramp
+    '--icon-default': '#B9AA91',
+    '--icon-hover': '#F3EBDD',
+    '--icon-active': 'var(--accent)',
+    '--icon-disabled': '#6E604C',
+    '--icon-on-accent': '#11100D',
+    // Interaction states
+    '--state-hover-bg': 'rgba(240, 160, 43, 0.06)',
+    '--state-active-bg': 'rgba(240, 160, 43, 0.10)',
+    '--focus-ring': '0 0 0 2px rgba(240, 160, 43, 0.45)',
+    // Legacy aliases — keep every existing v2 var name resolvable
+    '--accent-2': 'var(--accent)',
+    '--accent-muted-bg': 'var(--accent-soft)',
+    '--green': 'var(--success)',
+    '--amber': 'var(--warning)',
+    '--danger': 'var(--error)',
+    '--violet': '#B596D9',
+    '--boundary': 'var(--warning)',
+    '--text': 'var(--text-primary)',
+    '--text-soft': 'var(--text-secondary)',
+    '--text-muted': 'var(--text-tertiary)',
+    '--muted': 'var(--text-tertiary)',
+    '--muted-2': 'var(--text-disabled)',
+    '--bg-void': 'var(--bg-canvas)',
+    '--bg-0': 'var(--bg-canvas)',
+    '--bg-1': 'var(--bg-base)',
+    '--bg-hover': 'var(--state-hover-bg)',
+    '--bg-elevated': 'var(--surface-2)',
+    '--panel': 'var(--surface-1)',
+    '--line': 'var(--border-default)',
+    '--line-soft': 'var(--border-subtle)',
+    '--line-hard': 'var(--border-strong)',
+    '--border': 'var(--border-default)',
+    // Elevation
+    '--shadow-sm': '0 1px 2px rgba(6, 4, 0, 0.34), 0 1px 4px rgba(72, 43, 0, 0.10)',
+    '--shadow-md': '0 4px 12px rgba(6, 4, 0, 0.42), 0 2px 8px rgba(72, 43, 0, 0.14)',
+    '--shadow-lg': '0 12px 32px rgba(6, 4, 0, 0.54), 0 4px 14px rgba(72, 43, 0, 0.18)',
+    '--glow-soft': '0 0 24px rgba(240, 160, 43, 0.08)',
+    '--glow-neon': 'inset 0 0 0 1px var(--border-strong)',
+    // Type — mono-forward display is intentional for the analytics-terminal read
+    '--mono': "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    '--display': "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    // Radius — Odyssey verbatim
+    '--radius-sm': '10px',
+    '--radius-md': '14px',
+    '--radius-lg': '18px',
+    '--radius-xl': '24px',
+    '--radius-full': '999px',
+  },
+};
+
+// ── Agentic — cool muted steel-slate, calm professional ─────────────────────
+// Oracle contrast gate 2026-07-16: text-primary/bg 15.42:1 (AAA), tertiary/bg
+// 6.16:1, icon-on-accent(#0E141A)/accent 8.06:1, accent/surface-1 6.81:1 —
+// all pass. --icon-on-accent = near-black (steel needs a dark icon).
+const AGENTIC: ThemeDef = {
+  id: 'agentic',
+  label: 'Agentic',
+  description: 'Agentic OS. Muted steel on slate-dark — calm, professional, restrained, and low-chroma.',
+  mode: 'dark',
+  preview: { bg: '#11161D', surface: '#1C242E', accent: '#91AFC4', text: '#E8EDF2' },
+  tokens: {
+    // Backgrounds
+    '--bg-canvas': '#11161D',
+    '--bg-base': '#161D25',
+    '--surface-1': '#1C242E',
+    '--surface-2': '#252F3B',
+    '--surface-elevated': '#303C49',
+    // Text
+    '--text-primary': '#E8EDF2',
+    '--text-secondary': '#BBC5CF',
+    '--text-tertiary': '#8998A8',
+    '--text-disabled': '#5D6976',
+    '--text-inverted': '#0E141A',
+    // Borders
+    '--border-subtle': 'rgba(232, 237, 242, 0.07)',
+    '--border-default': 'rgba(232, 237, 242, 0.14)',
+    '--border-strong': 'rgba(232, 237, 242, 0.24)',
+    // Accent
+    '--accent': '#91AFC4',
+    '--accent-hover': '#A8C1D2',
+    '--accent-active': '#708FA7',
+    '--accent-soft': 'rgba(145, 175, 196, 0.14)',
+    '--accent-soft-strong': 'rgba(145, 175, 196, 0.26)',
+    // Semantic
+    '--success': '#8FBEA6',
+    '--warning': '#D6B978',
+    '--error': '#D08186',
+    '--info': '#8BB8D4',
+    // Icon ramp
+    '--icon-default': '#A4B1BE',
+    '--icon-hover': '#E8EDF2',
+    '--icon-active': 'var(--accent)',
+    '--icon-disabled': '#5D6976',
+    '--icon-on-accent': '#0E141A',
+    // Interaction states
+    '--state-hover-bg': 'rgba(232, 237, 242, 0.05)',
+    '--state-active-bg': 'rgba(232, 237, 242, 0.09)',
+    '--focus-ring': '0 0 0 2px rgba(145, 175, 196, 0.42)',
+    // Legacy aliases — keep every existing v2 var name resolvable
+    '--accent-2': 'var(--accent)',
+    '--accent-muted-bg': 'var(--accent-soft)',
+    '--green': 'var(--success)',
+    '--amber': 'var(--warning)',
+    '--danger': 'var(--error)',
+    '--violet': '#A79ABA',
+    '--boundary': 'var(--warning)',
+    '--text': 'var(--text-primary)',
+    '--text-soft': 'var(--text-secondary)',
+    '--text-muted': 'var(--text-tertiary)',
+    '--muted': 'var(--text-tertiary)',
+    '--muted-2': 'var(--text-disabled)',
+    '--bg-void': 'var(--bg-canvas)',
+    '--bg-0': 'var(--bg-canvas)',
+    '--bg-1': 'var(--bg-base)',
+    '--bg-hover': 'var(--state-hover-bg)',
+    '--bg-elevated': 'var(--surface-2)',
+    '--panel': 'var(--surface-1)',
+    '--line': 'var(--border-default)',
+    '--line-soft': 'var(--border-subtle)',
+    '--line-hard': 'var(--border-strong)',
+    '--border': 'var(--border-default)',
+    // Elevation
+    '--shadow-sm': '0 1px 2px rgba(4, 9, 14, 0.28), 0 1px 4px rgba(34, 54, 69, 0.12)',
+    '--shadow-md': '0 4px 12px rgba(4, 9, 14, 0.36), 0 2px 8px rgba(34, 54, 69, 0.16)',
+    '--shadow-lg': '0 12px 32px rgba(4, 9, 14, 0.46), 0 4px 14px rgba(34, 54, 69, 0.20)',
+    '--glow-soft': '0 0 24px rgba(145, 175, 196, 0.06)',
+    '--glow-neon': 'inset 0 0 0 1px var(--border-strong)',
+    // Type
+    '--mono': "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    '--display': "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    // Radius — Odyssey verbatim
+    '--radius-sm': '10px',
+    '--radius-md': '14px',
+    '--radius-lg': '18px',
+    '--radius-xl': '24px',
+    '--radius-full': '999px',
+  },
+};
+
+export const THEMES: ThemeDef[] = [NEON_GRID, ODYSSEY, SANCTUARY, PHOSPHOR, GLACIER, AIOS, MONITOR, AGENTIC];
 
 export function findTheme(id: string | null | undefined): ThemeDef {
   return THEMES.find(t => t.id === id) ?? THEMES.find(t => t.id === DEFAULT_THEME_ID) ?? THEMES[0];
@@ -546,7 +816,47 @@ const COMFORTABLE: LayoutDef = {
   },
 };
 
-export const LAYOUTS: LayoutDef[] = [COMPACT, COMFORTABLE];
+// ── Cockpit — ultra-dense, tighter than Compact. Info-first command grid. ────
+// Dims deliberately DENSER than Compact (240/64/56/32/12/12). Only reshapes the
+// >1024px desktop base grid; index.html freezes mobile/tablet to compact
+// literals, so the 52px topbar never reaches the hardcoded mobile magic numbers.
+const COCKPIT: LayoutDef = {
+  id: 'cockpit',
+  label: 'Cockpit',
+  description: 'Ultra-dense, information-first command layout. Tighter than Compact.',
+  tokens: {
+    '--shell-sidebar-width': '208px',
+    '--shell-sidebar-rail': '56px',
+    '--shell-topbar-height': '52px',
+    '--shell-footer-height': '28px',
+    '--shell-pad': '10px',
+    '--shell-gap': '10px',
+    '--chat-h': CHAT_H,
+    '--chat-min-h': '580px',
+  },
+};
+
+// ── Focus — spacious, roomier than Comfortable. Calm, generous breathing room. ─
+// Dims deliberately ROOMIER than Comfortable (264/80/68/44/18/18). Desktop-only
+// (same mobile-freeze safety as Comfortable, which already ships non-compact
+// desktop dims).
+const FOCUS: LayoutDef = {
+  id: 'focus',
+  label: 'Focus',
+  description: 'Spacious, calm layout with softer pacing and more breathing room. Roomier than Comfortable.',
+  tokens: {
+    '--shell-sidebar-width': '288px',
+    '--shell-sidebar-rail': '88px',
+    '--shell-topbar-height': '76px',
+    '--shell-footer-height': '52px',
+    '--shell-pad': '24px',
+    '--shell-gap': '24px',
+    '--chat-h': CHAT_H,
+    '--chat-min-h': '580px',
+  },
+};
+
+export const LAYOUTS: LayoutDef[] = [COMPACT, COMFORTABLE, COCKPIT, FOCUS];
 
 export function findLayout(id: string | null | undefined): LayoutDef {
   return LAYOUTS.find(l => l.id === id) ?? LAYOUTS.find(l => l.id === DEFAULT_LAYOUT_ID) ?? LAYOUTS[0];

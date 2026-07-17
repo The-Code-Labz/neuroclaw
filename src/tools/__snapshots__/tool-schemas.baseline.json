@@ -734,6 +734,86 @@
     ],
     "additionalProperties": false
   },
+  "estimate_text_fit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "The candidate/translated text to check."
+      },
+      "locale": {
+        "type": "string",
+        "description": "Locale/language code of the text, e.g. \"fr\", \"de\", \"ja\", \"en\"."
+      },
+      "boxWidthPx": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "Text box width in pixels."
+      },
+      "boxHeightPx": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "Text box height in pixels."
+      },
+      "fontSizePx": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "Font size in pixels."
+      },
+      "lineHeightMultiplier": {
+        "description": "Line height as a multiple of font size. Default 1.2.",
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "charWidthEm": {
+        "description": "Average glyph advance width as a fraction of em. Default 0.55.",
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    },
+    "required": [
+      "text",
+      "locale",
+      "boxWidthPx",
+      "boxHeightPx",
+      "fontSizePx"
+    ],
+    "additionalProperties": false
+  },
+  "fal_audio": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the music/audio to generate — genre, mood, instruments, tempo, style."
+      },
+      "model": {
+        "description": "fal audio/music model id (endpoint_id). Default cassetteai/music-generator (prompt→music). Known: cassetteai/music-generator, fal-ai/minimax-music (song w/ lyrics), fal-ai/stable-audio-25/text-to-audio (sound/music), fal-ai/lyria2, fal-ai/diffrhythm (song w/ lyrics), fal-ai/ace-step (uses tags not prompt).",
+        "type": "string"
+      },
+      "duration": {
+        "description": "Duration in seconds (model-dependent).",
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "lyrics": {
+        "description": "Optional lyrics for song-generating models (ace-step, minimax-music, diffrhythm). Ignored by instrumental models.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
   "fal_image": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -786,6 +866,47 @@
       },
       "caption": {
         "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "fal_video": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the video to generate. For image-to-video, describes the motion/action applied to input_image."
+      },
+      "model": {
+        "description": "fal video model id (endpoint_id). Default fal-ai/wan/v2.2-5b/text-to-video. Known text-to-video: fal-ai/wan/v2.2-5b/text-to-video, fal-ai/minimax/hailuo-02/standard/text-to-video, fal-ai/kling-video/v2/master/text-to-video, fal-ai/veo3, fal-ai/veo3/fast, fal-ai/ltx-video-13b-distilled. Image-to-video (set input_image): fal-ai/kling-video/v2/master/image-to-video, fal-ai/minimax/hailuo-02/standard/image-to-video, fal-ai/wan/v2.2-5b/image-to-video.",
+        "type": "string"
+      },
+      "input_image": {
+        "description": "For image-to-video: the source/first-frame image. Pass a session upload id (from list_uploads), a local file path, a base64/data: URI, or a public https URL — the server stages it to a public URL. When set, use an image-to-video model.",
+        "type": "string"
+      },
+      "duration": {
+        "description": "Clip duration in seconds (model-dependent, e.g. 5 or 10). Omit for the model default.",
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. \"16:9\", \"9:16\", \"1:1\" (model-dependent).",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution, e.g. \"480p\", \"720p\", \"1080p\" (model-dependent).",
         "type": "string"
       }
     },
@@ -984,6 +1105,21 @@
     "required": [
       "path",
       "content"
+    ],
+    "additionalProperties": false
+  },
+  "game_build": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "minLength": 1,
+        "description": "A one-sentence description of the game to build, including controls/theme/goal for best results (e.g. \"a fast 2-button endless runner with a high score\"). The engine produces ONE self-contained, playable HTML5 canvas game that lands in Studio › Games."
+      }
+    },
+    "required": [
+      "brief"
     ],
     "additionalProperties": false
   },
@@ -1325,6 +1461,95 @@
     ],
     "additionalProperties": false
   },
+  "glossary_list": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "targetLocale": {
+        "description": "Filter to a single target locale.",
+        "type": "string"
+      },
+      "sourceTermContains": {
+        "description": "Filter to source terms containing this substring.",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max entries to return (default 50).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      }
+    },
+    "additionalProperties": false
+  },
+  "glossary_lookup": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "sourceTerm": {
+        "type": "string",
+        "description": "The source-language term/phrase to look up."
+      },
+      "targetLocale": {
+        "type": "string",
+        "description": "Target locale/language code, e.g. \"fr\", \"de\", \"ja\"."
+      },
+      "sourceLocale": {
+        "description": "Source locale code. Default \"en\".",
+        "type": "string"
+      },
+      "includeDeprecated": {
+        "description": "Include deprecated entries in the lookup. Default false.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "sourceTerm",
+      "targetLocale"
+    ],
+    "additionalProperties": false
+  },
+  "glossary_upsert": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "sourceTerm": {
+        "type": "string",
+        "description": "The source-language term/phrase."
+      },
+      "targetLocale": {
+        "type": "string",
+        "description": "Target locale/language code, e.g. \"fr\", \"de\", \"ja\"."
+      },
+      "translation": {
+        "type": "string",
+        "description": "The approved translation for this term in the target locale."
+      },
+      "sourceLocale": {
+        "description": "Source locale code. Default \"en\".",
+        "type": "string"
+      },
+      "notes": {
+        "description": "Optional context/usage notes (e.g. tone, brand rule).",
+        "type": "string"
+      },
+      "status": {
+        "description": "Entry status. Default \"approved\".",
+        "type": "string",
+        "enum": [
+          "approved",
+          "draft",
+          "deprecated"
+        ]
+      }
+    },
+    "required": [
+      "sourceTerm",
+      "targetLocale",
+      "translation"
+    ],
+    "additionalProperties": false
+  },
   "gpt_image_edit": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1446,6 +1671,107 @@
     ],
     "additionalProperties": false
   },
+  "higgsfield_image": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the image to generate, or the edit instruction to apply to input_image."
+      },
+      "model": {
+        "description": "Higgsfield image model id (default nano_banana_2). For edit (input_image set) use an image-to-image model: nano_banana_2, nano_banana_pro, nano_banana, nano_banana_2_lite. Others: use higgsfield_models to discover.",
+        "type": "string"
+      },
+      "input_image": {
+        "description": "For image-to-image editing: the source image as an https URL. When set, the image is imported to Higgsfield and the prompt is applied as an edit instruction. Omit for text→image generation.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. 1:1 (default), 16:9, 9:16, 3:2, 2:3, 4:3, 3:4, 4:5, 5:4, 21:9.",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution: 1k (default), 2k, or 4k (higher = more credits).",
+        "type": "string"
+      },
+      "count": {
+        "description": "Number of images to generate (1-4, default 1).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4
+      },
+      "alt": {
+        "description": "Alt text for the displayed image. Defaults to the prompt.",
+        "type": "string"
+      },
+      "caption": {
+        "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "higgsfield_models": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "description": "Filter models by output type (omit for all).",
+        "type": "string",
+        "enum": [
+          "image",
+          "video",
+          "audio",
+          "3d"
+        ]
+      },
+      "query": {
+        "description": "Optional use-case query for recommendations (e.g. \"image-to-video, cinematic\").",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max models to return (default 20).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      }
+    },
+    "additionalProperties": false
+  },
+  "higgsfield_video": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the video to generate."
+      },
+      "model": {
+        "description": "Higgsfield video model id (default cinematic_studio_3_0). Others: use higgsfield_models to discover.",
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "description": "Output aspect ratio. Use '9:16' for TikTok/Reels/Shorts (vertical) and '16:9' for landscape (default varies by model).",
+        "type": "string"
+      },
+      "resolution": {
+        "description": "Output resolution: 480p, 720p (default), 1080p, or 4k (higher = more credits).",
+        "type": "string"
+      },
+      "alt": {
+        "description": "Title/alt text for the video in the Media gallery. Defaults to the prompt.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
   "index_content": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -1466,6 +1792,39 @@
     "required": [
       "text",
       "label"
+    ],
+    "additionalProperties": false
+  },
+  "kie_audio": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the music/song to generate — genre, mood, instruments, style."
+      },
+      "model": {
+        "description": "KIE music model id (unified createTask API). Default suno/v5. ⚠️ Model IDs pending live verification — override if a default fails.",
+        "type": "string"
+      },
+      "duration": {
+        "description": "Duration in seconds (model-dependent).",
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "lyrics": {
+        "description": "Optional lyrics for song generation (Suno-style models).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
     ],
     "additionalProperties": false
   },
@@ -1511,6 +1870,43 @@
       },
       "caption": {
         "description": "Optional caption shown below the image.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "kie_video": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Text describing the video to generate. For image-to-video, describes the motion applied to input_image."
+      },
+      "model": {
+        "description": "KIE video model id (unified createTask API). Default veo3_fast. Known video models: veo3, veo3_fast, sora-2-text-to-video, runway/gen4-turbo, kling/v2-1-master. ⚠️ Model IDs pending live verification — override if a default fails.",
+        "type": "string"
+      },
+      "input_image": {
+        "description": "For image-to-video: source image (session upload id, local path, base64/data: URI, or public https URL).",
+        "type": "string"
+      },
+      "duration": {
+        "description": "Clip duration in seconds (model-dependent).",
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "aspect_ratio": {
+        "description": "Aspect ratio, e.g. \"16:9\", \"9:16\" (model-dependent).",
         "type": "string"
       }
     },
@@ -1588,7 +1984,8 @@
           "outbound_webhook",
           "shell_command",
           "n8n_workflow",
-          "kestra_flow"
+          "kestra_flow",
+          "create_task"
         ]
       },
       "enabled": {
@@ -1691,6 +2088,39 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {},
+    "additionalProperties": false
+  },
+  "loop_run": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "description": "What the loop should produce — the objective the builder must satisfy and the verifier grades against."
+      },
+      "artifact_kind": {
+        "description": "Kind of artifact being built: 'code', 'prose', or 'unknown' (default). Routes the verifier's tier-1 model.",
+        "type": "string",
+        "enum": [
+          "code",
+          "prose",
+          "unknown"
+        ]
+      },
+      "acceptance": {
+        "description": "Explicit acceptance criteria that must ALL be met for the loop to pass. Folded into both the build and verify prompts.",
+        "type": "string"
+      },
+      "max_rounds": {
+        "description": "Override the max build→verify rounds (default from config, hard-capped at 8).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      }
+    },
+    "required": [
+      "goal"
+    ],
     "additionalProperties": false
   },
   "manage_project": {
@@ -1926,6 +2356,13 @@
           "reconcile",
           "review"
         ]
+      },
+      "dependsOn": {
+        "description": "Blocker task ids this task depends on. The task will NOT be claimable (or transitionable to \"doing\") until EVERY blocker is \"done\". Cycles and self-edges are rejected. On update this REPLACES the existing blocker set; pass [] to clear all blockers.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "hard": {
         "description": "On delete: when true, permanently remove. Default false (archive).",
@@ -2300,10 +2737,10 @@
         }
       },
       "timeout_seconds": {
-        "description": "Execution ceiling in seconds (default 300, max 540 — SSH exec hard cap is 600s).",
+        "description": "Execution ceiling in seconds (default 300). Calls over 480s automatically run DETACHED (launch-and-poll) so they are NOT bound by the ~10m sshd exec ceiling — use this for long multi-stage renders (up to 3600s / 60m).",
         "type": "integer",
         "minimum": 1,
-        "maximum": 540
+        "maximum": 3600
       }
     },
     "additionalProperties": false
@@ -2518,6 +2955,35 @@
     ],
     "additionalProperties": false
   },
+  "run_montage": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The creative brief for the montage — what the video should be about. Sachi reasons over this to author each stage. Persisted on the node so gate-resumes can re-read it."
+      },
+      "pipeline_type": {
+        "description": "OpenMontage pipeline manifest id (default \"mvp_zero_key\"). mvp_zero_key = 4 tool-exec stages (assets→edit→compose→publish). explainer/cinematic/animation add reasoning stages (verify vendored first).",
+        "type": "string"
+      },
+      "project_id": {
+        "description": "Reuse an existing project id, or omit to auto-generate (nc-montage-<ts>). Must match ^[a-zA-Z0-9._-]{1,64}$.",
+        "type": "string"
+      },
+      "priority": {
+        "description": "Task priority for the Sachi assignment (default 55).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      }
+    },
+    "required": [
+      "brief"
+    ],
+    "additionalProperties": false
+  },
   "run_skill_script": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -2695,13 +3161,14 @@
           "outbound_webhook",
           "shell_command",
           "n8n_workflow",
-          "kestra_flow"
+          "kestra_flow",
+          "create_task"
         ],
         "description": "Type of job to run"
       },
       "config": {
         "type": "string",
-        "description": "JSON string with type-specific config. agent_message: {agentId,message,sessionId?}. outbound_webhook: {url,method?,headers?,body?}. shell_command: {command,timeout?}. n8n_workflow: {baseUrl,apiKey,workflowId,payload?}. kestra_flow: {namespace,flowId,inputs?,baseUrl?,apiKey?}"
+        "description": "JSON string with type-specific config. agent_message: {agentId,message,sessionId?}. outbound_webhook: {url,method?,headers?,body?}. shell_command: {command,timeout?}. n8n_workflow: {baseUrl,apiKey,workflowId,payload?}. kestra_flow: {namespace,flowId,inputs?,baseUrl?,apiKey?}. create_task: {title,description?,agentId?,projectId?,priority?,dependsOn?,coalesceKey?} — lands a tracked task on the Mission Control board (claim→doing→review→done) instead of firing an ephemeral chat; by default coalesces to one open instance per routine."
       },
       "description": {
         "description": "Optional human-readable description",

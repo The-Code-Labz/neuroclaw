@@ -253,7 +253,13 @@ export async function generateAbacusMedia(req: AbacusMediaRequest): Promise<Abac
       if (/sensitive content|not allowed by (?:our |the )?safety|safety system|content that is not allowed|content policy|different prompt/i.test(msg)) {
         throw new Error(`${req.model} declined this prompt — its safety filter flagged the content. Try rephrasing, or use a model with a lighter filter (nano_banana2, flux_pro).`);
       }
-      throw new Error(`Abacus media request failed (${req.model}): ${msg.slice(0, 240)}`);
+      // If we already spent the internal transient retry budget, tell the
+      // boundary wrapper so it does not stack another 3 attempts on top (F4).
+      const exhaustedInternalRetry = transientUsed > 0;
+      throw Object.assign(
+        new Error(`Abacus media request failed (${req.model}): ${msg.slice(0, 240)}`),
+        { retriedInternally: exhaustedInternalRetry },
+      );
     }
   }
 

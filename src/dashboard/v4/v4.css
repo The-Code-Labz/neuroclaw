@@ -1430,6 +1430,33 @@ input.nc-input::placeholder { color: var(--text-tertiary); }
   .main { padding-bottom: 52px !important; }
 }
 
+/* Topbar-anchored dropdown panels (notification bell): the inline
+   `position:absolute; right:0; width:360` popup overflows a 320-375px
+   phone since the bell isn't at the viewport edge. Clamp to a
+   viewport-anchored sheet below the topbar instead. */
+@media (max-width: 480px) {
+  .notif-panel {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: calc(52px + env(safe-area-inset-top, 0px) + 4px) !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 96px) !important;
+  }
+}
+
+/* Label + control form rows (Settings, Secrets): stack on mobile instead of
+   squeezing a 220-240px label column into a 320px viewport. */
+@media (max-width: 640px) {
+  .setting-row { grid-template-columns: 1fr !important; gap: 6px !important; }
+}
+
+/* Modal dialogs with a fixed desktop pixel width: clamp to viewport. */
+@media (max-width: 640px) {
+  .modal-fixed-width { width: calc(100vw - 32px) !important; max-width: none !important; }
+}
+
 @supports (padding: max(0px)) {
   .app .topbar {
     padding-top: max(0px, env(safe-area-inset-top));

@@ -46,7 +46,35 @@ restart_service() {
   fi
 }
 
+# ── Node version guard (Vite build needs Node 20+) ─────────────────────────
+# The build (esbuild/Vite) requires Node >= 20. A box may default to an older
+# `node` on PATH even when Node 20 is installed via nvm (e.g. the systemd
+# service pins Node 20 but a plain shell does not). Activate Node 20 here so
+# the build never silently fails on an old runtime.
+ensure_node() {
+  local major
+  major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+  if [ -n "$major" ] && [ "$major" -ge 20 ]; then
+    ok "Node $(node -v) is OK for the build."
+    return 0
+  fi
+  warn "Active node ($(node -v 2>/dev/null || echo none)) is < 20 — the build needs Node 20+. Trying nvm ..."
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    set +eu
+    . "$NVM_DIR/nvm.sh"
+    nvm use 20 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || nvm use node >/dev/null 2>&1
+    set -eu
+  fi
+  major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+  if [ -z "$major" ] || [ "$major" -lt 20 ]; then
+    die "Build requires Node >= 20 but the active node is $(node -v 2>/dev/null || echo none). Install/enable it (e.g. 'nvm install 20 && nvm use 20') and re-run ./update.sh"
+  fi
+  ok "Using Node $(node -v) for the build."
+}
+
 rebuild_and_restart() {
+  ensure_node
   local lockfile_after
   lockfile_after="$(git hash-object package-lock.json 2>/dev/null || echo none)"
   if [ -n "$LOCKFILE_BEFORE" ] && [ "$LOCKFILE_BEFORE" != "$lockfile_after" ]; then

@@ -13,6 +13,13 @@ the README. To track the bleeding edge instead, set `CHANNEL=edge`.
 
 _Changes landed on the main line but not yet cut into a tagged release._
 
+## [1.1.1] - 2026-07-16
+
+### Added
+- **`LICENSE`** — the project is now released under the MIT License. Prior public
+  releases shipped without a license file; this grants consumers explicit rights
+  to use, modify, and redistribute NeuroClaw.
+
 ## [1.1.0] - 2026-07-14
 
 ### Added

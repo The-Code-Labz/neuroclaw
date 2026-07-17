@@ -4,7 +4,7 @@
  */
 
 const SettingRow = ({ label, hint, children }) => (
-  <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 18, padding: '14px 0', borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center' }}>
+  <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 18, padding: '14px 0', borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center' }}>
     <div>
       <div className="mono" style={{ fontSize: 13, color: 'var(--text-primary)' }}>{label}</div>
       {hint && <div className="mono muted" style={{ fontSize: 10, marginTop: 3, lineHeight: 1.5 }}>{hint}</div>}
@@ -303,7 +303,7 @@ const EnvEditorTab = () => {
             const currentValue = draft[v.key] ?? v.value;
             const showValue = !isSecret || showSecrets[v.key];
             return (
-              <div key={v.key} style={{
+              <div key={v.key} className="setting-row" style={{
                 display: 'grid', gridTemplateColumns: '220px 1fr auto', gap: 14, padding: '12px 0',
                 borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center',
                 background: isModified ? 'rgba(252,211,77,0.04)' : 'transparent'

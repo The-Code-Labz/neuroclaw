@@ -954,13 +954,14 @@ async function chatStreamAnthropic(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   // The direct Anthropic SDK chat backend is retired. The Claude Agent SDK
   // (claude-cli) is the sole Anthropic backbone; subscription OAuth tokens are
   // throttled on the raw API anyway. Always delegate.
   return chatStreamClaudeCli(
     userMessage, sessionId, onChunk, systemPrompt, agentId,
-    onMeta, extraSystemContext, runId, suppressUserMessage,
+    onMeta, extraSystemContext, runId, suppressUserMessage, signal,
   );
 }
 
@@ -1153,6 +1154,7 @@ async function chatStreamClaudeCli(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({
@@ -1252,6 +1254,11 @@ async function chatStreamClaudeCli(
     if (!config.claudeInteractive.enabled) {
       await onChunk('*(The `claude-interactive` provider is disabled — set CLAUDE_INTERACTIVE_ENABLED=true.)*');
     } else {
+      // NOTE (Item C signal coverage): the `signal` param is intentionally NOT
+      // wired here. The interactive tmux-PTY REPL has no AbortSignal support —
+      // an external stop/runaway interrupt does NOT reach this path. Tracked as
+      // Item I (tmux-SIGINT interrupt); claude-interactive agents are an EXPLICIT
+      // exclusion from Wave-3 interrupt coverage. Do not assume they're covered.
       const { streamClaudeInteractiveChat } = await import('../providers/claude-interactive');
       for await (const chunk of streamClaudeInteractiveChat({
         prompt:       userMessage,
@@ -1277,6 +1284,7 @@ async function chatStreamClaudeCli(
         model,
         agentId,
         runId:        activeRunId,
+        signal,       // external stop/runaway interrupt (Item C — gateway/anthropic plane)
         gateway:      gwTarget ? { baseURL: gwTarget.baseURL, apiKey: gwTarget.apiKey } : undefined,
         execEnabled:  !!agentRecord?.exec_enabled,
         maxTurns:     null,   // unlimited — null/undefined both mean no cap
@@ -1421,6 +1429,7 @@ async function chatStreamCodexCli(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({
@@ -1506,6 +1515,7 @@ async function chatStreamCodexCli(
       agentId,
       sessionId,
       history:      useCodexAppServer ? history : undefined,
+      signal,
       onUsage: (u) => {
         if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
         if (typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
@@ -1577,6 +1587,7 @@ async function chatStreamOpencodeCli(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({
@@ -1640,6 +1651,7 @@ async function chatStreamOpencodeCli(
       agentId,
       sessionId,
       runId:        activeRunId,
+      signal,
       onUsage: (u) => {
         if (typeof u.input_tokens  === 'number') realInputTokens  = u.input_tokens;
         if (typeof u.output_tokens === 'number') realOutputTokens = u.output_tokens;
@@ -1701,6 +1713,7 @@ async function chatStreamAntigravityCli(
   extraSystemContext?: string,
   runId?: string,
   suppressUserMessage?: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const ownsRun = !runId;
   const activeRunId = runId ?? startRun({
@@ -1777,6 +1790,7 @@ async function chatStreamAntigravityCli(
         model,
         memoryBlock:  memoryBlock ?? undefined,
         timeoutMs:    config.antigravity.timeoutMs,
+        signal,
       });
     } catch (err) {
       const errMsg = (err as Error).message ?? '';
@@ -1821,6 +1835,7 @@ async function chatStreamAntigravityCli(
         model,
         agentId,
         sessionId,
+        signal,
       })) {
         await onChunk(chunk);
         textAccum += chunk;
@@ -2239,25 +2254,25 @@ export async function chatStream(
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on anthropic path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage);
+    return chatStreamAnthropic(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage, signal);
   }
   if (agentRecord?.provider === 'codex') {
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on codex path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage);
+    return chatStreamCodexCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage, signal);
   }
   if (agentRecord?.provider === 'antigravity') {
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on antigravity path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamAntigravityCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage);
+    return chatStreamAntigravityCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage, signal);
   }
   if (agentRecord?.provider === 'opencode') {
     if (attachments && attachments.length > 0) {
       logger.warn('chatStream: native attachments dropped on opencode path; agent\'s vision_mode should resolve to preprocess', { agentId, count: attachments.length });
     }
-    return chatStreamOpencodeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage);
+    return chatStreamOpencodeCli(userMessage, sessionId, onChunk, systemPrompt, agentId, onMeta, extraSystemContext, runId, suppressUserMessage, signal);
   }
   if (agentRecord?.provider === 'mcp') {
     if (attachments && attachments.length > 0) {
@@ -2366,6 +2381,47 @@ export async function orchestrateMultiAgent(
       onBeforeEndRun?.();
       endRun(runId, { status: 'done', is_multi_agent: false, step_count: 1, final_output: finalText });
       return sessionId;
+    }
+
+    // Lever 3b (spec 2026-07-15 durable-fix): same-agent collapse. If the
+    // decomposer produced a ≥2-step "plan" whose steps ALL resolve to ONE agent,
+    // it over-split that agent's job — collapse to a SINGLE call to that agent.
+    // CRITICAL: route to the RESOLVED agent's persona, NOT the hardcoded-Alfred
+    // single-agent branch above — collapsing e.g. 3 Asia steps into Alfred's voice
+    // would be a silent misrouting bug. The original rawMessage is passed intact
+    // (not the fragmented per-step task strings, which exist to hand context
+    // between DIFFERENT agents). mergeResults is skipped — one voice needs no
+    // synthesis. Monotonic: only ever reduces fan-out, never invents a target.
+    {
+      const resolvedStepAgents = decomp.steps.map(s => getAgentByName(s.agent) ?? alfred);
+      const distinctAgentIds = [...new Set(resolvedStepAgents.map(a => a.id))];
+      if (distinctAgentIds.length === 1) {
+        const target = resolvedStepAgents[0];
+        logHive(
+          'task_decompose_collapsed',
+          `Collapsed ${decomp.steps.length} same-agent steps → single ${target.name} call`,
+          alfredId,
+          { agent: target.name, steps: decomp.steps.length },
+          runId,
+        );
+        let finalText = '';
+        await chatStream(
+          rawMessage,
+          sessionId,
+          async (chunk) => { finalText += chunk; await onChunk(chunk); },
+          target.system_prompt ?? '',
+          target.id,
+          onMeta,
+          attachments,
+          extraSystemContext,
+          runId,
+          signal,
+          suppressUserMessage,
+        );
+        onBeforeEndRun?.();
+        endRun(runId, { status: 'done', is_multi_agent: false, step_count: 1, final_output: finalText });
+        return sessionId;
+      }
     }
 
     // Multi-agent path

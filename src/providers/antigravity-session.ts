@@ -218,7 +218,10 @@ class AgySessionManager {
   //   • the hard timeout elapses               → scrape, else throw
   // Listens on the respond bus BEFORE triggering agy (agy can call respond
   // mid-turn and the bus only delivers future emits).
-  async sendAndAwait(opts: SendOpts & { timeoutMs: number }): Promise<string> {
+  async sendAndAwait(opts: SendOpts & { timeoutMs: number; signal?: AbortSignal }): Promise<string> {
+    // Item I4b: external abort (runaway/stop) — bail before spawning a session we
+    // would immediately have to kill.
+    if (opts.signal?.aborted) throw new Error('agy: aborted before turn start');
     let respondText: string | null = null;
     const onRespond = (p: RespondPayload) => { if (respondText === null) respondText = p.content; };
     respondBus.once(opts.runId, onRespond);
@@ -237,7 +240,7 @@ class AgySessionManager {
     }
 
     try {
-      return await this.pollCompletion(name, opts.runId, opts.userMessage, () => respondText, opts.timeoutMs);
+      return await this.pollCompletion(name, opts.runId, opts.userMessage, () => respondText, opts.timeoutMs, opts.key, opts.signal);
     } finally {
       respondBus.removeListener(opts.runId, onRespond);
     }
@@ -249,6 +252,8 @@ class AgySessionManager {
     userMessage: string,
     getRespond:  () => string | null,
     timeoutMs:   number,
+    key:         string,
+    signal?:     AbortSignal,
   ): Promise<string> {
     const startAt  = Date.now();
     const deadline = startAt + timeoutMs;
@@ -258,6 +263,18 @@ class AgySessionManager {
     let nudgeDeadline = 0;
 
     while (Date.now() < deadline) {
+      // Item I4b: external abort (runaway/stop). Kill the wedged agy tmux session
+      // and bail immediately — kill-only would make every capture() return '' so
+      // the loop never settles and spins to the full timeout. Identity-guarded:
+      // only kill if THIS turn still owns the session on `key` (a fast next turn
+      // may have already re-spawned a fresh session under the same key).
+      if (signal?.aborted) {
+        if (this.sessions.get(key)?.name === name) {
+          logger.warn('agy: aborted by external signal — killing tmux session', { name, runId, key });
+          await this.kill(key);
+        }
+        throw new Error('agy: turn aborted by external signal');
+      }
       // 1. Clean push path always wins, no matter the pane state.
       const pushed = getRespond();
       if (pushed !== null) return pushed;

@@ -614,8 +614,35 @@ function createTurnSubscription(proc: CodexAppServerProcess, threadId: string) {
   const onError = (raw: unknown) => { const p = raw as any; pendingError = new Error(p?.error?.message ?? 'codex turn error'); done = true; ping(); };
   const onProcExit = (err: unknown) => { pendingError = err as Error; done = true; ping(); };
 
+  // ── Item I3: external abort (runaway/stop) → turn/interrupt ────────────────
+  // The app-server is a persistent JSON-RPC process, so there is no child to
+  // SIGKILL — instead cancel THIS turn via the turn/interrupt RPC. That needs
+  // {threadId, turnId}, but turnId is otherwise discarded (turnPromise is awaited
+  // only for error surfacing). Capture it from the turn/started notification and
+  // buffer an interrupt that raced ahead of it. After interrupt we rely on the
+  // follow-up turn/completed (status "interrupted") to unblock drain(); hardTimer
+  // is the backstop if the server never emits it.
+  let turnId: string | null = null;
+  let interruptRequested = false;
+  let interruptSent = false;
+  const sendInterrupt = () => {
+    if (interruptSent || !turnId) return;
+    interruptSent = true;
+    proc.request('turn/interrupt', { threadId, turnId })
+      .catch((e: Error) => logger.warn('codex app-server: turn/interrupt failed', { threadId, err: e.message }));
+  };
+  const onStarted = (raw: unknown) => {
+    // Tolerant extraction: accept the documented turn.id plus turnId/id fallbacks
+    // so a minor param-shape drift across codex versions can't silently break capture.
+    const p = raw as { turn?: { id?: string }; turnId?: string; id?: string };
+    turnId = p?.turn?.id ?? p?.turnId ?? p?.id ?? null;
+    if (turnId && interruptRequested) sendInterrupt();
+  };
+  const requestInterrupt = () => { interruptRequested = true; if (turnId) sendInterrupt(); };
+
   proc.on(`item/agentMessage/delta:${threadId}`, onDelta);
   proc.on(`thread/tokenUsage/updated:${threadId}`, onUsageNote);
+  proc.once(`turn/started:${threadId}`, onStarted);
   proc.once(`turn/completed:${threadId}`, onCompleted);
   proc.once(`error:${threadId}`, onError);
   proc.once('process_exit', onProcExit);
@@ -625,6 +652,7 @@ function createTurnSubscription(proc: CodexAppServerProcess, threadId: string) {
     if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
     proc.off(`item/agentMessage/delta:${threadId}`, onDelta);
     proc.off(`thread/tokenUsage/updated:${threadId}`, onUsageNote);
+    proc.off(`turn/started:${threadId}`, onStarted);
     proc.off(`turn/completed:${threadId}`, onCompleted);
     proc.off(`error:${threadId}`, onError);
     proc.off('process_exit', onProcExit);
@@ -655,7 +683,7 @@ function createTurnSubscription(proc: CodexAppServerProcess, threadId: string) {
     }
   }
 
-  return { drain, fail: (e: Error) => { pendingError = e; done = true; ping(); }, get sawCompletion() { return sawCompletion; }, dispose };
+  return { drain, fail: (e: Error) => { pendingError = e; done = true; ping(); }, requestInterrupt, get sawCompletion() { return sawCompletion; }, dispose };
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -674,6 +702,9 @@ export interface CodexAppServerOptions {
    * already hold their native history and ignore this field.
    */
   history?:      Anthropic.Messages.MessageParam[];
+  /** External abort (runaway/stop) — wired to the turn/interrupt RPC to cancel
+   *  the in-flight turn on this persistent thread. [Item I3] */
+  signal?:       AbortSignal;
 }
 
 export async function* streamCodexAppServerChat(
@@ -711,6 +742,15 @@ export async function* streamCodexAppServerChat(
   try {
     // Attach listeners BEFORE starting the turn so no agentMessage/delta is missed.
     const turnSub = createTurnSubscription(proc, threadId);
+
+    // Item I3: external abort (runaway/stop) cancels THIS turn via turn/interrupt.
+    // Already-aborted → request now (buffered until turn/started supplies the id).
+    let onAbort: (() => void) | undefined;
+    if (opts.signal) {
+      if (opts.signal.aborted) turnSub.requestInterrupt();
+      else { onAbort = () => turnSub.requestInterrupt(); opts.signal.addEventListener('abort', onAbort, { once: true }); }
+    }
+
     const turnPromise = proc.request('turn/start', {
       threadId,
       input: [{ type: 'text', text: opts.prompt }],
@@ -720,6 +760,7 @@ export async function* streamCodexAppServerChat(
       yield* turnSub.drain(scrubber, opts.onUsage);
       await turnPromise;
     } finally {
+      if (onAbort) opts.signal?.removeEventListener('abort', onAbort);
       threadCtx.delete(threadId);
     }
   } finally {

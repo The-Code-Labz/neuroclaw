@@ -130,7 +130,7 @@ const Health = () => {
         </button>
       }/>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="UPTIME 7D" value={`${uptimePct}%`} tone={uptimePct >= 99 ? 'green' : uptimePct >= 95 ? 'amber' : 'red'}/>
         <StatCard label="DOWNTIME EVENTS" value={dtCount} tone={dtCount === 0 ? 'cyan' : 'red'}/>
         <StatCard label="ERRORS 24H" value={errors24h} tone={errors24h === 0 ? 'cyan' : 'amber'}/>

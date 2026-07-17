@@ -217,6 +217,7 @@ const TraceEventRow = ({ ev }) => {
     auto_route:        { glyph: '→',  color: 'var(--accent-2)',  label: 'ROUTE' },
     manual_delegation: { glyph: '→',  color: 'var(--accent-2)',  label: 'DELEGATE' },
     task_decomposed:   { glyph: '⊕',  color: 'var(--accent-2)',  label: 'DECOMPOSE' },
+    task_decompose_collapsed: { glyph: '⊖', color: 'var(--accent-2)', label: 'COLLAPSE' },
     multi_agent_step:  { glyph: '⊕',  color: 'var(--accent-2)',  label: 'STEP' },
     result_merged:     { glyph: '⊕',  color: 'var(--accent-2)',  label: 'MERGE' },
   })[ev.action] || { glyph: '·', color: 'var(--muted)', label: ev.action };

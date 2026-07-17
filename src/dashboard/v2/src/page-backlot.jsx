@@ -361,8 +361,8 @@ const Backlot = () => {
       )}
 
       {projects.length > 0 && (
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-          <div style={{ width: 260, flexShrink: 0 }}>
+        <div className="split-flex" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div className="split-flex-fixed" style={{ width: 260, flexShrink: 0 }}>
             {projects.map(p => (
               <ProjectRow key={p.id} p={p} active={p.id === selected} onClick={() => setSelected(p.id)} />
             ))}

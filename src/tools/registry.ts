@@ -26,6 +26,8 @@ import {
 } from '../memory/memory-tools';
 import { searchKnowledgeBase, searchCodeExamples, listSources } from '../kb/kb-search';
 import { crawlAndIndex, ingestKbContent } from '../kb/kb-ingest';
+import { glossaryLookup, glossaryUpsert, glossaryList } from '../kb/kb-glossary';
+import { estimateTextFit } from './text-fit';
 import {
   getAllAgents, getAgentByName, getAgentById, getDb, logAudit,
   createSession, saveMessage,
@@ -81,6 +83,7 @@ import * as S from './schemas';
 import { listUploads, getUpload, recordProcessing } from '../system/session-uploads';
 import { docNotebooksEnabled } from '../system/doc-notebooks';
 import { listNotes, getNote, getNoteByTitle, createNote, appendNote } from '../system/notes-store';
+import { runLoopTask } from '../system/loop-runner';
 import { mediaEnabled, listMedia as listMediaStore, registerMediaFromUrl, registerMediaFromBase64 } from '../system/media-store';
 import {
   archiveEnabled,
@@ -682,6 +685,37 @@ export const registry: ToolDef[] = [
       return { ok: true, id: note.id, title: note.title, chars: note.content.length, url: `/dashboard#notes` };
     },
   },
+  // ── Loop Engineering (adversarial build → verify → loop-until-gate) ────────
+  // Iteratively refine an artifact: a tool-less LLM builder produces it, the
+  // tier-2 review service grades it, and the critique feeds back for a revised
+  // attempt — repeating until the gate passes or a bound trips (rounds / wall-
+  // clock / stall / cost). Best for a self-contained artifact (a spec, a doc, a
+  // function, a plan) whose quality benefits from a critique-revise cycle.
+  {
+    name:        'loop_run',
+    description: 'Iteratively refine an artifact via an adversarial build → verify → loop-until-gate cycle. A builder drafts the artifact for your goal, a reviewer grades it against the goal + acceptance criteria, and the critique feeds back for a revised attempt until it passes or a bound trips. Returns { ok, passed, rounds, stopReason, artifact, feedback }. Use for a self-contained artifact (spec, doc, function, plan) that benefits from critique-revise. NOT for multi-file builds or anything needing tool execution.',
+    schema:      S.loopRunSchema,
+    shape:       S.loopRunShape,
+    gate:        gateMcp,
+    handler: async (args, ctx) => {
+      const result = await runLoopTask({
+        goal:         args.goal,
+        artifactKind: args.artifact_kind,
+        acceptance:   args.acceptance,
+        maxRounds:    args.max_rounds,
+        runId:        ctx.runId ?? undefined,
+      });
+      return {
+        ok:         true,
+        passed:     result.passed,
+        rounds:     result.rounds,
+        stopReason: result.stopReason,
+        artifact:   result.finalArtifact,
+        feedback:   result.finalFeedback,
+        elapsedMs:  result.elapsedMs,
+      };
+    },
+  },
   {
     name:        'append_note',
     core:        true,
@@ -844,6 +878,104 @@ export const registry: ToolDef[] = [
       };
     },
   },
+  {
+    name:        'run_montage',
+    description: 'Start (or resume) an OpenMontage video project and hand it to Sachi Komine — the orchestrator agent who drives the stage-gated pipeline (assets → edit → compose → publish) to its next human-approval gate. This inits the project on the render node, persists the brief, and enqueues a task to Sachi. It does NOT render inline — Sachi loops the stages via openmontage_exec and parks at each awaiting_human gate; approve/reject in the Studio › Backlot tab (approval auto-re-triggers Sachi to advance). Returns the project_id (surfaced in Backlot) and the assigned task id.',
+    schema:  S.runMontageSchema,
+    shape:   S.runMontageShape,
+    gate:    gateRender,
+    handler: async (args, ctx) => {
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : null;
+      const pipeline = (args.pipeline_type ?? 'mvp_zero_key').trim();
+      const brief = (args.brief ?? '').trim();
+      if (!brief) return { ok: false, error: 'brief is required' };
+
+      let pid = args.project_id?.trim();
+      if (pid && !/^[a-zA-Z0-9._-]{1,64}$/.test(pid)) return { ok: false, error: 'invalid project_id (must match ^[a-zA-Z0-9._-]{1,64}$)' };
+      if (!pid) pid = `nc-montage-${Date.now()}`;
+      const title = `Montage: ${brief.slice(0, 60)}`;
+
+      // Init (or reuse) the project on the render node and persist the brief so
+      // post-gate resumes can re-read it (each openmontage_exec is a fresh process).
+      // JSON.stringify produces valid Python string literals — safe interpolation.
+      const py = [
+        'import sys, json',
+        "sys.path.insert(0, '.')",
+        'from lib import checkpoint as cp',
+        'from lib.paths import PROJECTS_DIR',
+        `pid=${JSON.stringify(pid)}; pt=${JSON.stringify(pipeline)}; brief=${JSON.stringify(brief)}; title=${JSON.stringify(title)}`,
+        'pdir = PROJECTS_DIR / pid',
+        'created=False',
+        'if not pdir.exists():',
+        '    cp.init_project(pid, title=title, pipeline_type=pt); created=True',
+        "(pdir / 'brief.txt').write_text(brief, encoding='utf-8')",
+        'print("RESULT="+json.dumps({"ok":True,"project_id":pid,"pipeline_type":pt,"created":created,"next":cp.get_next_stage(PROJECTS_DIR, pid, pt)}))',
+      ].join('\n');
+      const b64 = Buffer.from(py, 'utf8').toString('base64');
+      const command = `cd "$HOME/openmontage" && .venv/bin/python -c "import base64;exec(base64.b64decode('${b64}').decode())"`;
+      const res = await execRemoteWithSecrets({
+        command, secretNames: [], concurrencyGroup: 'openmontage', timeoutMs: 60_000,
+        agentId: ctx.agentId ?? null, agentName: agent?.name ?? 'agent',
+        sessionId: ctx.sessionId ?? null, runId: ctx.runId ?? null,
+      });
+      if (!res.ok) return { ok: false, error: res.error || 'init_project exec failed', stderr: (res.stderr || '').slice(-800) };
+      const m = /RESULT=(\{.*\})/.exec(res.stdout || '');
+      let parsed: { ok?: boolean; next?: string } = {};
+      try { parsed = JSON.parse(m?.[1] ?? '{}'); } catch { /* keep empty */ }
+      if (!parsed.ok) return { ok: false, error: 'init_project failed on node', stdout: (res.stdout || '').slice(-800) };
+
+      const sachi = getAgentByName('Sachi Komine');
+      if (!sachi || sachi.status !== 'active') return { ok: false, error: 'Sachi Komine agent not found or inactive — cannot assign the montage.' };
+
+      const taskTitle = `Advance montage ${pid} to next gate`;
+      const taskDesc = `Drive OpenMontage project "${pid}" (pipeline ${pipeline}) to its next awaiting_human gate using the openmontage-sachi-stage-loop-procedure skill. END YOUR TURN at any awaiting_human gate — do NOT self-approve.\n\nBrief: ${brief}`;
+      const task = await createTask(taskTitle, taskDesc, ctx.sessionId ?? undefined, sachi.id, args.priority ?? 55);
+      enqueueJob('agent_task', {
+        taskId: task.id, agentId: sachi.id, agentName: sachi.name,
+        taskTitle, taskDescription: taskDesc,
+      } satisfies AgentTaskPayload);
+      logHive('agent_task_assigned', `run_montage: assigned "${taskTitle}" to Sachi Komine`, sachi.id, { taskId: task.id, projectId: pid, pipeline });
+
+      return { ok: true, project_id: pid, pipeline_type: pipeline, next_stage: parsed.next, task_id: task.id, assigned_to: sachi.name };
+    },
+  },
+
+  // ── Game Studio ────────────────────────────────────────────────────────────
+  {
+    name:        'game_build',
+    description: 'Build a real, playable browser game from a one-sentence description. Produces ONE self-contained HTML5 canvas game (inline JS, keyboard + touch controls, session high-score) that lands in the Studio › Games gallery, playable in-browser. Reuses the Canvas engine with a game-tuned prompt — no external assets, runs in a sandboxed iframe. The more specific the brief (controls, theme, goal), the better the game. Returns the game id + a play URL. Takes ~30s–2 min.',
+    schema:  S.gameBuildSchema,
+    shape:   S.gameBuildShape,
+    handler: async (args) => {
+      const brief = (args.brief ?? '').trim();
+      if (!brief) return { ok: false, error: 'brief is required' };
+      const { generate } = await import('../skills/canvas');
+      let projectId: string | undefined;
+      let artifactId: string | undefined;
+      let error: string | undefined;
+      let chars = 0;
+      try {
+        for await (const evt of generate({ brief, kind: 'game' })) {
+          if (evt.type === 'project.start') projectId = evt.payload.projectId;
+          else if (evt.type === 'chunk') chars += (evt.payload?.text || '').length;
+          else if (evt.type === 'artifact.emit') artifactId = evt.payload.id;
+          else if (evt.type === 'error') error = evt.payload?.message;
+        }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+      if (error) return { ok: false, error };
+      if (!artifactId) return { ok: false, error: `game build produced no artifact (${chars} chars streamed)` };
+      logger.info(`game_build: built game — project=${projectId} artifact=${artifactId} chars=${chars}`);
+      return {
+        ok: true,
+        game_id: projectId,
+        artifact_id: artifactId,
+        play_url: `/api/canvas/artifact/${artifactId}/view`,
+        note: 'Playable in Studio › Games. Session high-score only (sandboxed — no persistence).',
+      };
+    },
+  },
 
   // ── NeuroArchive (MinIO long-term reusable asset store) ────────────────────
   // Distinct from the Media gallery: these are durable, deliberately reusable
@@ -1003,6 +1135,54 @@ export const registry: ToolDef[] = [
       text: args.text, sourceId: args.label, url: args.url ?? `manual://${args.label}`,
       title: args.label, callerAgentId: ctx.agentId ?? null, kind: 'page',
     }),
+  },
+
+  // ── translation glossary (kb_glossary — spec: furina-hardening) ──────────
+  {
+    name:        'glossary_lookup',
+    category:    'retrieval',
+    description: 'Look up the approved translation for a source term in a target locale from the KB glossary (deterministic exact match, case/whitespace-insensitive). Call this BEFORE finalizing a translation for any recurring term (brand names, UI labels, product terms) so the same term always resolves to the same approved wording.',
+    schema:      S.glossaryLookupSchema,
+    shape:       S.glossaryLookupShape,
+    gate:        gateKb,
+    handler: async (args) => glossaryLookup({
+      sourceTerm: args.sourceTerm, targetLocale: args.targetLocale,
+      sourceLocale: args.sourceLocale, includeDeprecated: args.includeDeprecated,
+    }),
+  },
+  {
+    name:        'glossary_upsert',
+    category:    'retrieval',
+    description: 'Approve (or update) a source term → target locale translation in the KB glossary. Call this once a translation is finalized so future runs reuse it via glossary_lookup instead of re-deriving it.',
+    schema:      S.glossaryUpsertSchema,
+    shape:       S.glossaryUpsertShape,
+    gate:        gateKbWrite,
+    handler: async (args, ctx) => glossaryUpsert({
+      sourceTerm: args.sourceTerm, targetLocale: args.targetLocale, translation: args.translation,
+      sourceLocale: args.sourceLocale, notes: args.notes, status: args.status,
+      updatedBy: ctx.agentId ?? null,
+    }),
+  },
+  {
+    name:        'glossary_list',
+    category:    'retrieval',
+    description: 'Browse/audit the KB glossary, optionally filtered by target locale or a source-term substring.',
+    schema:      S.glossaryListSchema,
+    shape:       S.glossaryListShape,
+    gate:        gateKb,
+    handler: async (args) => glossaryList({
+      targetLocale: args.targetLocale, sourceTermContains: args.sourceTermContains, limit: args.limit,
+    }),
+  },
+
+  // ── text-fit estimator (pure/stateless — spec: furina-hardening) ─────────
+  {
+    name:        'estimate_text_fit',
+    category:    'retrieval',
+    description: 'Stateless pre-lock check: does this candidate/translated text fit a fixed text box at a given font size? Estimates wrapped line count from charCount × per-script width multiplier (CJK ≈0.55x, Latin/EN ≈1.0x, FR ≈1.15x, DE ≈1.20x) vs. box pixel dimensions. Call this before finalizing any translation destined for a fixed-size layout (Canva, slide decks, UI labels) to flag overflow before rendering.',
+    schema:      S.estimateTextFitSchema,
+    shape:       S.estimateTextFitShape,
+    handler: async (args) => estimateTextFit(args),
   },
 
   // ── agent comms / orchestration ──────────────────────────────────────────
@@ -1596,7 +1776,8 @@ Requires ABACUS_API_KEY in .env.`,
           inputImage,
         });
       } catch (err) {
-        return { ok: false, error: (err as Error).message };
+        const retriedInternally = (err as { retriedInternally?: boolean })?.retriedInternally === true;
+        return { ok: false, error: (err as Error).message, retriedInternally };
       }
 
       // Meter the compute points Abacus actually consumed (ground truth from
@@ -1836,6 +2017,213 @@ Requires SHARED_FAL_API_KEY in the broker.`,
     },
   },
   {
+    name:        'fal_video',
+    description: `Generate a video via fal.ai's async media queue (default fal-ai/wan/v2.2-5b/text-to-video) and save it to Studio › Media.
+
+Submits a queue job, polls to completion, downloads the MP4, and registers it in the video gallery (Studio › Media) — it does NOT post inline (videos are viewed in the gallery). Text→video by default; set input_image to do image-to-video (first-frame → motion) with an image-to-video model. Params: model (fal video endpoint id), duration (seconds), aspect_ratio, resolution. Video renders take ~1-4 min.
+
+Requires SHARED_FAL_API_KEY in the broker and R2 media storage configured.`,
+    schema: S.falVideoSchema,
+    shape:  S.falVideoShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.fal.apiKey) return { ok: false, error: 'FAL_API_KEY is not configured (broker SHARED_FAL_API_KEY not resolved). Restart after provisioning.' };
+      if (!mediaEnabled()) return { ok: false, error: 'Media storage (R2) is not configured — generated videos have nowhere to land. Set R2 creds and restart.' };
+
+      const model = args.model?.trim() || config.fal.videoModel;
+      const input: Record<string, unknown> = { prompt };
+      if (args.duration !== undefined && String(args.duration).trim()) input.duration = args.duration;
+      if (args.aspect_ratio && String(args.aspect_ratio).trim()) input.aspect_ratio = String(args.aspect_ratio).trim();
+      if (args.resolution && String(args.resolution).trim()) input.resolution = String(args.resolution).trim();
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image.trim(), ctx, 'public-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        input.image_url = resolved.value;
+      }
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(falAdapter, model, input, { apiKey: config.fal.apiKey, kind: 'video', timeoutMs: 300_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const saved: { id: string; url: string }[] = [];
+      for (const item of result.items) {
+        try {
+          const media = await registerMediaFromBase64(item.base64, {
+            kind: 'video', mimeType: item.mime || 'video/mp4', title: prompt.slice(0, 80),
+            prompt, sourceTool: 'fal_video', agentId: ctx.agentId ?? null, sessionId: ctx.sessionId ?? null,
+          });
+          saved.push({ id: media.id, url: media.url });
+        } catch (err) {
+          return { ok: false, error: `video generated but gallery registration failed: ${(err as Error).message}` };
+        }
+      }
+      logHive('tool_result', `fal_video ${result.model}: ${saved.length} video`, ctx.agentId ?? undefined, { model: result.model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (!saved.length) return { ok: false, error: 'fal produced no video.' };
+      return {
+        ok: true,
+        model: result.model,
+        media: saved,
+        instructions: `Video saved to Studio › Media. Playback URL: ${saved[0].url} — share that link or tell the user to open Studio › Media.`,
+      };
+    },
+  },
+  {
+    name:        'kie_video',
+    description: `Generate a video via KIE's unified async job API (default veo3_fast) and save it to Studio › Media.
+
+Submits createTask, polls to completion, downloads the MP4, and registers it in the video gallery (Studio › Media) — it does NOT post inline. Text→video by default; set input_image for image-to-video. Params: model (KIE video model id), duration (seconds), aspect_ratio. Video renders take ~1-4 min.
+
+Requires SHARED_KIE_API_KEY in the broker and R2 media storage configured. ⚠️ KIE video model IDs are pending live verification — override the default if it fails.`,
+    schema: S.kieVideoSchema,
+    shape:  S.kieVideoShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.kie.apiKey) return { ok: false, error: 'KIE_API_KEY is not configured (broker SHARED_KIE_API_KEY not resolved). Restart after provisioning.' };
+      if (!mediaEnabled()) return { ok: false, error: 'Media storage (R2) is not configured — generated videos have nowhere to land. Set R2 creds and restart.' };
+
+      const model = args.model?.trim() || config.kie.videoModel;
+      const input: Record<string, unknown> = { prompt };
+      if (args.duration !== undefined && String(args.duration).trim()) input.duration = args.duration;
+      if (args.aspect_ratio && String(args.aspect_ratio).trim()) input.aspect_ratio = String(args.aspect_ratio).trim();
+      if (args.input_image?.trim()) {
+        const resolved = await resolveImageInput(args.input_image.trim(), ctx, 'public-url');
+        if (!resolved.ok) return { ok: false, error: resolved.error };
+        input.image_url = resolved.value;
+      }
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(kieAdapter, model, input, { apiKey: config.kie.apiKey, kind: 'video', timeoutMs: 300_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const saved: { id: string; url: string }[] = [];
+      for (const item of result.items) {
+        try {
+          const media = await registerMediaFromBase64(item.base64, {
+            kind: 'video', mimeType: item.mime || 'video/mp4', title: prompt.slice(0, 80),
+            prompt, sourceTool: 'kie_video', agentId: ctx.agentId ?? null, sessionId: ctx.sessionId ?? null,
+          });
+          saved.push({ id: media.id, url: media.url });
+        } catch (err) {
+          return { ok: false, error: `video generated but gallery registration failed: ${(err as Error).message}` };
+        }
+      }
+      logHive('tool_result', `kie_video ${result.model}: ${saved.length} video`, ctx.agentId ?? undefined, { model: result.model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (!saved.length) return { ok: false, error: 'KIE produced no video.' };
+      return {
+        ok: true,
+        model: result.model,
+        media: saved,
+        instructions: `Video saved to Studio › Media. Playback URL: ${saved[0].url} — share that link or tell the user to open Studio › Media.`,
+      };
+    },
+  },
+  {
+    name:        'fal_audio',
+    description: `Generate music/audio via fal.ai's async media queue (default fal-ai/ace-step) and save it to Studio › Media.
+
+Submits a queue job, polls to completion, downloads the audio (mp3/wav), and registers it in the gallery (Studio › Media) — it does NOT post inline (audio is played in the gallery). Text→music by default; pass lyrics for song-generating models (ace-step, minimax-music, diffrhythm). Params: model (fal audio endpoint id), duration (seconds), lyrics. Music renders take ~15-90s.
+
+Requires SHARED_FAL_API_KEY in the broker and R2 media storage configured.`,
+    schema: S.falAudioSchema,
+    shape:  S.falAudioShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.fal.apiKey) return { ok: false, error: 'FAL_API_KEY is not configured (broker SHARED_FAL_API_KEY not resolved). Restart after provisioning.' };
+      if (!mediaEnabled()) return { ok: false, error: 'Media storage (R2) is not configured — generated audio has nowhere to land. Set R2 creds and restart.' };
+
+      const model = args.model?.trim() || config.fal.audioModel;
+      const input: Record<string, unknown> = { prompt };
+      if (args.duration !== undefined && String(args.duration).trim()) input.duration = args.duration;
+      if (args.lyrics && String(args.lyrics).trim()) input.lyrics = String(args.lyrics).trim();
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(falAdapter, model, input, { apiKey: config.fal.apiKey, kind: 'audio', timeoutMs: 300_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const saved: { id: string; url: string }[] = [];
+      for (const item of result.items) {
+        try {
+          const media = await registerMediaFromBase64(item.base64, {
+            kind: 'audio', mimeType: item.mime || 'audio/mpeg', title: prompt.slice(0, 80),
+            prompt, sourceTool: 'fal_audio', agentId: ctx.agentId ?? null, sessionId: ctx.sessionId ?? null,
+          });
+          saved.push({ id: media.id, url: media.url });
+        } catch (err) {
+          return { ok: false, error: `audio generated but gallery registration failed: ${(err as Error).message}` };
+        }
+      }
+      logHive('tool_result', `fal_audio ${result.model}: ${saved.length} audio`, ctx.agentId ?? undefined, { model: result.model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (!saved.length) return { ok: false, error: 'fal produced no audio.' };
+      return {
+        ok: true,
+        model: result.model,
+        media: saved,
+        instructions: `Music saved to Studio › Media. Playback URL: ${saved[0].url} — share that link or tell the user to open Studio › Media.`,
+      };
+    },
+  },
+  {
+    name:        'kie_audio',
+    description: `Generate music/song via KIE's unified async job API (default suno/v5) and save it to Studio › Media.
+
+Submits createTask, polls to completion, downloads the audio, and registers it in the gallery (Studio › Media) — it does NOT post inline. Text→music by default; pass lyrics for Suno-style song generation. Params: model (KIE music model id), duration (seconds), lyrics. Music renders take ~30-120s.
+
+Requires SHARED_KIE_API_KEY in the broker and R2 media storage configured. ⚠️ KIE music model IDs are pending live verification — override the default if it fails.`,
+    schema: S.kieAudioSchema,
+    shape:  S.kieAudioShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      if (!config.kie.apiKey) return { ok: false, error: 'KIE_API_KEY is not configured (broker SHARED_KIE_API_KEY not resolved). Restart after provisioning.' };
+      if (!mediaEnabled()) return { ok: false, error: 'Media storage (R2) is not configured — generated audio has nowhere to land. Set R2 creds and restart.' };
+
+      const model = args.model?.trim() || config.kie.audioModel;
+      const input: Record<string, unknown> = { prompt };
+      if (args.duration !== undefined && String(args.duration).trim()) input.duration = args.duration;
+      if (args.lyrics && String(args.lyrics).trim()) input.lyrics = String(args.lyrics).trim();
+
+      let result: Awaited<ReturnType<typeof runMediaJob>>;
+      try {
+        result = await runMediaJob(kieAdapter, model, input, { apiKey: config.kie.apiKey, kind: 'audio', timeoutMs: 300_000 });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const saved: { id: string; url: string }[] = [];
+      for (const item of result.items) {
+        try {
+          const media = await registerMediaFromBase64(item.base64, {
+            kind: 'audio', mimeType: item.mime || 'audio/mpeg', title: prompt.slice(0, 80),
+            prompt, sourceTool: 'kie_audio', agentId: ctx.agentId ?? null, sessionId: ctx.sessionId ?? null,
+          });
+          saved.push({ id: media.id, url: media.url });
+        } catch (err) {
+          return { ok: false, error: `audio generated but gallery registration failed: ${(err as Error).message}` };
+        }
+      }
+      logHive('tool_result', `kie_audio ${result.model}: ${saved.length} audio`, ctx.agentId ?? undefined, { model: result.model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (!saved.length) return { ok: false, error: 'KIE produced no audio.' };
+      return {
+        ok: true,
+        model: result.model,
+        media: saved,
+        instructions: `Music saved to Studio › Media. Playback URL: ${saved[0].url} — share that link or tell the user to open Studio › Media.`,
+      };
+    },
+  },
+  {
     name:        'openart_image',
     description: `Generate or edit an image via OpenArt (MCP, OAuth) and display it inline in chat.
 
@@ -1909,6 +2297,155 @@ Requires SHARED_OPENART_REFRESH_TOKEN in the broker (one-time OAuth sign-in).`,
         operation,
         urls: delivered,
         instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
+      };
+    },
+  },
+  {
+    name:        'higgsfield_image',
+    description: `Generate an image via Higgsfield (MCP, OAuth) and display it inline in chat.
+
+Text→image via the Higgsfield creative platform. Default model nano_banana_2 (Google, fast high-quality). Params: aspect_ratio (1:1 default; 16:9/9:16/etc), resolution (1k default / 2k / 4k), count (1-4). Subscription-credit provider (no per-call USD). Images are posted inline and archived to the gallery. Use higgsfield_models to discover other models.
+
+Requires SHARED_HIGGSFIELD_REFRESH_TOKEN in the broker (one-time OAuth sign-in).`,
+    schema: S.higgsfieldImageSchema,
+    shape:  S.higgsfieldImageShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      const { higgsfieldConfigured } = await import('../infra/higgsfield-auth');
+      if (!higgsfieldConfigured()) return { ok: false, error: 'Higgsfield is not configured (broker SHARED_HIGGSFIELD_REFRESH_TOKEN missing). Run the one-time Higgsfield sign-in.' };
+
+      const inputImage = args.input_image?.trim();
+      // Edit (image-to-image) uses an image-to-image-capable default; generate uses the fast default.
+      const model = args.model?.trim() || (inputImage ? 'nano_banana_2' : config.higgsfield.imageModel);
+      const extraParams: Record<string, unknown> = {};
+      if (args.resolution?.trim()) extraParams.resolution = args.resolution.trim();
+
+      const { runHiggsfield, higgsfieldImportMedia } = await import('../infra/higgsfield-client');
+      // For editing, import the source image → media_id (Higgsfield's `medias`
+      // param requires a media reference, not a raw URL).
+      let medias: Array<{ value: string; role: string }> | undefined;
+      if (inputImage) {
+        try {
+          const mediaId = await higgsfieldImportMedia(inputImage);
+          medias = [{ value: mediaId, role: 'image' }];
+        } catch (err) {
+          return { ok: false, error: `Higgsfield edit: failed to import source image — ${(err as Error).message}` };
+        }
+      }
+
+      let items: Array<{ url: string; mime: string; type: string; jobId: string }>;
+      try {
+        items = await runHiggsfield({ type: 'image', prompt, model, aspectRatio: args.aspect_ratio, count: args.count, medias, extraParams });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const delivered: string[] = [];
+      for (const item of items) {
+        const res = await deliverAndArchive(
+          { url: item.url, alt: args.alt ?? prompt, caption: args.caption },
+          ctx,
+          { source: 'higgsfield_image', prompt, model },
+        );
+        if ((res as { ok: boolean }).ok) delivered.push((res as { url: string }).url);
+      }
+      logHive('tool_result', `higgsfield_image ${model}: ${delivered.length} img`, ctx.agentId ?? undefined, { model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (delivered.length === 0) return { ok: false, error: 'Higgsfield produced image(s) but delivery failed.' };
+      return {
+        ok: true,
+        model,
+        urls: delivered,
+        instructions: 'Image(s) already delivered inline. Reference them in your reply; the markdown was returned by send_image_to_user.',
+      };
+    },
+  },
+  {
+    name:        'higgsfield_video',
+    description: `Generate a video via Higgsfield (MCP, OAuth) — cinematic text→video — and store it in the Studio › Media gallery.
+
+Default model cinematic_studio_3_0 (Higgsfield cinema-grade). Params: aspect_ratio ('9:16' for TikTok/Reels/Shorts, '16:9' landscape), resolution (480p / 720p default / 1080p / 4k). Subscription-credit provider (no per-call USD). Video generation takes ~60-180s. The finished MP4 lands in Studio › Media automatically. Use higgsfield_models to discover other video models.
+
+Requires SHARED_HIGGSFIELD_REFRESH_TOKEN in the broker AND R2 media storage configured.`,
+    schema: S.higgsfieldVideoSchema,
+    shape:  S.higgsfieldVideoShape,
+    handler: async (args, ctx) => {
+      const prompt = (args.prompt ?? '').trim();
+      if (!prompt) return { ok: false, error: 'prompt is required' };
+      const { higgsfieldConfigured } = await import('../infra/higgsfield-auth');
+      if (!higgsfieldConfigured()) return { ok: false, error: 'Higgsfield is not configured (broker SHARED_HIGGSFIELD_REFRESH_TOKEN missing). Run the one-time Higgsfield sign-in.' };
+      if (!mediaEnabled()) return { ok: false, error: 'Media storage (R2) is not configured — higgsfield_video needs the Media gallery to store output.' };
+
+      const model = args.model?.trim() || config.higgsfield.videoModel;
+      const extraParams: Record<string, unknown> = {};
+      if (args.resolution?.trim()) extraParams.resolution = args.resolution.trim();
+
+      const { runHiggsfield } = await import('../infra/higgsfield-client');
+      let items: Array<{ url: string; mime: string; type: string; jobId: string }>;
+      try {
+        items = await runHiggsfield({ type: 'video', prompt, model, aspectRatio: args.aspect_ratio, extraParams });
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+
+      const agent = ctx.agentId ? getAgentById(ctx.agentId) : undefined;
+      const stored: Array<{ id: string; url: string }> = [];
+      for (const item of items) {
+        try {
+          const media = await registerMediaFromUrl(item.url, {
+            kind:       'video',
+            title:      args.alt ?? prompt,
+            prompt,
+            mimeType:   item.mime,
+            sourceTool: 'higgsfield_video',
+            author:     agent?.name ?? 'agent',
+            agentId:    ctx.agentId ?? null,
+            sessionId:  ctx.sessionId ?? null,
+          });
+          stored.push({ id: media.id, url: item.url });
+        } catch (err) {
+          logger.warn('higgsfield_video: media register failed', { error: (err as Error).message });
+        }
+      }
+      logHive('tool_result', `higgsfield_video ${model}: ${stored.length} vid`, ctx.agentId ?? undefined, { model }, ctx.runId ?? undefined, ctx.sessionId ?? undefined);
+      if (stored.length === 0) return { ok: false, error: 'Higgsfield produced video(s) but storing to the Media gallery failed.' };
+      return {
+        ok: true,
+        model,
+        media: stored,
+        instructions: 'Video(s) generated and stored in Studio › Media. Tell the user the video is available in the Media gallery.',
+      };
+    },
+  },
+  {
+    name:        'higgsfield_models',
+    description: 'Discover Higgsfield generation models (image / video / audio / 3d) — returns model ids, names, and capabilities. Use before higgsfield_image/higgsfield_video to pick a non-default model.',
+    schema: S.higgsfieldModelsSchema,
+    shape:  S.higgsfieldModelsShape,
+    handler: async (args) => {
+      const { higgsfieldConfigured } = await import('../infra/higgsfield-auth');
+      if (!higgsfieldConfigured()) return { ok: false, error: 'Higgsfield is not configured (broker SHARED_HIGGSFIELD_REFRESH_TOKEN missing). Run the one-time Higgsfield sign-in.' };
+      const { higgsfieldCall } = await import('../infra/higgsfield-client');
+      const action = args.query?.trim() ? 'recommend' : 'list';
+      const input: Record<string, unknown> = { action, limit: args.limit ?? 20 };
+      if (args.type) input.type = args.type;
+      if (args.query?.trim()) input.query = args.query.trim();
+      let raw: unknown;
+      try {
+        raw = await higgsfieldCall('models_explore', input);
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+      const obj = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {};
+      const items = (obj.items ?? obj.models ?? obj.results ?? raw) as unknown;
+      const list = Array.isArray(items) ? items : [];
+      return {
+        ok: true,
+        count: list.length,
+        models: list.map((m) => {
+          const mm = m as Record<string, unknown>;
+          return { id: mm.id ?? mm.model_id, name: mm.name, type: mm.output_type, provider: mm.provider_name, description: mm.description };
+        }),
       };
     },
   },
@@ -3112,7 +3649,28 @@ Requires ABACUS_API_KEY in .env.`,
     shape:       S.claimNextTaskShape,
     handler: async (args, ctx) => {
       if (!ctx.agentId) return { ok: false, error: 'claim_next_task requires an agent context' };
-      const { claimNextTaskForAgent } = await import('../db');
+      const { claimNextTaskForAgent, getAgentById } = await import('../db');
+      // Wave-3 Item F: per-agent cumulative spend gate (default OFF / exempt).
+      // Sits BEFORE the claim so an over-budget agent simply picks up no NEW
+      // work — never interrupts running work. Self-resets as spend ages out of
+      // the rolling window. checkAgentBudget returns enabled=false when the
+      // master flag is off OR the agent is exempt, so this is inert by default.
+      try {
+        const { checkAgentBudget } = await import('../system/model-spend');
+        const agentName = getAgentById(ctx.agentId)?.name ?? null;
+        const b = checkAgentBudget(ctx.agentId, agentName);
+        if (b.enabled && b.over) {
+          logHive('agent_budget', `agent paused: over spend budget (${b.spent.toLocaleString()}/${b.budget.toLocaleString()} tok in window) — skipping claim`, ctx.agentId, { spent: b.spent, budget: b.budget, pct: b.pct, windowMs: b.windowMs });
+          logger.warn('[AGENT BUDGET] claim paused — over budget', { agentId: ctx.agentId, agentName, spent: b.spent, budget: b.budget, pct: b.pct });
+          return { ok: true, claimed: false, reason: 'budget_exceeded', spent: b.spent, budget: b.budget, pct: b.pct };
+        }
+        if (b.enabled && b.warn) {
+          logHive('agent_budget', `agent approaching spend budget (${b.pct}% — ${b.spent.toLocaleString()}/${b.budget.toLocaleString()} tok)`, ctx.agentId, { spent: b.spent, budget: b.budget, pct: b.pct, windowMs: b.windowMs });
+          logger.warn('[AGENT BUDGET] approaching budget', { agentId: ctx.agentId, agentName, spent: b.spent, budget: b.budget, pct: b.pct });
+        }
+      } catch (err) {
+        logger.warn('[AGENT BUDGET] gate check failed (fail-open)', { error: (err as Error).message });
+      }
       const row = claimNextTaskForAgent(ctx.agentId, {
         projectId: args.project_id,
         feature:   args.feature,

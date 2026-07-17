@@ -239,7 +239,7 @@ const Connections = () => {
       {/* ── tier legend ───────────────────────────────────── */}
       <section style={{ marginTop: 18 }}>
         <h3 className="mono" style={{ fontSize: 13, letterSpacing: '0.08em', marginBottom: 6 }}>TIER POLICY</h3>
-        <div className="card" style={{ padding: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        <div className="card stat-grid" style={{ padding: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {['T1','T2','T3'].map(t => (
             <div key={t} style={{ padding: 8, border: '1px solid var(--line-soft)', borderRadius: 4 }}>
               <span className={`tag ${tierTone(t)}`}>{t}</span>

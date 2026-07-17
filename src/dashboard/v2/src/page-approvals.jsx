@@ -121,7 +121,7 @@ const Approvals = () => {
             // no pending approvals — agents are running freely
           </div>
         ) : (
-          <div>
+          <div className="table-scroll">
             {pending.map((a) => {
               const rawInput = (() => { try { return JSON.parse(a.tool_input); } catch { return a.tool_input; } })();
               const inputPreview = fmtInput(a.tool_input);
@@ -165,15 +165,17 @@ const Approvals = () => {
         {resolved.length === 0 ? (
           <div className="mono muted" style={{ padding: 20, textAlign: 'center', fontSize: 12 }}>// no history yet</div>
         ) : (
-          resolved.map((a) => (
-            <div key={a.id} style={{ padding: '10px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
-              <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.resolved_at || a.created_at)}</span>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
-              <span className="tag" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
-              <span className="mono" style={{ fontSize: 11, color: statusColor(a.status) }}>{a.status}</span>
-              <span className="mono muted" style={{ fontSize: 11 }} title={fmtInput(a.tool_input)}>{fmtInput(a.tool_input)}</span>
-            </div>
-          ))
+          <div className="table-scroll">
+            {resolved.map((a) => (
+              <div key={a.id} style={{ padding: '10px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', display: 'grid', gridTemplateColumns: '80px 120px 100px 80px 1fr', gap: 12, alignItems: 'center' }}>
+                <span className="mono muted" style={{ fontSize: 10 }}>{fmtTime(a.resolved_at || a.created_at)}</span>
+                <span className="mono" style={{ fontSize: 11, color: 'var(--text-soft)' }}>@{a.agent_name || a.agent_id?.slice(0, 8) || '—'}</span>
+                <span className="tag" style={{ fontSize: 9, justifySelf: 'start' }}>{a.tool_name}</span>
+                <span className="mono" style={{ fontSize: 11, color: statusColor(a.status) }}>{a.status}</span>
+                <span className="mono muted" style={{ fontSize: 11 }} title={fmtInput(a.tool_input)}>{fmtInput(a.tool_input)}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>

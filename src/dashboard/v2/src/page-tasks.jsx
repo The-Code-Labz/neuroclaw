@@ -254,7 +254,7 @@ const ProjectModal = ({ open, project, onClose, onSaved }) => {
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel glow" onClick={e => e.stopPropagation()} style={{ width: 480, padding: 20 }}>
+      <div className="nc-panel glow modal-fixed-width" onClick={e => e.stopPropagation()} style={{ width: 480, padding: 20 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 14 }}>{project ? 'EDIT PROJECT' : 'NEW PROJECT'}</div>
         {err && <div className="mono dangerc" style={{ fontSize: 11, marginBottom: 8 }}>// {err}</div>}
         <div className="field"><label>Title</label><input className="nc-input" value={title} onChange={e => setTitle(e.target.value)} autoFocus/></div>

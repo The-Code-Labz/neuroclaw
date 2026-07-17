@@ -2,6 +2,7 @@ import { bgChatCompletion } from '../agent/openai-client';
 import { config } from '../config';
 import { type AgentRecord } from '../db';
 import { logger } from '../utils/logger';
+import { formatAgentCapabilities } from './agent-caps-format';
 import { getLangfuse, estimateTokens } from './langfuse';
 
 // ── Metric stub ────────────────────────────────────────────────────────────
@@ -68,8 +69,8 @@ async function retryComplexityCheck(userMessage: string): Promise<boolean> {
     max_tokens:  retryMaxTokens,
     stream:      false as const,
   };
-  // VoidAI (haiku) first, OpenRouter (callArgs.model) on any error/timeout.
-  const response = await bgChatCompletion(callArgs, { label: 'decomposer:complexity' });
+  // Native MiniMax-M3 lane — off VoidAI's flaky proxy path.
+  const response = await bgChatCompletion(callArgs, { preferMinimax: true, label: 'decomposer:complexity' });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const answer = ((response as any).choices[0]?.message?.content ?? '').trim().toLowerCase();
   logger.info('decomposer: second-chance complexity check', { answer });
@@ -126,8 +127,7 @@ export async function decomposeTask(
   }
 
   const agentList = eligible.map(a => {
-    const caps = (() => { try { return JSON.parse(a.capabilities || '[]') as string[]; } catch { return []; } })();
-    return `- ${a.name}: ${a.description ?? 'General assistant'} [${caps.join(', ') || 'general'}]`;
+    return `- ${a.name}: ${a.description ?? 'General assistant'} [${formatAgentCapabilities(a.capabilities)}]`;
   }).join('\n');
 
   const systemPrompt =
@@ -135,7 +135,11 @@ export async function decomposeTask(
     'Analyze the user message and decide if it requires multiple specialized agents working in sequence.\n\n' +
     'RULES:\n' +
     '- Simple, single-domain requests → isComplex: false, empty steps array\n' +
-    '- Requests clearly needing 2+ distinct specializations in sequence → isComplex: true\n' +
+    '- A single-domain request is ONE agent\'s job even when it is large or multi-part\n' +
+    '  (e.g. "write a long report", "debug this whole module"). Do NOT split one\n' +
+    '  specialist\'s work into artificial steps — that is over-decomposition.\n' +
+    '- Requests clearly needing 2+ DISTINCT specializations in sequence → isComplex: true.\n' +
+    '  If every step would go to the same agent, it is NOT multi-step → isComplex: false.\n' +
     '- Maximum 4 steps. Fewer is better. Prefer delegation over decomposition.\n' +
     '- Only assign agents that exist exactly in the list.\n' +
     '- parallel: true only for fully independent steps (not depending on each other\'s output)\n\n' +
@@ -167,7 +171,7 @@ export async function decomposeTask(
     const attemptDecompose = async (maxTokens: number): Promise<{ raw: string; parsed: DecompositionResult | null }> => {
       const response = await bgChatCompletion({
         model, messages, temperature: 0, max_tokens: maxTokens, stream: false,
-      }, { label: 'decomposer:decompose' });
+      }, { preferMinimax: true, label: 'decomposer:decompose' });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawText = (response as any).choices[0]?.message?.content?.trim() ?? '';
       const clean   = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
@@ -281,7 +285,7 @@ export async function mergeResults(
       messages,
       stream:     false,
       max_tokens: 8000,
-    }, { label: 'decomposer:merge' });
+    }, { preferMinimax: true, label: 'decomposer:merge' });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const merged = (response as any).choices[0]?.message?.content?.trim() || stepResults.map(s => s.result).join('\n\n---\n\n');
@@ -317,8 +321,7 @@ export async function evaluateSpawn(
   const agentList = existingAgents
     .filter(a => a.status === 'active' && !a.temporary)
     .map(a => {
-      const caps = (() => { try { return JSON.parse(a.capabilities || '[]') as string[]; } catch { return []; } })();
-      return `- ${a.name}: ${a.description ?? 'General'} [${caps.join(', ') || 'general'}]`;
+      return `- ${a.name}: ${a.description ?? 'General'} [${formatAgentCapabilities(a.capabilities)}]`;
     }).join('\n');
 
   const systemPrompt =

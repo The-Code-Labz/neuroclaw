@@ -47,6 +47,8 @@ const Icon = ({ name, size = 16, className = '', style = {} }) => {
     case 'docs': return <svg {...p}><path d="M5 4h11l3 3v13H5z"/><path d="M16 4v3h3"/><path d="M8 10h8M8 14h8M8 18h5"/></svg>;
     case 'canvas': return <svg {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/><circle cx="15" cy="15" r="1.4" fill="currentColor"/></svg>;
     case 'image': return <svg {...p}><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 16l5-5 4 4 4-4 5 5"/></svg>;
+    case 'video': return <svg {...p}><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>;
+    case 'music': return <svg {...p}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
     case 'logo': return (
       <svg {...p} viewBox="0 0 32 32">
         <defs>

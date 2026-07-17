@@ -93,7 +93,7 @@ const Overview = () => {
               <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 3 }}>{core.checkedAt ? new Date(core.checkedAt).toLocaleTimeString('en-US', { hour12: true }) : 'waiting for probe'}</div>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, width: '100%', marginTop: 6 }}>
+          <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, width: '100%', marginTop: 6 }}>
             {[
               ['router', coreChecks.router],
               ['memory', coreChecks.memory],

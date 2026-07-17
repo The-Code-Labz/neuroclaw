@@ -29,6 +29,11 @@ export const config = {
       : `http://localhost:${port}`;
     return {
       port,
+      // Bind address for the HTTP listener. Defaults to loopback-only
+      // (127.0.0.1) for security. Set DASHBOARD_HOST to a NetBird/VPN IP
+      // (e.g. 100.x.x.x) to reach the dashboard from another device over the
+      // VPN. NEVER bind 0.0.0.0 — that exposes the admin UI on the public IP.
+      host: process.env.DASHBOARD_HOST?.trim() || '127.0.0.1',
       token: process.env.DASHBOARD_TOKEN ?? 'change-me',
       publicUrl,
       // Heartbeat staleness threshold for the stale-run sweeper. Runs whose
@@ -235,8 +240,10 @@ export const config = {
 
       // In-process tiered review service (pre-gate → Tier-1 → Tier-2).
       enabled:            (process.env.REVIEW_ENABLED ?? 'true').toLowerCase() !== 'false',
-      tier1CodeModel:     process.env.REVIEW_T1_CODE_MODEL?.trim()  || 'gpt-4.1-mini',
-      tier1NonCodeModel:  process.env.REVIEW_T1_PROSE_MODEL?.trim() || 'gpt-4.1-nano',
+      // Default to MiniMax-M3 (native lane, off the flaky VoidAI proxy path) — override
+      // back to a VoidAI model id via env if needed; runTier1 detects the lane by prefix.
+      tier1CodeModel:     process.env.REVIEW_T1_CODE_MODEL?.trim()  || 'MiniMax-M3',
+      tier1NonCodeModel:  process.env.REVIEW_T1_PROSE_MODEL?.trim() || 'MiniMax-M3',
       // Primary rides the OpenRouter lane (preferGemini) → needs the provider-prefixed
       // slug (bare 'claude-sonnet-4-6' 400s there). Fallback rides the VoidAI lane →
       // needs a VoidAI-valid id ('kimi-for-coding' 404s there). Both are Sonnet 4.6 on
@@ -251,6 +258,26 @@ export const config = {
         ['auth', 'payment', 'migration', 'config.ts', 'registry.ts', 'routes.ts', '.sql', '.env']),
       trivialTaskTypes:   parseList(process.env.REVIEW_TRIVIAL_TYPES,
         ['session_name', 'tagging', 'naming']),
+    };
+  },
+  get loop() {
+    // Loop Engineering — adversarial build → verify → loop-until-gate.
+    // All bounds are enforced together: whichever trips first ends the loop.
+    return {
+      enabled:           (process.env.LOOP_ENABLED ?? 'true').toLowerCase() !== 'false',
+      maxRounds:         parseInt(process.env.LOOP_MAX_ROUNDS ?? '4', 10),
+      // Per-round wall-clock cap (build+verify each get their own timeout below).
+      perRoundTimeoutMs: parseInt(process.env.LOOP_PER_ROUND_TIMEOUT_MS ?? '120000', 10),
+      // Independent hard verifier timeout so a hung gate can't deadlock the loop.
+      verifyTimeoutMs:   parseInt(process.env.LOOP_VERIFY_TIMEOUT_MS ?? '45000', 10),
+      // Total time budget across all rounds — checked before each round.
+      totalBudgetMs:     parseInt(process.env.LOOP_TOTAL_BUDGET_MS ?? '420000', 10),
+      // Consecutive repeat/oscillating critiques before declaring 'stalled'.
+      stallLimit:        parseInt(process.env.LOOP_STALL_LIMIT ?? '2', 10),
+      // Estimated-token cost gate — projected spend checked BEFORE each round.
+      maxTotalTokens:    parseInt(process.env.LOOP_MAX_TOTAL_TOKENS ?? '120000', 10),
+      // Builder model (MiniMax-M3 native lane by default; VoidAI id overrides).
+      builderModel:      process.env.LOOP_BUILDER_MODEL?.trim() || 'MiniMax-M3',
     };
   },
   get selfHeal() {
@@ -281,6 +308,14 @@ export const config = {
       // Per-task bounded repair attempts before escalate. Matches task max_retries intent.
       maxRepairAttempts: parseInt(process.env.SELF_HEAL_MAX_REPAIR ?? '2', 10),
       stormThreshold:    parseInt(process.env.SELF_HEAL_STORM_THRESHOLD ?? '3', 10),
+      // rate_limited is a windowed transient the tool boundary already spaced-
+      // retried (Retry-After aware). Gate it behind a HIGHER count than the
+      // permanent-blocker threshold so a busy-upstream burst doesn't trip the
+      // systemic-blocker suppression. Never below stormThreshold.
+      rateLimitStormThreshold: Math.max(
+        parseInt(process.env.SELF_HEAL_STORM_THRESHOLD ?? '3', 10),
+        parseInt(process.env.SELF_HEAL_RATE_LIMIT_STORM_THRESHOLD ?? '8', 10),
+      ),
       // Confidence gate: a stored fix is blind-trusted only at/above this hit-count
       // with a clean verify record AND with verify passes from at least this many
       // distinct sessions. Below the bar the fix is fed as a PRIOR, not injected.
@@ -444,6 +479,8 @@ export const config = {
       apiKey:      process.env.KIE_API_KEY?.trim() ?? '',
       baseURL:     process.env.KIE_BASE_URL?.trim() || 'https://api.kie.ai/api/v1',
       imageModel:  process.env.KIE_IMAGE_MODEL?.trim() || 'google/nano-banana',
+      videoModel:  process.env.KIE_VIDEO_MODEL?.trim() || 'veo3_fast',
+      audioModel:  process.env.KIE_AUDIO_MODEL?.trim() || 'suno/v5',
       enabled:     !!(process.env.KIE_API_KEY?.trim()),
     };
   },
@@ -454,6 +491,8 @@ export const config = {
       apiKey:      process.env.FAL_API_KEY?.trim() ?? '',
       baseURL:     process.env.FAL_BASE_URL?.trim() || 'https://queue.fal.run',
       imageModel:  process.env.FAL_IMAGE_MODEL?.trim() || 'fal-ai/flux/schnell',
+      videoModel:  process.env.FAL_VIDEO_MODEL?.trim() || 'fal-ai/wan/v2.2-5b/text-to-video',
+      audioModel:  process.env.FAL_AUDIO_MODEL?.trim() || 'cassetteai/music-generator',
       enabled:     !!(process.env.FAL_API_KEY?.trim()),
     };
   },
@@ -471,6 +510,18 @@ export const config = {
       clientId: process.env.OPENART_CLIENT_ID?.trim() || '5wUuGDLn4m9MMNwh4FJU',
       mcpUrl:   process.env.OPENART_MCP_URL?.trim()   || 'https://mcp.openart.ai/mcp',
       imageModel: process.env.OPENART_IMAGE_MODEL?.trim() || 'nano-banana-2-lite',
+      enabled,
+    };
+  },
+  get higgsfield() {
+    // Lazy import avoids a config↔auth module cycle at load time.
+    let enabled = false;
+    try { enabled = require('./infra/higgsfield-auth').higgsfieldConfigured(); } catch { enabled = false; }
+    return {
+      clientId:   process.env.HIGGSFIELD_CLIENT_ID?.trim() || 'SmaNEDl8PtPUH4Cf',
+      mcpUrl:     process.env.HIGGSFIELD_MCP_URL?.trim()   || 'https://mcp.higgsfield.ai/mcp',
+      imageModel: process.env.HIGGSFIELD_IMAGE_MODEL?.trim() || 'nano_banana_2',
+      videoModel: process.env.HIGGSFIELD_VIDEO_MODEL?.trim() || 'cinematic_studio_3_0',
       enabled,
     };
   },
@@ -506,18 +557,26 @@ export const config = {
     };
   },
   get canva() {
-    const clientId     = process.env.CANVA_CLIENT_ID?.trim()     || '';
-    const clientSecret = process.env.CANVA_CLIENT_SECRET?.trim() || '';
+    const clientId       = process.env.CANVA_CLIENT_ID?.trim()          || '';
+    const clientSecret   = process.env.CANVA_CLIENT_SECRET?.trim()      || '';
+    const loopbackClient = process.env.CANVA_LOOPBACK_CLIENT_ID?.trim() || '';
     return {
       // Official Canva MCP (remote, Streamable HTTP) — see canva.dev/docs/mcp.
       // Not env-overridable: Canva publishes exactly one production endpoint.
       mcpUrl: 'https://mcp.canva.com/mcp',
       clientId,
       clientSecret,
-      // A client_id/client_secret pair means the operator ran DCR registration
-      // (or the OAuth /start flow) at least once. It does NOT mean a user has
-      // completed consent yet — that's accessToken presence, checked separately.
+      // A client_id/client_secret pair means SOME DCR client is configured —
+      // does NOT guarantee it was registered against our loopback
+      // redirect_uri (a stale public-host client can sit here from an
+      // earlier attempt). Use loopbackReady to gate the /authorize step.
       configured: !!(clientId && clientSecret),
+      // True only when clientId is the exact client that mcp/canva-oauth.ts
+      // registerDcrClient() registered against CANVA_LOOPBACK_REDIRECT_URI.
+      // Authorize URLs must never be built when this is false — Canva's
+      // /authorize 500s on a client paired with a redirect_uri it never
+      // registered. See mcp/canva-oauth.ts isLoopbackClientRegistered().
+      loopbackReady: !!(clientId && loopbackClient && clientId === loopbackClient),
       hasToken: !!(process.env.CANVA_ACCESS_TOKEN?.trim()),
     };
   },

@@ -322,7 +322,7 @@ async function summarizeRange(turns: HistoryTurn[]): Promise<string> {
         },
         { role: 'user', content: transcript },
       ],
-    }, { label: 'compactor:summarize' });
+    }, { preferGemini: true, openrouterModel: config.background.geminiModel, label: 'compactor:summarize' });
     return resp.choices[0]?.message?.content?.trim() ?? '';
   } catch (err) {
     logger.warn('compactor: summarizer LLM failed', { error: (err as Error).message });
@@ -383,7 +383,7 @@ async function extractWorkingState(history: HistoryTurn[], keep: number): Promis
         },
         { role: 'user', content: transcript },
       ],
-    }, { label: 'compactor:working-state' });
+    }, { preferGemini: true, openrouterModel: config.background.geminiModel, label: 'compactor:working-state' });
     const raw = resp.choices[0]?.message?.content?.trim() ?? '';
     if (!raw || raw === 'NO_ACTIVE_TASK') return '';
     return `[Active Task — resumption state]\n${raw}\nContext: A summary of all prior work in this session is in [Prior context] immediately below — review it before continuing.`;

@@ -19,7 +19,7 @@ const Analytics = () => {
         <button className="nc-btn" onClick={() => window.NC_LIVE.refresh()}><Icon name="refresh" size={12}/> Refresh</button>
       </>}/>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="MEMORY WRITES (24H)" value={memoryWrites || 0} sub={`${memWritesHour || 0} this hour`} tone="cyan"/>
         <StatCard label="TOKENS (1H)" value={ANALYTICS.tokens || '0'} sub={`${ANALYTICS.callCount || 0} LLM calls`} tone="cyan"/>
         <StatCard label="SPEND (1H)" value={ANALYTICS.estCostUsd != null ? '$' + ANALYTICS.estCostUsd.toFixed(4) : '$0'} sub="estimated USD" tone="cyan"/>
@@ -67,7 +67,7 @@ const Analytics = () => {
         </Section>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
         <Section title="TOP AGENTS">
           {topAgents.map((a, i) => (
             <div key={i} style={{ marginBottom: 10 }}>

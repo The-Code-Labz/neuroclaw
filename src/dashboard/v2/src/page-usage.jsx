@@ -280,7 +280,7 @@ const Usage = () => {
       />
 
       {/* Summary stat cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="TOTAL TOKENS" value={fmtTokens(totalTokens, '')} sub={`${totalCalls} calls`} tone="cyan"/>
         <StatCard label="EST COST" value={'$' + totalCost.toFixed(4)} sub="API providers only" tone="cyan"/>
         <StatCard label="TOP PROVIDER" value={topProvider} sub={byProvider[0] ? fmtTokens(byProvider[0].total_tokens, byProvider[0].provider) + ' tokens' : '—'} tone="cyan"/>
@@ -294,7 +294,7 @@ const Usage = () => {
 
       {/* Subscription quota cards */}
       <Section title="SUBSCRIPTION QUOTA" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {QUOTA_PROVIDERS.map(p => <QuotaPanel key={p.key} providerCfg={p} />)}
         </div>
       </Section>
@@ -306,7 +306,7 @@ const Usage = () => {
             No usage recorded in this period.
           </div>
         ) : (
-          <div>
+          <div className="table-scroll">
             {/* Header row */}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 0.8fr 0.8fr 1.4fr', gap: 8, padding: '6px 8px', borderBottom: '1px solid var(--line-soft)' }} className="mono muted">
               <span style={{ fontSize: 10 }}>PROVIDER</span>
