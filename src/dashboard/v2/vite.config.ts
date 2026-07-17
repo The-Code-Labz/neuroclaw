@@ -31,14 +31,17 @@ function themeTokensPlugin(): Plugin {
     const mod = { exports: {} as Record<string, any> };
     // eslint-disable-next-line no-new-func
     new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
-    // Emit BOTH axes into the same virtual module: color themes first, then
-    // layout presets. Single stylesheet + single import in entry.jsx = one
-    // deterministic order, no cross-stylesheet cascade race (ASAGI blocker #5).
-    // No conflict: --shell-*/--chat-* live ONLY in layouts now (stripped from
-    // color themes), so the two blocks never define the same property.
+    // Emit all THREE axes into the same virtual module: color themes, then
+    // layout presets, then design (shape) packs. Single stylesheet + single
+    // import in entry.jsx = one deterministic order, no cross-stylesheet
+    // cascade race (ASAGI blocker #5). No conflict: --shell-*/--chat-* live
+    // ONLY in layouts, --radius-*/--btn-* live ONLY in designs — none of the
+    // three axes ever defines the same custom property, so source order
+    // between them is irrelevant (kept theme→layout→design for readability).
     const themeCss = mod.exports.generateThemeCss(mod.exports.THEMES);
     const layoutCss = mod.exports.generateLayoutCss(mod.exports.LAYOUTS);
-    return themeCss + '\n' + layoutCss;
+    const designCss = mod.exports.generateDesignCss(mod.exports.DESIGNS);
+    return themeCss + '\n' + layoutCss + '\n' + designCss;
   }
 
   return {

@@ -92,6 +92,7 @@ Thumbs.db
 /paperclip/
 /uploads/
 /workspaces/
+/workspace/
 docs/superpowers/**
 /.superpowers/
 docs/specs/**

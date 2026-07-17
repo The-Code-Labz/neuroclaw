@@ -2,9 +2,10 @@
  *
  * Redesigned for the v4 dark theme. Keeps v2 logic and API calls.
  */
+import { THEMES, DEFAULT_THEME_ID, LAYOUTS, DEFAULT_LAYOUT_ID, DESIGNS, DEFAULT_DESIGN_ID } from '../../v2/src/themes/registry.ts';
 
 const SettingRow = ({ label, hint, children }) => (
-  <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 18, padding: '14px 0', borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center' }}>
+  <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 18, padding: '14px 0', borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center' }}>
     <div>
       <div className="mono" style={{ fontSize: 13, color: 'var(--text-primary)' }}>{label}</div>
       {hint && <div className="mono muted" style={{ fontSize: 10, marginTop: 3, lineHeight: 1.5 }}>{hint}</div>}
@@ -273,7 +274,7 @@ const EnvEditorTab = () => {
   return (
     <>
       {err && (
-        <div className="nc-panel" style={{ padding: '10px 14px', marginBottom: 14, background: 'rgba(252,165,165,0.10)', borderColor: 'rgba(252,165,165,0.35)' }}>
+        <div className="se-banner-danger" style={{ padding: '10px 14px', marginBottom: 14 }}>
           <div className="mono" style={{ color: 'var(--error)', fontSize: 12 }}>// error: {err}</div>
         </div>
       )}
@@ -303,7 +304,7 @@ const EnvEditorTab = () => {
             const currentValue = draft[v.key] ?? v.value;
             const showValue = !isSecret || showSecrets[v.key];
             return (
-              <div key={v.key} style={{
+              <div key={v.key} className="setting-row" style={{
                 display: 'grid', gridTemplateColumns: '220px 1fr auto', gap: 14, padding: '12px 0',
                 borderBottom: '1px dashed var(--border-subtle)', alignItems: 'center',
                 background: isModified ? 'rgba(252,211,77,0.04)' : 'transparent'
@@ -546,7 +547,7 @@ const SubAgentsTab = () => {
       </div>
       {providers.map(p => <FamilyEditor key={p.family} p={p} onSaved={setProviders} onError={setErr}/>)}
       {!anyEnabled && (
-        <div className="nc-panel" style={{ padding: '10px 14px', marginTop: 16, background: 'rgba(252,165,165,0.10)', borderColor: 'rgba(252,165,165,0.35)' }}>
+        <div className="se-banner-danger" style={{ padding: '10px 14px', marginTop: 16 }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--error)' }}>⚠ no sub-agent provider is enabled — every run_subtask call will fail. Enable at least one family above.</div>
         </div>
       )}
@@ -717,51 +718,134 @@ const getDashboardToken = () => {
   try { return localStorage.getItem('nclaw-token') || ''; } catch { return ''; }
 };
 
+/* Mini swatches — same footprint (56×40) across Theme/Layout/Design pickers,
+ * mirrored from v2's page-settings.jsx so both dashboards render identically
+ * and share the same localStorage keys (theme/layout/design apply live and
+ * survive a v3⇄v4 switch). */
+const THEME_STORAGE_KEY = 'nc_dashboard_theme';
+const LAYOUT_STORAGE_KEY = 'nc_dashboard_layout';
+const DESIGN_STORAGE_KEY = 'nc_dashboard_design';
+const LEGACY_ACCENT_KEY = 'nc_dashboard_accent';
+
+const ThemeSwatch = ({ theme }) => (
+  <div data-theme={theme.id} style={{
+    width: 56, height: 40, borderRadius: 8, flexShrink: 0,
+    background: 'var(--bg-0, var(--bg-canvas))',
+    border: '1px solid var(--line, var(--border-default))',
+    position: 'relative', overflow: 'hidden',
+  }}>
+    <div style={{ position: 'absolute', left: 6, right: 6, bottom: 6, height: 12, borderRadius: 3, background: 'var(--panel, var(--surface-1))' }} />
+    <div style={{ position: 'absolute', right: 6, top: 6, width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)' }} />
+  </div>
+);
+
+const LayoutSwatch = ({ layout }) => {
+  const sidebar = parseInt(layout.tokens['--shell-sidebar-width']) || 240;
+  const topbar = parseInt(layout.tokens['--shell-topbar-height']) || 56;
+  const sbW = Math.round((sidebar / 264) * 20);
+  const tbH = Math.round((topbar / 68) * 9);
+  return (
+    <div style={{
+      width: 56, height: 40, borderRadius: 8, flexShrink: 0, overflow: 'hidden',
+      border: '1px solid var(--line, var(--border-default))',
+      background: 'var(--bg-0, var(--bg-canvas))',
+      display: 'grid', gridTemplateColumns: `${sbW}px 1fr`, gridTemplateRows: `${tbH}px 1fr`,
+      gap: 2, padding: 3,
+    }}>
+      <div style={{ gridColumn: '1 / 3', background: 'var(--panel, var(--surface-1))', borderRadius: 2 }} />
+      <div style={{ background: 'var(--accent)', opacity: 0.5, borderRadius: 2 }} />
+      <div style={{ background: 'var(--panel, var(--surface-1))', borderRadius: 2 }} />
+    </div>
+  );
+};
+
+const DesignSwatch = ({ design }) => (
+  <div data-design={design.id} style={{
+    width: 56, height: 40, borderRadius: 8, flexShrink: 0, overflow: 'hidden',
+    border: '1px solid var(--line, var(--border-default))',
+    background: 'var(--bg-0, var(--bg-canvas))',
+    position: 'relative', padding: 6,
+    display: 'flex', flexDirection: 'column', gap: 6, justifyContent: 'center',
+  }}>
+    <div style={{ height: 14, background: 'var(--panel, var(--surface-1))', border: '1px solid var(--line, var(--border-default))', borderRadius: 'var(--radius-panel)' }} />
+    <div style={{ height: 8, width: '70%', background: 'var(--accent)', opacity: 0.55, borderRadius: 'var(--radius-control)' }} />
+  </div>
+);
+
+const PickerRow = ({ items, activeId, onPick, Swatch, keyProp = 'id' }) => (
+  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+    {items.map(item => {
+      const active = activeId === item[keyProp];
+      return (
+        <button
+          key={item[keyProp]}
+          onClick={() => onPick(item[keyProp])}
+          className="nc-btn"
+          title={item.description}
+          style={{
+            alignItems: 'center', gap: 12, padding: 10, minHeight: 0,
+            borderColor: active ? 'var(--accent)' : 'var(--line, var(--border-default))',
+            background: active ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined,
+          }}
+        >
+          <Swatch theme={item} layout={item} design={item} />
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: 600 }}>{item.label}{active ? ' ✓' : ''}</div>
+            <div className="mono muted" style={{ fontSize: 10, maxWidth: 220 }}>{item.description}</div>
+          </div>
+        </button>
+      );
+    })}
+  </div>
+);
+
 const ThemesTab = () => {
   const Section = window.Section;
-  const [appearance, setAppearance] = React.useState('dark');
-  const [accent, setAccent] = React.useState('#f59e0b');
 
-  const ACCENTS = [
-    { id: 'amber', label: 'Amber', value: '#f59e0b' },
-    { id: 'rose', label: 'Rose', value: '#f43f5e' },
-    { id: 'emerald', label: 'Emerald', value: '#10b981' },
-    { id: 'sky', label: 'Sky', value: '#0ea5e9' },
-    { id: 'violet', label: 'Violet', value: '#8b5cf6' },
-  ];
+  const [themeId, setThemeId] = React.useState(() => {
+    try { return document.documentElement.dataset.theme || localStorage.getItem(THEME_STORAGE_KEY) || DEFAULT_THEME_ID; } catch { return DEFAULT_THEME_ID; }
+  });
+  const [layoutId, setLayoutId] = React.useState(() => {
+    try { return document.documentElement.dataset.layout || localStorage.getItem(LAYOUT_STORAGE_KEY) || DEFAULT_LAYOUT_ID; } catch { return DEFAULT_LAYOUT_ID; }
+  });
+  const [designId, setDesignId] = React.useState(() => {
+    try { return document.documentElement.dataset.design || localStorage.getItem(DESIGN_STORAGE_KEY) || DEFAULT_DESIGN_ID; } catch { return DEFAULT_DESIGN_ID; }
+  });
 
-  const THEMES = [
-    { id: 'dark', label: 'Dark', value: 'dark' },
-    { id: 'light', label: 'Light', value: 'light' },
-  ];
-
+  // One-time cleanup: strip any stale inline --accent override left by the
+  // old per-browser accent picker (this tab used to write one directly) so
+  // the current theme's registry accent renders on mount.
   React.useEffect(() => {
-    try {
-      const savedAppearance = localStorage.getItem('nc-appearance');
-      const savedAccent = localStorage.getItem('nc-accent');
-      const initialAppearance = savedAppearance === 'light' ? 'light' : 'dark';
-      const initialAccent = ACCENTS.find(a => a.value === savedAccent)?.value || ACCENTS[0].value;
-      setAppearance(initialAppearance);
-      setAccent(initialAccent);
-      document.documentElement.setAttribute('data-theme', initialAppearance);
-      document.documentElement.style.setProperty('--accent', initialAccent);
-    } catch { /* ignore */ }
+    document.documentElement.style.removeProperty('--accent');
+    document.documentElement.style.removeProperty('--accent-2');
+    try { localStorage.removeItem(LEGACY_ACCENT_KEY); } catch {}
   }, []);
 
-  const changeAppearance = (value) => {
-    setAppearance(value);
-    try { localStorage.setItem('nc-appearance', value); } catch { }
-    document.documentElement.setAttribute('data-theme', value);
+  const applyTheme = (id) => {
+    document.documentElement.dataset.theme = id;
+    document.documentElement.style.removeProperty('--accent');
+    document.documentElement.style.removeProperty('--accent-2');
+    try { localStorage.setItem(THEME_STORAGE_KEY, id); localStorage.removeItem(LEGACY_ACCENT_KEY); } catch {}
+    setThemeId(id);
   };
-
-  const changeAccent = (value) => {
-    setAccent(value);
-    try { localStorage.setItem('nc-accent', value); } catch { }
-    document.documentElement.style.setProperty('--accent', value);
+  const applyLayout = (id) => {
+    document.documentElement.dataset.layout = id;
+    try { localStorage.setItem(LAYOUT_STORAGE_KEY, id); } catch {}
+    setLayoutId(id);
+  };
+  const applyDesign = (id) => {
+    document.documentElement.dataset.design = id;
+    try { localStorage.setItem(DESIGN_STORAGE_KEY, id); } catch {}
+    setDesignId(id);
   };
 
   const token = getDashboardToken();
   const v3Href = token ? `/dashboard?token=${encodeURIComponent(token)}` : '/dashboard';
+
+  const groups = [
+    { mode: 'dark', label: 'Dark' },
+    { mode: 'light', label: 'Light' },
+  ].map(g => ({ ...g, themes: THEMES.filter(t => t.mode === g.mode) })).filter(g => g.themes.length);
 
   return (
     <>
@@ -777,44 +861,38 @@ const ThemesTab = () => {
         </SettingRow>
       </Section>
 
-      <Section title="APPEARANCE">
-        <SettingRow label="Theme" hint="Choose a base interface theme">
-          <div style={{ display: 'flex', gap: 10 }}>
-            {THEMES.map(t => (
-              <button
-                key={t.id}
-                className={`nc-btn ${appearance === t.value ? 'primary' : ''}`}
-                onClick={() => changeAppearance(t.value)}
-                style={{ fontSize: 12, minWidth: 80 }}
-              >
-                {t.label}
-              </button>
-            ))}
+      <Section title="THEME">
+        {groups.map(g => (
+          <div key={g.mode} style={{ marginBottom: 14 }}>
+            {groups.length > 1 && (
+              <div className="mono muted" style={{ fontSize: 10, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{g.label}</div>
+            )}
+            <PickerRow items={g.themes} activeId={themeId} onPick={applyTheme} Swatch={ThemeSwatch}/>
           </div>
-        </SettingRow>
-        <SettingRow label="Accent color" hint="Pick a highlight color for the dashboard">
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            {ACCENTS.map(a => (
-              <button
-                key={a.id}
-                title={a.label}
-                onClick={() => changeAccent(a.value)}
-                aria-label={a.label}
-                aria-pressed={accent === a.value}
-                style={{
-                  width: 32, height: 32, borderRadius: '50%',
-                  background: a.value,
-                  border: `2px solid ${accent === a.value ? 'var(--text-primary)' : 'transparent'}`,
-                  boxShadow: accent === a.value ? `0 0 0 2px ${a.value}` : 'none',
-                  cursor: 'pointer'
-                }}
-              />
-            ))}
-            <span className="mono muted" style={{ fontSize: 11 }}>
-              {ACCENTS.find(a => a.value === accent)?.label}
-            </span>
-          </div>
-        </SettingRow>
+        ))}
+        <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>
+          // applies instantly · stored in localStorage · shared with the v3 dashboard
+        </div>
+      </Section>
+
+      <Section title="LAYOUT">
+        <div className="mono muted" style={{ fontSize: 10, marginBottom: 12 }}>
+          Density &amp; structure — independent of color. Pair any palette with any layout.
+        </div>
+        <PickerRow items={LAYOUTS} activeId={layoutId} onPick={applyLayout} Swatch={LayoutSwatch}/>
+        <div className="mono muted" style={{ fontSize: 10, marginTop: 10 }}>
+          // reshapes the shell live · desktop layout only (mobile stays compact)
+        </div>
+      </Section>
+
+      <Section title="DESIGN">
+        <div className="mono muted" style={{ fontSize: 10, marginBottom: 12 }}>
+          Component shape &amp; personality — corner radius and button typography. Independent of color and density; changes the entire dashboard's look.
+        </div>
+        <PickerRow items={DESIGNS} activeId={designId} onPick={applyDesign} Swatch={DesignSwatch}/>
+        <div className="mono muted" style={{ fontSize: 10, marginTop: 10 }}>
+          // reshapes buttons/panels/inputs/tags live everywhere · pair any design with any color theme and layout
+        </div>
       </Section>
     </>
   );

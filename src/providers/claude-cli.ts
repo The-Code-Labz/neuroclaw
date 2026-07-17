@@ -87,6 +87,13 @@ export interface ClaudeCliOptions {
    * upstreams reject. The caller resolves which target from the agent's provider.
    */
   gateway?:      { baseURL: string; apiKey: string };
+  /**
+   * External abort signal (Item C — stop/runaway interrupt). When it aborts,
+   * the internal SDK AbortController is aborted too, SIGTERMing the subprocess.
+   * The already-aborted guard in runQuery handles a stop that fires before the
+   * listener attaches.
+   */
+  signal?:       AbortSignal;
 }
 
 export class ClaudeCliRateLimitError extends Error {
@@ -169,6 +176,14 @@ export async function* streamClaudeCliChat(
 
 async function* runQuery(opts: ClaudeCliOptions): AsyncGenerator<string, void, void> {
   const abort = new AbortController();
+  // Item C — external stop/runaway interrupt. Link the caller's signal to our
+  // internal controller. The already-aborted guard is MANDATORY: if the stop
+  // fired before we attached the listener, the abort event is already gone and
+  // would be lost — check .aborted synchronously first.
+  if (opts.signal) {
+    if (opts.signal.aborted) abort.abort();
+    else opts.signal.addEventListener('abort', () => abort.abort(), { once: true });
+  }
   // Diagnostic instrumentation (claude-cli-abort-probe): the Agent SDK reports
   // every abort — our 900s timer, an internal SDK abort, or the subprocess
   // dying — as the same opaque "aborted by user". To tell those apart we track

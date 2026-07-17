@@ -51,7 +51,7 @@ Title:`;
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
       max_tokens: 20,
-    }, { label: 'session-namer' });
+    }, { preferMinimax: true, label: 'session-namer' });
 
     const generated = completion.choices[0]?.message?.content?.trim() ?? '';
     if (!generated) return;

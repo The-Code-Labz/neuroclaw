@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { config } from '../config';
+import { getSubAgentMinimaxClient } from './subagent-clients';
 
 let client:              OpenAI | null = null;
 let bgClient:            OpenAI | null = null;
@@ -104,6 +105,14 @@ export interface BgChatOpts {
   openrouterModel?: string;
   /** Override the default VoidAI model (defaults to config.background.voidaiModel, gpt-4.1-nano). */
   voidaiModel?: string;
+  /**
+   * Route this call to the native MiniMax OpenAI-compatible client (config.subAgent.minimax)
+   * instead of VoidAI/OpenRouter. Takes priority over preferGemini. Use for callers that want
+   * MiniMax-M3's judgment quality off the flaky VoidAI proxy path (e.g. review-service tier1).
+   */
+  preferMinimax?: boolean;
+  /** Override the MiniMax model (only used on the preferMinimax lane; defaults to config.subAgent.minimax.model). */
+  minimaxModel?: string;
   /** Optional label for logging. */
   label?: string;
 }
@@ -127,6 +136,14 @@ export async function bgChatCompletion(
   args: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   opts: BgChatOpts = {},
 ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  if (opts.preferMinimax) {
+    const model = opts.minimaxModel || config.subAgent.minimax.model;
+    return await getSubAgentMinimaxClient().chat.completions.create({
+      ...args,
+      model,
+      stream: false,
+    });
+  }
   if (opts.preferGemini) {
     const model = opts.openrouterModel || config.background.geminiModel;
     return await getOpenRouterBgClient().chat.completions.create({

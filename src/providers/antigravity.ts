@@ -150,6 +150,8 @@ export interface AntigravityOptions {
   agentId?:      string | null;
   sessionId?:    string | null;
   onUsage?:      (u: AntigravityUsage) => void;
+  /** External abort (runaway/stop). SIGKILLs the agy --print child. [Item I4a] */
+  signal?:       AbortSignal;
 }
 
 // ── Stream ────────────────────────────────────────────────────────────────────
@@ -200,6 +202,12 @@ export async function* streamAntigravityChat(opts: AntigravityOptions): AsyncGen
       () => { try { child.kill('SIGKILL'); } catch { /* ignore */ } },
       config.antigravity.timeoutMs,
     );
+    // External abort (runaway/stop): SIGKILL the child. The exit check below already
+    // has a `signalCode !== null` branch, so a killed child throws (closes as error)
+    // rather than returning truncated output as success. [Item I4a]
+    const onAbort = () => { try { child.kill('SIGKILL'); } catch { /* ignore */ } };
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     let stderrAccum = '';
     const STDERR_MAX = 50_000;
@@ -247,6 +255,7 @@ export async function* streamAntigravityChat(opts: AntigravityOptions): AsyncGen
       }
     } finally {
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
     }
   } finally {
     if (requestedModel !== globalModel) writeModelToSettings(globalModel);

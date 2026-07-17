@@ -1,8 +1,8 @@
 /* Settings */
-import { THEMES, DEFAULT_THEME_ID, LAYOUTS, DEFAULT_LAYOUT_ID } from './themes/registry.ts';
+import { THEMES, DEFAULT_THEME_ID, LAYOUTS, DEFAULT_LAYOUT_ID, DESIGNS, DEFAULT_DESIGN_ID } from './themes/registry.ts';
 
 const SettingRow = ({ label, hint, children }) => (
-  <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, padding: '12px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center' }}>
+  <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, padding: '12px 0', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center' }}>
     <div>
       <div className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>{label}</div>
       {hint && <div className="mono muted" style={{ fontSize: 10, marginTop: 2 }}>{hint}</div>}
@@ -166,7 +166,7 @@ const SpawnTab = () => {
                 <span className="dot green" style={{ flexShrink: 0 }}/>
                 <span className="mono" style={{ fontSize: 12, color: 'var(--accent-2)', flex: 1 }}>{a.name}</span>
                 <span className="tag" style={{ fontSize: 9 }}>{a.role}</span>
-                <button className="nc-btn" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--danger)', borderColor: 'rgba(251,59,95,0.4)' }}
+                <button className="nc-btn" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--danger)', borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}
                   onClick={() => toggleExempt(a, false)}>Remove</button>
               </div>
             ))}
@@ -336,7 +336,7 @@ const EnvEditorTab = () => {
   return (
     <>
       {err && (
-        <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10, padding: '8px 12px', background: 'rgba(251,59,95,0.1)', border: '1px solid rgba(251,59,95,0.3)', borderRadius: 4 }}>
+        <div className="mono se-banner-danger" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 10, padding: '8px 12px' }}>
           // error: {err}
         </div>
       )}
@@ -379,14 +379,14 @@ const EnvEditorTab = () => {
             const showValue = !isSecret || showSecrets[v.key];
 
             return (
-              <div key={v.key} style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '200px 1fr auto', 
-                gap: 12, 
+              <div key={v.key} className="setting-row" style={{
+                display: 'grid',
+                gridTemplateColumns: '200px 1fr auto',
+                gap: 12,
                 padding: '10px 0', 
                 borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)',
                 alignItems: 'center',
-                background: isModified ? 'rgba(250,204,21,0.03)' : 'transparent'
+                background: isModified ? 'color-mix(in srgb, var(--amber) 4%, transparent)' : 'transparent'
               }}>
                 {/* Key + description */}
                 <div>
@@ -412,10 +412,9 @@ const EnvEditorTab = () => {
                     />
                   ) : (
                     <code 
-                      className="mono" 
+                      className="mono se-well" 
                       onClick={() => setEditingKey(v.key)}
                       style={{ 
-                        background: 'rgba(2,6,23,0.7)', 
                         border: `1px solid ${isModified ? 'var(--amber)' : 'var(--line)'}`, 
                         padding: '6px 10px', 
                         fontSize: 11, 
@@ -475,6 +474,7 @@ const EnvEditorTab = () => {
 // any stale inline override + the legacy key defensively.
 const THEME_STORAGE_KEY = 'nc_dashboard_theme';
 const LAYOUT_STORAGE_KEY = 'nc_dashboard_layout';
+const DESIGN_STORAGE_KEY = 'nc_dashboard_design';
 const LEGACY_ACCENT_KEY = 'nc_dashboard_accent';
 
 // Miniature shell preview for a layout — proportional sidebar/topbar/footer
@@ -499,6 +499,33 @@ const LayoutSwatch = ({ layout }) => {
     </div>
   );
 };
+
+// Miniature shape preview for a design pack — a "panel" block and a "button"
+// pill rendered with the pack's own radii, so the shape personality (sharp vs
+// pill vs squircle) reads at a glance without full component fidelity.
+const DesignSwatch = ({ design }) => (
+  <div
+    data-design={design.id}
+    style={{
+      width: 56, height: 40, borderRadius: 8, flexShrink: 0, overflow: 'hidden',
+      border: '1px solid var(--line, var(--border-default))',
+      background: 'var(--bg-0, var(--bg-canvas))',
+      position: 'relative', padding: 6,
+      display: 'flex', flexDirection: 'column', gap: 6, justifyContent: 'center',
+    }}
+  >
+    <div style={{
+      height: 14, background: 'var(--panel, var(--surface-1))',
+      border: '1px solid var(--line, var(--border-default))',
+      borderRadius: 'var(--radius-panel)',
+    }} />
+    <div style={{
+      height: 8, width: '70%',
+      background: 'var(--accent)', opacity: 0.55,
+      borderRadius: 'var(--radius-control)',
+    }} />
+  </div>
+);
 
 const ThemeSwatch = ({ theme }) => (
   <div
@@ -528,6 +555,12 @@ const ThemesTab = () => {
     } catch { return DEFAULT_LAYOUT_ID; }
   });
 
+  const [designId, setDesignId] = React.useState(() => {
+    try {
+      return document.documentElement.dataset.design || localStorage.getItem(DESIGN_STORAGE_KEY) || DEFAULT_DESIGN_ID;
+    } catch { return DEFAULT_DESIGN_ID; }
+  });
+
   const applyTheme = (id) => {
     document.documentElement.dataset.theme = id;
     // Defensively clear any stale inline --accent/--accent-2 override (e.g.
@@ -550,6 +583,15 @@ const ThemesTab = () => {
     setLayoutId(id);
   };
 
+  const applyDesign = (id) => {
+    // Sets data-design on <html>; the registry's :root[data-design] rule
+    // re-drives --radius-*/--btn-* tokens live (no reload) — buttons, panels,
+    // inputs, sidebar items, and tags reshape instantly across every page.
+    document.documentElement.dataset.design = id;
+    try { localStorage.setItem(DESIGN_STORAGE_KEY, id); } catch {}
+    setDesignId(id);
+  };
+
   // One-time cleanup: strip any inline override left by the old accent
   // picker (or a stale TWEAK_DEFAULTS write) so the current theme's registry
   // accent renders on mount.
@@ -566,7 +608,7 @@ const ThemesTab = () => {
 
   return (
     <>
-      <div className="nc-panel glow" style={{ padding: 18, marginBottom: 16 }}>
+      <div className="se-panel" style={{ marginBottom: 16 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 12 }}>Theme</div>
         {groups.map(g => (
           <div key={g.mode} style={{ marginBottom: 14 }}>
@@ -604,7 +646,7 @@ const ThemesTab = () => {
         </div>
       </div>
 
-      <div className="nc-panel glow" style={{ padding: 18, marginBottom: 16 }}>
+      <div className="se-panel" style={{ marginBottom: 16 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 4 }}>Layout</div>
         <div className="mono muted" style={{ fontSize: 10, marginBottom: 12 }}>
           Density &amp; structure — independent of color. Pair any palette with any layout.
@@ -635,6 +677,40 @@ const ThemesTab = () => {
         </div>
         <div className="mono muted" style={{ fontSize: 10, marginTop: 10 }}>
           // reshapes the shell live · desktop layout only (mobile stays compact) · add presets in themes/registry.ts
+        </div>
+      </div>
+
+      <div className="se-panel" style={{ marginBottom: 16 }}>
+        <div className="label-tiny neonc" style={{ marginBottom: 4 }}>Design</div>
+        <div className="mono muted" style={{ fontSize: 10, marginBottom: 12 }}>
+          Component shape &amp; personality — corner radius and button typography. Independent of color and density; changes the entire dashboard's look.
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {DESIGNS.map(d => {
+            const active = designId === d.id;
+            return (
+              <button
+                key={d.id}
+                onClick={() => applyDesign(d.id)}
+                className="nc-btn"
+                title={d.description}
+                style={{
+                  alignItems: 'center', gap: 12, padding: 10, minHeight: 0,
+                  borderColor: active ? 'var(--accent)' : 'var(--line)',
+                  background: active ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined,
+                }}
+              >
+                <DesignSwatch design={d} />
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ color: active ? 'var(--text)' : 'var(--text-soft)', fontWeight: 600 }}>{d.label}{active ? ' ✓' : ''}</div>
+                  <div className="mono muted" style={{ fontSize: 10, maxWidth: 220 }}>{d.description}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mono muted" style={{ fontSize: 10, marginTop: 10 }}>
+          // reshapes buttons/panels/inputs/tags live everywhere · pair any design with any color theme and layout · add packs in themes/registry.ts
         </div>
       </div>
     </>
@@ -875,7 +951,7 @@ const SubAgentsTab = () => {
       ))}
 
       {!anyEnabled && (
-        <div className="mono" style={{ fontSize: 10, color: 'var(--danger)', marginTop: 14, padding: '8px 12px', background: 'rgba(251,59,95,0.1)', border: '1px solid rgba(251,59,95,0.3)', borderRadius: 4 }}>
+        <div className="mono se-banner-danger" style={{ fontSize: 10, color: 'var(--danger)', marginTop: 14, padding: '8px 12px' }}>
           ⚠ no sub-agent provider is enabled — every run_subtask call will fail. Enable at least one family above.
         </div>
       )}
@@ -964,9 +1040,19 @@ const ProvidersTab = () => {
  * it never writes secrets directly. config.canva.configured flips true in
  * the same request — no restart step between Register and Connect.
  * pendingRestart only appears as a fallback for creds landed out-of-band
- * (e.g. via the Live .env tab). */
+ * (e.g. via the Live .env tab).
+ *
+ * loopbackReady gate (2026-07-15, proven live): `configured` only means
+ * SOME client_id/secret pair is present — it does NOT mean that client was
+ * ever registered against the loopback redirect_uri. A stale non-loopback
+ * client left in .env from an earlier attempt is `configured:true` but
+ * pairing it with the loopback redirect_uri at /authorize gets a 500 from
+ * Canva. So the authorize link is gated on `status.loopbackReady`
+ * (backed by mcp/canva-oauth.ts isLoopbackClientRegistered()), never on
+ * `configured` alone — when configured but not loopbackReady we show the
+ * Register button again instead of a link that would 500. */
 const CanvaConnectCard = () => {
-  const [status, setStatus]   = React.useState(null); // { configured, hasToken, pendingRestart, serverStatus, toolsCount }
+  const [status, setStatus]   = React.useState(null); // { configured, loopbackReady, hasToken, pendingRestart, serverStatus, toolsCount }
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy]       = React.useState(null);  // 'register' | 'restart' | 'exchange' | null
   const [pasted, setPasted]   = React.useState('');
@@ -1025,8 +1111,13 @@ const CanvaConnectCard = () => {
 
   const connected = !!status?.hasToken;
   const configured = !!status?.configured;
+  const loopbackReady = !!status?.loopbackReady;
   const pendingRestart = !!status?.pendingRestart;
-  const awaitingPaste = configured && !pendingRestart && !connected;
+  // Stale client: creds present, not pending a restart, but NOT registered
+  // against the loopback redirect_uri — the authorize link must never show
+  // for this state (see loopbackReady gate note above the component).
+  const staleClient = configured && !pendingRestart && !loopbackReady;
+  const awaitingPaste = configured && !pendingRestart && loopbackReady && !connected;
 
   return (
     <div className="nc-panel" style={{ padding: 16, marginBottom: 20, border: '1px solid var(--line-soft)' }}>
@@ -1038,6 +1129,8 @@ const CanvaConnectCard = () => {
               <span className="tag" style={{ fontSize: 8, color: 'var(--accent-2)', borderColor: 'var(--accent-2)' }}>CONNECTED</span>
             ) : pendingRestart ? (
               <span className="tag amber" style={{ fontSize: 8 }}>RESTART REQUIRED</span>
+            ) : staleClient ? (
+              <span className="tag amber" style={{ fontSize: 8 }}>RE-REGISTER REQUIRED</span>
             ) : (
               <span className="tag" style={{ fontSize: 8, color: 'var(--muted)' }}>NOT CONNECTED</span>
             )}
@@ -1047,16 +1140,18 @@ const CanvaConnectCard = () => {
               ? `Official Canva MCP (mcp.canva.com) · ${status.toolsCount} tool${status.toolsCount === 1 ? '' : 's'} registered${status.serverStatus ? ` · ${status.serverStatus}` : ''}`
               : pendingRestart
                 ? 'DCR client saved out-of-band — restart the server to load it before connecting'
-                : configured
-                  ? 'App registered — sign in on Canva, then paste the redirected URL back here'
-                  : 'One-time DCR self-registration required before the consent screen can be shown'}
+                : staleClient
+                  ? 'Saved client was not registered against the loopback redirect — click Register to get a fresh one before connecting'
+                  : configured
+                    ? 'App registered — sign in on Canva, then paste the redirected URL back here'
+                    : 'One-time DCR self-registration required before the consent screen can be shown'}
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {!configured && !pendingRestart && (
+          {(!configured || staleClient) && !pendingRestart && (
             <button className="nc-btn primary" disabled={busy === 'register'} onClick={register}>
-              {busy === 'register' ? 'registering…' : 'Register Canva App'}
+              {busy === 'register' ? 'registering…' : staleClient ? 'Re-register Canva App' : 'Register Canva App'}
             </button>
           )}
           {pendingRestart && (
@@ -1071,7 +1166,7 @@ const CanvaConnectCard = () => {
               1. Sign in on Canva ↗
             </a>
           )}
-          {connected && (
+          {connected && loopbackReady && (
             <a className="nc-btn ghost" href={authorizeHref} target="_blank" rel="noopener noreferrer"
               onClick={() => setErr(null)}
               title="Re-run consent, e.g. after a scope change">
@@ -1351,7 +1446,7 @@ const Settings = () => {
         ))}
       </div>
 
-      <div className="nc-panel glow" style={{ padding: 18 }}>
+      <div className="se-panel">
         {tab === 'Themes'     && <ThemesTab/>}
         {tab === 'Routing'    && <RoutingTab/>}
         {tab === 'Spawn'      && <SpawnTab/>}

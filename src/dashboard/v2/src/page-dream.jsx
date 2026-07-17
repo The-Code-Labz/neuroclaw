@@ -226,7 +226,7 @@ const JournalEntry = ({ entry }) => {
           <span style={{ color: entry.status === 'failed' ? 'var(--danger)' : entry.status === 'partial' ? 'var(--amber)' : 'var(--green)' }}>{entry.status}</span>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 12 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 12 }}>
         {stats.map(({ label, val }) => (
           <div key={label} className="nc-panel" style={{ padding: '6px 8px', textAlign: 'center' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--accent)' }}>{val}</div>
@@ -305,7 +305,7 @@ const JournalTab = ({ history, activeEntry, setActiveEntry }) => {
     </div>
   );
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 14 }}>
+    <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 14 }}>
       <div>
         {history.map(entry => {
           const isActive = activeEntry?.id === entry.id;
@@ -331,7 +331,7 @@ const JournalTab = ({ history, activeEntry, setActiveEntry }) => {
           );
         })}
       </div>
-      <div className="nc-panel glow" style={{ padding: 14, alignSelf: 'start' }}>
+      <div className="mem-panel" style={{ alignSelf: 'start' }}>
         <JournalEntry entry={activeEntry} />
       </div>
     </div>
@@ -397,7 +397,7 @@ const Dream = () => {
         </>}
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
+      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
         {[
           ['SESSIONS PROCESSED', DREAM?.last?.processed ?? 0,   'last cycle'],
           ['MEMORIES EXTRACTED', DREAM?.last?.extracted ?? 0,   ''],
@@ -421,7 +421,7 @@ const Dream = () => {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontFamily: 'var(--mono)', fontWeight: 700,
                   color: nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : 'var(--text)',
-                  fontSize: 12, background: '#020617', position: 'relative', zIndex: 1,
+                  fontSize: 12, background: 'var(--panel)', position: 'relative', zIndex: 1,
                 }}>{i + 1}</div>
                 <div className="mono" style={{ fontSize: 10, marginTop: 8, color: nodeState === 'done' ? 'var(--green)' : nodeState === 'active' ? 'var(--accent)' : 'var(--text-soft)', letterSpacing: '0.06em' }}>
                   {s.toUpperCase()}

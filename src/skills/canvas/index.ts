@@ -14,3 +14,5 @@ export {
   listProjects, getProject, getArtifact, deleteProject,
 } from './store';
 export { CANVAS_CSP, withCspMeta, escapeHtmlAttr, escapeHtmlText } from './srcdoc';
+export { deployHtmlToGithub, sanitizeRepoName } from './github-deploy';
+export type { DeployResult } from './github-deploy';

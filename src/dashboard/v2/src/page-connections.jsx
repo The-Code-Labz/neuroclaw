@@ -97,157 +97,110 @@ const Connections = () => {
 
   // ── render ────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: '16px 18px', maxWidth: 1200 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div>
-          <h2 className="mono" style={{ margin: 0, letterSpacing: '0.06em' }}>COMPOSIO · CONNECTIONS</h2>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Manage OAuth connections + tier policy. Re-tag owner, flip shared, revoke, or initiate new entity-scoped OAuth.
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="nc-btn" onClick={refresh} disabled={busy}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
-          <button className="nc-btn primary" onClick={() => setShowAdd(true)} disabled={busy}>
-            <Icon name="plus" size={14} /> Add connection
-          </button>
-        </div>
-      </div>
+    <div>
+      <PageHeader title="Composio · Connections" subtitle="// OAuth connections + tier policy · re-tag owner · flip shared · revoke · initiate new entity-scoped OAuth" right={<>
+        <button className="nc-btn" onClick={refresh} disabled={busy}><Icon name="refresh" size={14} /> Refresh</button>
+        <button className="nc-btn primary" onClick={() => setShowAdd(true)} disabled={busy}><Icon name="plus" size={14} /> Add connection</button>
+      </>}/>
 
       {error && (
-        <div className="card" style={{ borderColor: 'var(--red)', color: 'var(--red)', padding: 10, marginBottom: 12 }}>
-          <span className="mono" style={{ fontSize: 11 }}>ERROR:</span> {error}
-        </div>
+        <div className="mono" style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 12 }}>// {error}</div>
       )}
 
       {/* ── pending queue ───────────────────────────────────────── */}
       {pending.length > 0 && (
-        <section style={{ marginBottom: 18 }}>
-          <h3 className="mono" style={{ fontSize: 13, letterSpacing: '0.08em', marginBottom: 6 }}>
-            ⚠ PENDING DECISIONS ({pending.length})
-          </h3>
-          <div className="card" style={{ padding: 0 }}>
-            <table className="nc-table" style={{ width: '100%' }}>
-              <thead>
-                <tr>
-                  <th>Agent</th><th>Toolkit</th><th>Tier</th><th>Reason</th><th>Conflict</th><th>Resolve</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pending.map(p => (
-                  <tr key={p.id}>
-                    <td className="mono">{p.requesting_agent}</td>
-                    <td>{p.toolkit}</td>
-                    <td><span className={`tag ${tierTone(p.tier)}`}>{p.tier}</span></td>
-                    <td className="muted" style={{ fontSize: 11 }}>{p.reason}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>
-                      {p.conflict_owner ? `${p.conflict_owner} → ${p.conflict_account?.slice(0,12) ?? ''}…` : '—'}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                        {p.reason === 'user_decision_required' && (
-                          <>
-                            <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 6px' }}
-                                    onClick={() => resolvePending(p.id, 'use_existing_shared', true)}>
-                              Share existing
-                            </button>
-                            <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 6px' }}
-                                    onClick={() => resolvePending(p.id, 'create_new_owned')}>
-                              New per-agent
-                            </button>
-                          </>
-                        )}
-                        {p.reason === 'admin_approval_required' && (
-                          <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 6px', borderColor: 'var(--green)' }}
-                                  onClick={() => resolvePending(p.id, 'create_new_owned')}>
-                            Approve new
-                          </button>
-                        )}
-                        <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 6px', color: 'var(--red)' }}
-                                onClick={() => resolvePending(p.id, 'rejected')}>
-                          Reject
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <div style={{ marginBottom: 18 }}>
+          <div className="label-tiny" style={{ marginBottom: 8 }}>PENDING DECISIONS ({pending.length})</div>
+          {pending.map(p => (
+            <div key={p.id} className="cn-row">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span className="mono" style={{ fontSize: 12 }}>{p.requesting_agent}</span>
+                <span className="muted" style={{ fontSize: 11 }}>· {p.toolkit}</span>
+                <span className={`tag ${tierTone(p.tier)}`}>{p.tier}</span>
+                <span className="muted" style={{ fontSize: 11 }}>{p.reason}</span>
+                {p.conflict_owner && (
+                  <span className="mono muted" style={{ fontSize: 10 }}>{p.conflict_owner} → {p.conflict_account?.slice(0,12) ?? ''}…</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                {p.reason === 'user_decision_required' && (
+                  <>
+                    <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px' }}
+                            onClick={() => resolvePending(p.id, 'use_existing_shared', true)}>
+                      Share existing
+                    </button>
+                    <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px' }}
+                            onClick={() => resolvePending(p.id, 'create_new_owned')}>
+                      New per-agent
+                    </button>
+                  </>
+                )}
+                {p.reason === 'admin_approval_required' && (
+                  <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--accent-2)' }}
+                          onClick={() => resolvePending(p.id, 'create_new_owned')}>
+                    Approve new
+                  </button>
+                )}
+                <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--danger)' }}
+                        onClick={() => resolvePending(p.id, 'rejected')}>
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
-      {/* ── connections table ────────────────────────────────── */}
-      <section>
-        <h3 className="mono" style={{ fontSize: 13, letterSpacing: '0.08em', marginBottom: 6 }}>
-          CONNECTIONS ({accounts.length})
-        </h3>
-        <div className="card" style={{ padding: 0 }}>
-          <table className="nc-table" style={{ width: '100%' }}>
-            <thead>
-              <tr>
-                <th>Account ID</th>
-                <th>Toolkit</th>
-                <th>Owner</th>
-                <th>Tier</th>
-                <th>Shared</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.length === 0 && !busy && (
-                <tr><td colSpan={7} className="muted" style={{ padding: 24, textAlign: 'center' }}>
-                  No connections found. Click "Add connection" to OAuth a new app scoped to an agent.
-                </td></tr>
-              )}
-              {accounts.map(a => (
-                <tr key={a.id}>
-                  <td className="mono" style={{ fontSize: 11 }}>{a.id}</td>
-                  <td>{a.toolkit}</td>
-                  <td>
-                    <OwnerCell value={a.owner} agents={agents}
-                               onChange={(owner) => patchAccount(a.id, { owner, toolkit: a.toolkit })} />
-                  </td>
-                  <td>
-                    <span className={`tag ${tierTone(a.tier)}`} title={tierBlurb(a.tier)}>{a.tier}</span>
-                  </td>
-                  <td>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <input type="checkbox" checked={!!a.shared}
-                             onChange={(e) => patchAccount(a.id, { shared: e.target.checked, toolkit: a.toolkit })}/>
-                      <span className="muted" style={{ fontSize: 11 }}>{a.shared ? 'shared' : 'private'}</span>
-                    </label>
-                  </td>
-                  <td>
-                    <span className={`tag ${a.status === 'ACTIVE' ? 'green' : 'amber'}`}>{a.status}</span>
-                  </td>
-                  <td>
-                    <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 6px', color: 'var(--red)' }}
-                            onClick={() => revoke(a.id, a.toolkit)} disabled={busy}>
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      {/* ── connections list ────────────────────────────────── */}
+      <div style={{ marginBottom: 18 }}>
+        <div className="label-tiny" style={{ marginBottom: 8 }}>CONNECTIONS ({accounts.length})</div>
+        {accounts.length === 0 && !busy && (
+          <div className="cn-panel" style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+            No connections found. Click "Add connection" to OAuth a new app scoped to an agent.
+          </div>
+        )}
+        {accounts.map(a => (
+          <div key={a.id} className="cn-row">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+                <strong>{a.toolkit}</strong>
+                <span className="mono muted" style={{ fontSize: 10 }}>{a.id}</span>
+                <span className={`tag ${tierTone(a.tier)}`} title={tierBlurb(a.tier)}>{a.tier}</span>
+                <span className={`tag ${a.status === 'ACTIVE' ? 'green' : 'amber'}`}>{a.status}</span>
+              </div>
+              <button className="nc-btn ghost" style={{ fontSize: 10, padding: '3px 8px', color: 'var(--danger)' }}
+                      onClick={() => revoke(a.id, a.toolkit)} disabled={busy}>
+                Revoke
+              </button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="muted" style={{ fontSize: 10 }}>owner</span>
+                <OwnerCell value={a.owner} agents={agents}
+                           onChange={(owner) => patchAccount(a.id, { owner, toolkit: a.toolkit })} />
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <input type="checkbox" checked={!!a.shared}
+                       onChange={(e) => patchAccount(a.id, { shared: e.target.checked, toolkit: a.toolkit })}/>
+                <span className="muted" style={{ fontSize: 11 }}>{a.shared ? 'shared' : 'private'}</span>
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
 
       {/* ── tier legend ───────────────────────────────────── */}
-      <section style={{ marginTop: 18 }}>
-        <h3 className="mono" style={{ fontSize: 13, letterSpacing: '0.08em', marginBottom: 6 }}>TIER POLICY</h3>
-        <div className="card" style={{ padding: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+      <div>
+        <div className="label-tiny" style={{ marginBottom: 8 }}>TIER POLICY</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {['T1','T2','T3'].map(t => (
-            <div key={t} style={{ padding: 8, border: '1px solid var(--line-soft)', borderRadius: 4 }}>
+            <div key={t} className="cn-panel" style={{ padding: 10 }}>
               <span className={`tag ${tierTone(t)}`}>{t}</span>
               <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{tierBlurb(t)}</div>
             </div>
           ))}
         </div>
-      </section>
+      </div>
 
       {showAdd && (
         <AddConnectionModal
@@ -326,13 +279,13 @@ const AddConnectionModal = ({ agents, authConfigs, onClose, onDone, setError }) 
   };
 
   return (
-    <div className="nc-modal-overlay" onClick={onClose}>
-      <div className="nc-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
-        <div className="nc-modal-header">
-          <h3 className="mono" style={{ margin: 0 }}>NEW COMPOSIO CONNECTION</h3>
+    <div className="modal-back" onClick={onClose}>
+      <div className="cn-panel" onClick={e => e.stopPropagation()} style={{ width: '90%', maxWidth: 480 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div className="label-tiny neonc">NEW COMPOSIO CONNECTION</div>
           <button className="nc-btn ghost" onClick={onClose}><Icon name="close" size={14}/></button>
         </div>
-        <div className="nc-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {!redirectUrl ? (
             <>
               <label>

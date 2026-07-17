@@ -19,7 +19,7 @@ const STAGE_COLOR = {
   awaiting_human: { bg: 'rgba(255,193,7,0.18)',  fg: '#ffc107', label: 'gate' },
   in_progress:    { bg: 'color-mix(in srgb, var(--accent) 16%, transparent)',  fg: 'var(--accent)', label: 'running' },
   rejected:       { bg: 'rgba(255,64,96,0.16)',  fg: 'var(--danger)', label: 'rejected' },
-  pending:        { bg: 'rgba(255,255,255,0.05)', fg: '#8892a0', label: '—' },
+  pending:        { bg: 'color-mix(in srgb, var(--text) 5%, transparent)', fg: '#8892a0', label: '—' },
 };
 
 function fmtWhen(ts) {
@@ -44,12 +44,12 @@ const ProjectRow = ({ p, active, onClick }) => {
       onClick={onClick}
       style={{
         display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px',
-        border: '1px solid ' + (active ? 'var(--accent)' : 'rgba(255,255,255,0.07)'),
-        borderRadius: 8, marginBottom: 8, cursor: 'pointer',
-        background: active ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'rgba(255,255,255,0.02)',
+        border: '1px solid ' + (active ? 'var(--accent)' : 'var(--line-soft)'),
+        borderRadius: 8, marginBottom: 8, cursor: 'pointer', color: 'var(--text)',
+        background: active ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
       }}
     >
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
         {projectTitle(p)}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -134,8 +134,13 @@ const OverridePanel = ({ id, overrides, onSaved }) => {
     finally { setSaving(false); }
   };
 
+  // colorScheme:'dark' makes the browser render the native <option> popup using
+  // dark chrome (dark bg, light text) instead of defaulting to a white popup that
+  // the inherited light text color becomes invisible against.
   const sel = { padding: '6px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.12)', color: 'inherit', fontSize: 12, minWidth: 150 };
+                border: '1px solid rgba(255,255,255,0.12)', color: '#e4e7f0', fontSize: 12,
+                minWidth: 150, colorScheme: 'dark' };
+  const opt = { background: '#181a20', color: '#e4e7f0' };
   const lbl = { fontSize: 10, color: '#8892a0', marginBottom: 4, display: 'block' };
 
   return (
@@ -150,9 +155,9 @@ const OverridePanel = ({ id, overrides, onSaved }) => {
           <label style={lbl}>Image provider</label>
           <select style={sel} value={imageProvider}
             onChange={e => { setImageProvider(e.target.value); setImageModel(''); }}>
-            <option value="">(pipeline default)</option>
+            <option style={opt} value="">(pipeline default)</option>
             {providers.map(p => (
-              <option key={p.id} value={p.id}>{p.label}{p.degraded ? ' ⚠' : ''}</option>
+              <option style={opt} key={p.id} value={p.id}>{p.label}{p.degraded ? ' ⚠' : ''}</option>
             ))}
           </select>
         </div>
@@ -160,15 +165,15 @@ const OverridePanel = ({ id, overrides, onSaved }) => {
           <label style={lbl}>Image model</label>
           <select style={sel} value={imageModel} disabled={!imageProvider}
             onChange={e => setImageModel(e.target.value)}>
-            <option value="">(provider default)</option>
-            {modelsForProvider.map(m => <option key={m} value={m}>{m}</option>)}
+            <option style={opt} value="">(provider default)</option>
+            {modelsForProvider.map(m => <option style={opt} key={m} value={m}>{m}</option>)}
           </select>
         </div>
         <div>
           <label style={lbl}>Narration voice (Kokoro)</label>
           <select style={sel} value={ttsVoice} onChange={e => setTtsVoice(e.target.value)}>
-            <option value="">(default · af_heart)</option>
-            {voices.map(v => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
+            <option style={opt} value="">(default · af_heart)</option>
+            {voices.map(v => <option style={opt} key={v.id} value={v.id}>{v.name || v.id}</option>)}
           </select>
         </div>
         <button className="nc-btn primary" disabled={saving} onClick={save} style={{ height: 32 }}>
@@ -252,7 +257,7 @@ const ProjectDetail = ({ id }) => {
 
       {/* Human-approval gate */}
       {gateStage && (
-        <div className="nc-panel glow" style={{ padding: 14, marginBottom: 14, borderColor: STAGE_COLOR.awaiting_human.fg }}>
+        <div className="nc-panel" style={{ padding: 14, marginBottom: 14, borderLeft: `3px solid ${STAGE_COLOR.awaiting_human.fg}` }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: STAGE_COLOR.awaiting_human.fg, marginBottom: 6 }}>
             ● {gateStage[0]} — awaiting your approval
           </div>
@@ -283,7 +288,7 @@ const ProjectDetail = ({ id }) => {
           <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
             <tbody>
               {decisions.decisions.map((d, i) => (
-                <tr key={i} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                <tr key={i} style={{ borderTop: '1px solid var(--line-soft)' }}>
                   <td className="mono" style={{ padding: '5px 6px', color: 'var(--accent)', whiteSpace: 'nowrap' }}>{d.stage || d.decision_point || '—'}</td>
                   <td style={{ padding: '5px 6px' }}>{d.chosen || d.selected || d.decision || ''}</td>
                   <td className="muted" style={{ padding: '5px 6px' }}>{d.rationale || d.reason || ''}</td>
@@ -361,8 +366,8 @@ const Backlot = () => {
       )}
 
       {projects.length > 0 && (
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-          <div style={{ width: 260, flexShrink: 0 }}>
+        <div className="split-flex" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div className="split-flex-fixed" style={{ width: 260, flexShrink: 0 }}>
             {projects.map(p => (
               <ProjectRow key={p.id} p={p} active={p.id === selected} onClick={() => setSelected(p.id)} />
             ))}

@@ -142,6 +142,37 @@ export const openmontageExecShape = {
 };
 export const openmontageExecSchema = z.object(openmontageExecShape);
 
+// run_montage — one-shot trigger that inits (or reuses) an OpenMontage project
+// on the render node and hands it to Sachi (the orchestrator agent) to drive to
+// its next awaiting_human gate. This is the ENTRY POINT for the agent-driven
+// pipeline; Sachi then loops stages via openmontage_exec per the stage-loop skill.
+export const runMontageShape = {
+  brief:         z.string().min(1).describe('The creative brief for the montage — what the video should be about. Sachi reasons over this to author each stage. Persisted on the node so gate-resumes can re-read it.'),
+  pipeline_type: z.string().optional().describe('OpenMontage pipeline manifest id (default "mvp_zero_key"). mvp_zero_key = 4 tool-exec stages (assets→edit→compose→publish). explainer/cinematic/animation add reasoning stages (verify vendored first).'),
+  project_id:    z.string().optional().describe('Reuse an existing project id, or omit to auto-generate (nc-montage-<ts>). Must match ^[a-zA-Z0-9._-]{1,64}$.'),
+  priority:      z.number().int().min(1).max(100).optional().describe('Task priority for the Sachi assignment (default 55).'),
+};
+export const runMontageSchema = z.object(runMontageShape);
+
+export const gameBuildShape = {
+  brief: z.string().min(1).describe('A one-sentence description of the game to build, including controls/theme/goal for best results (e.g. "a fast 2-button endless runner with a high score"). The engine produces ONE self-contained, playable HTML5 canvas game that lands in Studio › Games.'),
+};
+export const gameBuildSchema = z.object(gameBuildShape);
+
+export const webappBuildShape = {
+  brief:      z.string().min(1).describe('A description of the web app to build (e.g. "a kanban board with drag-drop and 3 columns" or "a markdown note-taking app with live preview"). The engine produces ONE self-contained, genuinely functional modern web app (React + Tailwind via CDN) that lands in Studio › WebApps and previews in a sandboxed iframe.'),
+  agent_name: z.string().optional().describe('The registered agent NAME whose provider+model should build the app (e.g. "Jarvis", "F.R.I.D.A.Y"). Pick a strong code/HTML generator. Omit to use the default design agent. Not every deployment has a "Jarvis" — this lets the caller choose any available agent.'),
+};
+export const webappBuildSchema = z.object(webappBuildShape);
+
+export const deployToGithubShape = {
+  artifact_id: z.string().min(1).describe('The artifact id to deploy (from a canvas/game/webapp build — the id returned as artifact_id, or a project\'s latest artifact). Must be an HTML artifact.'),
+  repo_name:   z.string().min(1).describe('Desired GitHub repository name (e.g. "my-kanban-app"). Auto-sanitized to GitHub\'s allowed charset; if it already exists on the account it is updated (redeploy).'),
+  private:     z.boolean().optional().describe('Create the repo as private. Defaults to true. Ignored when enable_pages is true (GitHub Pages on free plans requires a public repo).'),
+  enable_pages: z.boolean().optional().describe('Enable GitHub Pages so the artifact is instantly live at a public URL. Forces the repo public. Defaults to false.'),
+};
+export const deployToGithubSchema = z.object(deployToGithubShape);
+
 export const writeVaultNoteShape = {
   title:      z.string().describe('4-8 words.'),
   type:       z.string().describe('episodic | semantic | procedural | preference | insight | project | session_summary'),
@@ -805,6 +836,43 @@ export const falImageShape = {
 };
 export const falImageSchema = z.object(falImageShape);
 
+// ── Async video generation (fal + KIE media queue → Studio › Media gallery) ───
+export const falVideoShape = {
+  prompt:       z.string().describe('Text describing the video to generate. For image-to-video, describes the motion/action applied to input_image.'),
+  model:        z.string().optional().describe('fal video model id (endpoint_id). Default fal-ai/wan/v2.2-5b/text-to-video. Known text-to-video: fal-ai/wan/v2.2-5b/text-to-video, fal-ai/minimax/hailuo-02/standard/text-to-video, fal-ai/kling-video/v2/master/text-to-video, fal-ai/veo3, fal-ai/veo3/fast, fal-ai/ltx-video-13b-distilled. Image-to-video (set input_image): fal-ai/kling-video/v2/master/image-to-video, fal-ai/minimax/hailuo-02/standard/image-to-video, fal-ai/wan/v2.2-5b/image-to-video.'),
+  input_image:  z.string().optional().describe('For image-to-video: the source/first-frame image. Pass a session upload id (from list_uploads), a local file path, a base64/data: URI, or a public https URL — the server stages it to a public URL. When set, use an image-to-video model.'),
+  duration:     z.union([z.number(), z.string()]).optional().describe('Clip duration in seconds (model-dependent, e.g. 5 or 10). Omit for the model default.'),
+  aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. "16:9", "9:16", "1:1" (model-dependent).'),
+  resolution:   z.string().optional().describe('Output resolution, e.g. "480p", "720p", "1080p" (model-dependent).'),
+};
+export const falVideoSchema = z.object(falVideoShape);
+
+export const kieVideoShape = {
+  prompt:       z.string().describe('Text describing the video to generate. For image-to-video, describes the motion applied to input_image.'),
+  model:        z.string().optional().describe('KIE video model id (unified createTask API). Default veo3_fast. Known video models: veo3, veo3_fast, sora-2-text-to-video, runway/gen4-turbo, kling/v2-1-master. ⚠️ Model IDs pending live verification — override if a default fails.'),
+  input_image:  z.string().optional().describe('For image-to-video: source image (session upload id, local path, base64/data: URI, or public https URL).'),
+  duration:     z.union([z.number(), z.string()]).optional().describe('Clip duration in seconds (model-dependent).'),
+  aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. "16:9", "9:16" (model-dependent).'),
+};
+export const kieVideoSchema = z.object(kieVideoShape);
+
+// ── Music / audio generation (async job queue → Studio › Media gallery) ───
+export const falAudioShape = {
+  prompt:   z.string().describe('Text describing the music/audio to generate — genre, mood, instruments, tempo, style.'),
+  model:    z.string().optional().describe('fal audio/music model id (endpoint_id). Default cassetteai/music-generator (prompt→music). Known: cassetteai/music-generator, fal-ai/minimax-music (song w/ lyrics), fal-ai/stable-audio-25/text-to-audio (sound/music), fal-ai/lyria2, fal-ai/diffrhythm (song w/ lyrics), fal-ai/ace-step (uses tags not prompt).'),
+  duration: z.union([z.number(), z.string()]).optional().describe('Duration in seconds (model-dependent).'),
+  lyrics:   z.string().optional().describe('Optional lyrics for song-generating models (ace-step, minimax-music, diffrhythm). Ignored by instrumental models.'),
+};
+export const falAudioSchema = z.object(falAudioShape);
+
+export const kieAudioShape = {
+  prompt:   z.string().describe('Text describing the music/song to generate — genre, mood, instruments, style.'),
+  model:    z.string().optional().describe('KIE music model id (unified createTask API). Default suno/v5. ⚠️ Model IDs pending live verification — override if a default fails.'),
+  duration: z.union([z.number(), z.string()]).optional().describe('Duration in seconds (model-dependent).'),
+  lyrics:   z.string().optional().describe('Optional lyrics for song generation (Suno-style models).'),
+};
+export const kieAudioSchema = z.object(kieAudioShape);
+
 // ── OpenArt MCP image tool (async: submit→wait→download bytes; gallery-routed) ─
 export const openartImageShape = {
   prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
@@ -816,6 +884,37 @@ export const openartImageShape = {
   caption:      z.string().optional().describe('Optional caption shown below the image.'),
 };
 export const openartImageSchema = z.object(openartImageShape);
+
+// ── Higgsfield MCP image tool (async: submit→poll→URL; gallery-routed) ───────
+export const higgsfieldImageShape = {
+  prompt:       z.string().describe('Text describing the image to generate, or the edit instruction to apply to input_image.'),
+  model:        z.string().optional().describe('Higgsfield image model id (default nano_banana_2). For edit (input_image set) use an image-to-image model: nano_banana_2, nano_banana_pro, nano_banana, nano_banana_2_lite. Others: use higgsfield_models to discover.'),
+  input_image:  z.string().optional().describe('For image-to-image editing: the source image as an https URL. When set, the image is imported to Higgsfield and the prompt is applied as an edit instruction. Omit for text→image generation.'),
+  aspect_ratio: z.string().optional().describe('Aspect ratio, e.g. 1:1 (default), 16:9, 9:16, 3:2, 2:3, 4:3, 3:4, 4:5, 5:4, 21:9.'),
+  resolution:   z.string().optional().describe('Output resolution: 1k (default), 2k, or 4k (higher = more credits).'),
+  count:        z.number().int().min(1).max(4).optional().describe('Number of images to generate (1-4, default 1).'),
+  alt:          z.string().optional().describe('Alt text for the displayed image. Defaults to the prompt.'),
+  caption:      z.string().optional().describe('Optional caption shown below the image.'),
+};
+export const higgsfieldImageSchema = z.object(higgsfieldImageShape);
+
+// ── Higgsfield MCP video tool (async: submit→poll→URL; Studio › Media) ───────
+export const higgsfieldVideoShape = {
+  prompt:       z.string().describe('Text describing the video to generate.'),
+  model:        z.string().optional().describe('Higgsfield video model id (default cinematic_studio_3_0). Others: use higgsfield_models to discover.'),
+  aspect_ratio: z.string().optional().describe("Output aspect ratio. Use '9:16' for TikTok/Reels/Shorts (vertical) and '16:9' for landscape (default varies by model)."),
+  resolution:   z.string().optional().describe('Output resolution: 480p, 720p (default), 1080p, or 4k (higher = more credits).'),
+  alt:          z.string().optional().describe('Title/alt text for the video in the Media gallery. Defaults to the prompt.'),
+};
+export const higgsfieldVideoSchema = z.object(higgsfieldVideoShape);
+
+// ── Higgsfield model discovery ──────────────────────────────────────────────
+export const higgsfieldModelsShape = {
+  type:   z.enum(['image', 'video', 'audio', '3d']).optional().describe('Filter models by output type (omit for all).'),
+  query:  z.string().optional().describe('Optional use-case query for recommendations (e.g. "image-to-video, cinematic").'),
+  limit:  z.number().int().min(1).max(50).optional().describe('Max models to return (default 20).'),
+};
+export const higgsfieldModelsSchema = z.object(higgsfieldModelsShape);
 
 // ── VoidAI gpt-image (OpenAI Images API) image tool ─────────────────────────
 export const voidaiGptImageShape = {
@@ -886,6 +985,44 @@ export const kbIndexContentSchema = z.object(kbIndexContentShape);
 export const kbListSourcesShape = {} as const;
 export const kbListSourcesSchema = z.object(kbListSourcesShape);
 
+// ── Translation glossary (kb_glossary) ───────────────────────────────────────
+export const glossaryLookupShape = {
+  sourceTerm:        z.string().describe('The source-language term/phrase to look up.'),
+  targetLocale:      z.string().describe('Target locale/language code, e.g. "fr", "de", "ja".'),
+  sourceLocale:      z.string().optional().describe('Source locale code. Default "en".'),
+  includeDeprecated: z.boolean().optional().describe('Include deprecated entries in the lookup. Default false.'),
+};
+export const glossaryLookupSchema = z.object(glossaryLookupShape);
+
+export const glossaryUpsertShape = {
+  sourceTerm:   z.string().describe('The source-language term/phrase.'),
+  targetLocale: z.string().describe('Target locale/language code, e.g. "fr", "de", "ja".'),
+  translation:  z.string().describe('The approved translation for this term in the target locale.'),
+  sourceLocale: z.string().optional().describe('Source locale code. Default "en".'),
+  notes:        z.string().optional().describe('Optional context/usage notes (e.g. tone, brand rule).'),
+  status:       z.enum(['approved', 'draft', 'deprecated']).optional().describe('Entry status. Default "approved".'),
+};
+export const glossaryUpsertSchema = z.object(glossaryUpsertShape);
+
+export const glossaryListShape = {
+  targetLocale:       z.string().optional().describe('Filter to a single target locale.'),
+  sourceTermContains: z.string().optional().describe('Filter to source terms containing this substring.'),
+  limit:              z.number().int().min(1).max(200).optional().describe('Max entries to return (default 50).'),
+};
+export const glossaryListSchema = z.object(glossaryListShape);
+
+// ── Text-fit estimator (pure, stateless) ─────────────────────────────────────
+export const estimateTextFitShape = {
+  text:                 z.string().describe('The candidate/translated text to check.'),
+  locale:               z.string().describe('Locale/language code of the text, e.g. "fr", "de", "ja", "en".'),
+  boxWidthPx:           z.number().positive().describe('Text box width in pixels.'),
+  boxHeightPx:          z.number().positive().describe('Text box height in pixels.'),
+  fontSizePx:           z.number().positive().describe('Font size in pixels.'),
+  lineHeightMultiplier: z.number().positive().optional().describe('Line height as a multiple of font size. Default 1.2.'),
+  charWidthEm:          z.number().positive().optional().describe('Average glyph advance width as a fraction of em. Default 0.55.'),
+};
+export const estimateTextFitSchema = z.object(estimateTextFitShape);
+
 // ── Curated image-generation/edit wrappers (proxy to MCP image servers) ──────
 // See docs/specs/per-agent-image-tools-spec.md (Fix 2, Option B). Schema + shape
 // are defined coupled (schema = z.object(shape)) so validateRegistryShapes()
@@ -929,3 +1066,12 @@ export const geminiImageEditShape = {
   image_path: z.string().describe('Absolute path to a PNG or JPEG to edit.'),
 };
 export const geminiImageEditSchema = z.object(geminiImageEditShape);
+
+// ── Loop Engineering (loop_run) ─────────────────────────────────────────────
+export const loopRunShape = {
+  goal:          z.string().describe('What the loop should produce — the objective the builder must satisfy and the verifier grades against.'),
+  artifact_kind: z.enum(['code', 'prose', 'unknown']).optional().describe("Kind of artifact being built: 'code', 'prose', or 'unknown' (default). Routes the verifier's tier-1 model."),
+  acceptance:    z.string().optional().describe('Explicit acceptance criteria that must ALL be met for the loop to pass. Folded into both the build and verify prompts.'),
+  max_rounds:    z.number().int().min(1).max(8).optional().describe('Override the max build→verify rounds (default from config, hard-capped at 8).'),
+};
+export const loopRunSchema = z.object(loopRunShape);

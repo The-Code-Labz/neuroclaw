@@ -197,7 +197,7 @@ const Skills = () => {
       )}
 
       {items.map(s => (
-        <div key={s.name} className="nc-panel" style={{ marginBottom: 10, padding: 14 }}>
+        <div key={s.name} className="cn-row">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -415,7 +415,7 @@ const SkillEditor = ({ editing, setEditing, submit, cancel, busy }) => {
     };
     const useExample = (ex) => setEditing({ ...editing, kind: ex.kind, spec: ex.spec });
     return (
-      <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
+      <div className="cn-panel" style={{ marginBottom: 14 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 10 }}>INSTALL SKILL · run /plugin or npx commands · output capped at 64KB · 90s timeout</div>
         <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10 }}>
           <div className="field">
@@ -478,7 +478,7 @@ const SkillEditor = ({ editing, setEditing, submit, cancel, busy }) => {
       reader.readAsText(file);
     };
     return (
-      <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
+      <div className="cn-panel" style={{ marginBottom: 14 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 10 }}>UPLOAD SKILL.md · drop in an existing skill (frontmatter optional) · lands at .claude/skills/&lt;name&gt;/</div>
         <div className="field" style={{ marginBottom: 10 }}>
           <label>SKILL.md file</label>
@@ -517,7 +517,7 @@ const SkillEditor = ({ editing, setEditing, submit, cancel, busy }) => {
 
   if (editing.mode === 'fromScript') {
     return (
-      <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
+      <div className="cn-panel" style={{ marginBottom: 14 }}>
         <div className="label-tiny neonc" style={{ marginBottom: 10 }}>SCRIPT → SKILL · paste a script, get a callable skill</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="field">
@@ -547,7 +547,7 @@ const SkillEditor = ({ editing, setEditing, submit, cancel, busy }) => {
   }
 
   return (
-    <div className="nc-panel glow" style={{ padding: 16, marginBottom: 14 }}>
+    <div className="cn-panel" style={{ marginBottom: 14 }}>
       <div className="label-tiny neonc" style={{ marginBottom: 10 }}>{editing.mode === 'edit' ? `EDIT · ${editing.name}` : 'NEW SKILL'}</div>
       {editing.mode === 'new' && (
         <div className="field" style={{ marginBottom: 10 }}>

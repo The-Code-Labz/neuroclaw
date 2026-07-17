@@ -267,7 +267,7 @@ const Secrets = () => {
       {/* Add form */}
       {showAdd && (
         <Section title="NEW SECRET" className="new-secret-section" style={{ marginBottom: 20, borderColor: 'var(--accent)' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '10px 16px', alignItems: 'center', marginBottom: 12 }}>
+          <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '10px 16px', alignItems: 'center', marginBottom: 12 }}>
             <span className="mono muted" style={{ fontSize: 11 }}>SCOPE</span>
             <div className="flex-wrap-mobile">
               {[
@@ -487,7 +487,7 @@ const AgentPrefixRow = ({ agent, onSave }) => {
     finally { setSaving(false); }
   };
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 12, alignItems: 'center' }}>
+    <div className="setting-row" style={{ display: 'grid', gridTemplateColumns: '1fr 220px auto auto', gap: 12, alignItems: 'center' }}>
       <span className="mono" style={{ fontSize: 12, color: 'var(--text-primary)' }}>{agent.name}</span>
       <input className="nc-input" placeholder="ORACLE" value={draft}
         onChange={(e) => setDraft(e.target.value.toUpperCase())} style={{ fontSize: 12 }}/>

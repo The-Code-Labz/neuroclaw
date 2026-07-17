@@ -113,6 +113,23 @@ export function getCanvaOAuthConfig(): CanvaOAuthConfig | null {
   };
 }
 
+/** True only when the CURRENT CANVA_CLIENT_ID was registered by THIS module's
+ *  registerDcrClient() against the loopback redirect_uri — i.e.
+ *  CANVA_LOOPBACK_CLIENT_ID (written exclusively inside registerDcrClient,
+ *  see below) still matches CANVA_CLIENT_ID. Guards against a stale client
+ *  sitting in .env/broker from an earlier non-loopback (public-host) DCR
+ *  attempt: config.canva.configured only checks that SOME id/secret pair is
+ *  present, which is not sufficient — Canva's /authorize 500s when a client
+ *  is paired with a redirect_uri it never registered. Self-invalidates the
+ *  moment CANVA_CLIENT_ID is swapped out-of-band (e.g. pasted into the Live
+ *  .env / Secrets tab) without a fresh registerDcrClient() run, so there is
+ *  no stale-boolean edge case. */
+export function isLoopbackClientRegistered(): boolean {
+  const clientId = process.env.CANVA_CLIENT_ID?.trim();
+  const loopbackId = process.env.CANVA_LOOPBACK_CLIENT_ID?.trim();
+  return !!clientId && !!loopbackId && clientId === loopbackId;
+}
+
 /** DCR self-registration against Canva's /register endpoint, followed by an
  *  immediate persist of the returned client_id/secret to the broker AND the
  *  live process.env — this is the single authoritative write path (the
@@ -146,8 +163,13 @@ export async function registerDcrClient(redirectUri: string, clientName = 'Neuro
     const storage = getStorage();
     await writeSecret(storage, 'CANVA_CLIENT_ID', clientId);
     await writeSecret(storage, 'CANVA_CLIENT_SECRET', clientSecret);
+    // Records that THIS clientId specifically went through loopback DCR —
+    // see isLoopbackClientRegistered() above. Written in the same request as
+    // CLIENT_ID/SECRET so the two can never disagree.
+    await writeSecret(storage, 'CANVA_LOOPBACK_CLIENT_ID', clientId);
     process.env.CANVA_CLIENT_ID = clientId;
     process.env.CANVA_CLIENT_SECRET = clientSecret;
+    process.env.CANVA_LOOPBACK_CLIENT_ID = clientId;
     logger.info('canva-oauth: DCR client registered and persisted to broker');
 
     return { clientId, clientSecret };
@@ -169,6 +191,12 @@ export interface AuthorizeStart {
 export function startAuthorize(): AuthorizeStart | null {
   const oauth = getCanvaOAuthConfig();
   if (!oauth) return null;
+  // Never build an authorize URL against a client that wasn't registered
+  // via loopback DCR — see isLoopbackClientRegistered() above. The route
+  // (routes.ts /api/oauth/canva/start) already checks this and returns a
+  // clearer 400 first; this is a second gate so nothing else that calls
+  // startAuthorize() directly can bypass it either.
+  if (!isLoopbackClientRegistered()) return null;
   sweepPending();
 
   const codeVerifier  = base64url(crypto.randomBytes(32));

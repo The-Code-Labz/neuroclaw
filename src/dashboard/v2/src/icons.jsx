@@ -47,6 +47,8 @@ const Icon = ({ name, size = 16, className = '', style = {} }) => {
     case 'docs': return <svg {...p}><path d="M5 4h11l3 3v13H5z"/><path d="M16 4v3h3"/><path d="M8 10h8M8 14h8M8 18h5"/></svg>;
     case 'canvas': return <svg {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/><circle cx="15" cy="15" r="1.4" fill="currentColor"/></svg>;
     case 'image': return <svg {...p}><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 16l5-5 4 4 4-4 5 5"/></svg>;
+    case 'video': return <svg {...p}><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>;
+    case 'music': return <svg {...p}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
     case 'logo': return (
       <svg {...p} viewBox="0 0 32 32">
         <defs>
@@ -65,6 +67,14 @@ const Icon = ({ name, size = 16, className = '', style = {} }) => {
     case 'arrow-right': return <svg {...p}><path d="M5 12h14M13 6l6 6-6 6"/></svg>;
     case 'pin': return <svg {...p}><path d="M12 2l3 5 5 1-4 4 1 6-5-3-5 3 1-6-4-4 5-1 3-5Z"/></svg>;
     case 'key': return <svg {...p}><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg>;
+    case 'archive': return <svg {...p}><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg>;
+    case 'edit': return <svg {...p}><path d="M4 20l3.5-.7L18 8.8l-3-3L4.5 16.5 4 20Z"/><path d="M14 5.5l3 3"/></svg>;
+    case 'trash': return <svg {...p}><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg>;
+    case 'mic': return <svg {...p}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>;
+    case 'paperclip': return <svg {...p}><path d="M8 12l6.5-6.5a3 3 0 0 1 4.24 4.24L9.5 19a5 5 0 0 1-7.07-7.07L12 2.36"/></svg>;
+    case 'sliders': return <svg {...p}><path d="M4 6h10M4 12h6M4 18h13"/><circle cx="17" cy="6" r="2"/><circle cx="13" cy="18" r="2"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>;
+    case 'copy': return <svg {...p}><rect x="9" y="9" width="12" height="12" rx="1.5"/><path d="M6 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v2"/></svg>;
+    case 'save': return <svg {...p}><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h8V4"/><path d="M8 14h8v6H8z"/></svg>;
     default: return <svg {...p}><circle cx="12" cy="12" r="9"/></svg>;
   }
 };

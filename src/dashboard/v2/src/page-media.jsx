@@ -86,14 +86,14 @@ const Media = () => {
         <span className="mono" style={{ fontSize: 12, color: msg.ok ? 'var(--accent-2)' : 'var(--danger)' }}>{msg.text}</span>
       </div>}
       {loading ? <div className="mono muted" style={{ padding: 24 }}>loading media…</div> : (
-        <div className="nc-panel glow tilt" style={{ padding: 12 }}>
+        <div className="st-panel" style={{ padding: 12 }}>
           {filtered.length === 0 ? (
             <div className="mono muted" style={{ padding: 32, textAlign: 'center' }}>
               <div style={{ marginBottom: 8 }}>No videos yet.</div>
               <div className="muted" style={{ fontSize: 12 }}>Renders from the forge (HyperFrames / Remotion) auto-register here; agents can also push a video via the <span className="neonc">register_media</span> tool.</div>
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 12 }}>
+            <div className="st-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
               {filtered.map(item => (
                 <div key={item.id} style={cardStyle}>
                   <div style={{ background: 'rgba(0,0,0,0.25)', minHeight: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

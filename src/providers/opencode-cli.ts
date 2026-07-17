@@ -32,6 +32,8 @@ export interface OpencodeCliOptions {
   sessionId?:    string | null;
   runId?:        string | null;
   onUsage?:      (u: OpencodeCliUsage) => void;
+  /** External abort (runaway/stop). SIGKILLs the opencode child. [Item I] */
+  signal?:       AbortSignal;
 }
 
 // ── Concurrency gate ───────────────────────────────────────────────────────
@@ -164,6 +166,12 @@ async function* runQuery(opts: OpencodeCliOptions): AsyncGenerator<string, void,
   const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'opencode-cli', process.env);
   const scrubber = createStreamScrubber(sub.resolved);
   const child: ChildProcess = spawn(cmd, args, { env: sub.env });
+  // External abort (runaway/stop): SIGKILL the child. The exit check below already
+  // has a `signalCode !== null` branch, so a killed child throws (closes as error)
+  // rather than returning truncated output as success. [Item I]
+  const onAbort = () => { try { child.kill('SIGKILL'); } catch { /* ignore */ } };
+  if (opts.signal?.aborted) onAbort();
+  else opts.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, config.opencode.timeoutMs);
 
   child.stdin?.write(fullPrompt);
@@ -236,6 +244,7 @@ async function* runQuery(opts: OpencodeCliOptions): AsyncGenerator<string, void,
     }
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
   }
 }
 

@@ -74,8 +74,7 @@ const HiveMind = () => {
               <span key={f} onClick={() => setFilter(f)} className={`tag ${filter === f ? 'blue' : ''}`} style={{ cursor: 'pointer' }}>{f}</span>
             ))}
           </div>
-          <div className="nc-panel glow" style={{ padding: 0, position: 'relative', overflow: 'hidden' }}>
-            <div className="scan-line"/>
+          <div className="nc-panel" style={{ padding: 0, position: 'relative', overflow: 'hidden', borderColor: 'var(--line-soft)' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between' }}>
               <div className="label-tiny neonc"><span className={`dot ${paused ? 'muted' : 'cyan pulse'}`} style={{ marginRight: 6 }}/>STREAM · {paused ? 'PAUSED' : 'TX'}</div>
               <div className="mono muted" style={{ fontSize: 10 }}>{filtered.length} of {events.length} events</div>
@@ -84,7 +83,7 @@ const HiveMind = () => {
               {filtered.map((e, i) => {
                 const toneCls = e.tone === 'blue' ? 'blue' : e.tone === 'cyan' ? 'cyan' : e.tone === 'violet' ? 'violet' : e.tone === 'amber' ? 'amber' : e.tone === 'red' ? 'red' : 'green';
                 return (
-                  <div key={i} className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 22px 110px 200px 1fr', gap: 12, padding: '8px 16px', borderBottom: '1px dashed color-mix(in srgb, var(--accent) 6%, transparent)', alignItems: 'center', fontSize: 11 }}>
+                  <div key={i} className="mono" style={{ display: 'grid', gridTemplateColumns: '90px 22px 110px 200px 1fr', gap: 12, padding: '8px 16px', borderBottom: '1px solid var(--line-soft)', alignItems: 'center', fontSize: 11 }}>
                     <span className="muted">{e.t}</span>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: e.tone === 'blue' ? 'var(--accent)' : e.tone === 'cyan' ? 'var(--accent-2)' : e.tone === 'violet' ? 'var(--violet)' : e.tone === 'amber' ? 'var(--amber)' : e.tone === 'red' ? 'var(--danger)' : 'var(--green)', boxShadow: `0 0 6px currentColor` }}/>
                     <span style={{ color: 'var(--text)' }}>@{e.agent}</span>
@@ -217,6 +216,7 @@ const TraceEventRow = ({ ev }) => {
     auto_route:        { glyph: '→',  color: 'var(--accent-2)',  label: 'ROUTE' },
     manual_delegation: { glyph: '→',  color: 'var(--accent-2)',  label: 'DELEGATE' },
     task_decomposed:   { glyph: '⊕',  color: 'var(--accent-2)',  label: 'DECOMPOSE' },
+    task_decompose_collapsed: { glyph: '⊖', color: 'var(--accent-2)', label: 'COLLAPSE' },
     multi_agent_step:  { glyph: '⊕',  color: 'var(--accent-2)',  label: 'STEP' },
     result_merged:     { glyph: '⊕',  color: 'var(--accent-2)',  label: 'MERGE' },
   })[ev.action] || { glyph: '·', color: 'var(--muted)', label: ev.action };

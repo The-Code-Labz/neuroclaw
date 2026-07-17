@@ -200,12 +200,12 @@ const ImageEditor = () => {
     <div className="page" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <PageHeader title="Editor" subtitle="// edit images · provider edit APIs" />
 
-      <div className="nc-panel glow" style={{ padding: 14, marginBottom: 14 }}>
+      <div className="st-panel" style={{ padding: 14, marginBottom: 14 }}>
         {/* Source row */}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{
             width: 150, height: 150, flex: '0 0 auto', borderRadius: 4, overflow: 'hidden',
-            border: '1px solid rgba(0,183,255,0.25)', background: 'rgba(0,4,12,0.5)',
+            border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)', background: 'color-mix(in srgb, var(--text) 4%, transparent)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             {sourceUrl
@@ -321,19 +321,19 @@ const ImageEditor = () => {
 
       {/* Status */}
       {status === 'error' && (
-        <div className="nc-panel" style={{ padding: 10, marginBottom: 12, borderColor: 'rgba(255,80,80,0.4)' }}>
-          <span className="mono" style={{ fontSize: 11, color: '#ff8080' }}>⚠ {error}</span>
+        <div className="nc-panel" style={{ padding: 10, marginBottom: 12, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--danger)' }}>⚠ {error}</span>
         </div>
       )}
       {status === 'rate-limited' && (
-        <div className="nc-panel" style={{ padding: 10, marginBottom: 12, borderColor: 'rgba(255,200,80,0.4)' }}>
-          <span className="mono" style={{ fontSize: 11, color: '#ffc850' }}>rate limited — {error}</span>
+        <div className="nc-panel" style={{ padding: 10, marginBottom: 12, borderColor: 'color-mix(in srgb, var(--boundary) 40%, transparent)' }}>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--boundary)' }}>rate limited — {error}</span>
         </div>
       )}
 
       {/* Empty state */}
       {results.length === 0 && status !== 'loading' && (
-        <div className="nc-panel glow" style={{ padding: 40, textAlign: 'center' }}>
+        <div className="st-panel" style={{ padding: 40, textAlign: 'center' }}>
           <Icon name="edit" size={44} className="neonc" style={{ opacity: 0.6 }} />
           <div className="mono muted" style={{ marginTop: 14, fontSize: 12 }}>// no edits yet</div>
           <div className="mono muted" style={{ marginTop: 4, fontSize: 10 }}>pick a source image, describe the change, and hit Edit</div>

@@ -29,6 +29,8 @@ const execFileAsync = promisify(execFile);
 // --- paths ---------------------------------------------------------------
 
 const REPO_ROOT = process.cwd();
+const NC_GIT_PATH = path.join(REPO_ROOT, 'scripts', 'nc-git.sh');
+
 /** Marker file read by BOTH the tsx server (in-process canary) and the CJS
  *  ExecStartPre pre-check (out-of-module-graph canary). Repo root = systemd
  *  WorkingDirectory, so an absolute join is stable across both readers. */
@@ -61,27 +63,50 @@ function scrub(s: string, token?: string): string {
   return out;
 }
 
-/** Run git in the repo. `token` (if given) is injected as an Authorization
- *  header via -c http.extraHeader — never placed in a URL or written to config. */
+const NC_GIT_MUTATIONS = new Set(['fetch', 'checkout', 'merge', 'reset', 'tag', 'stash']);
+
+/** Run git. Mutating ops (fetch/checkout/merge/reset/tag/stash) go through the
+ *  serialized nc-git wrapper so all writes to the shared main checkout hold the
+ *  checkout lock and carry a valid token. Read-only ops (rev-parse/diff/log/
+ *  rev-list) run with plain `git -C REPO_ROOT` to avoid lock/audit noise. */
 async function git(args: string[], token?: string): Promise<GitResult> {
-  const preArgs: string[] = [];
-  if (token) {
-    // credential.helper= disables any configured helper; extraHeader carries auth.
-    preArgs.push('-c', 'credential.helper=');
-    preArgs.push('-c', `http.extraHeader=Authorization: Bearer ${token}`);
+  const isMutation = NC_GIT_MUTATIONS.has(args[0] ?? '');
+  const baseEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  if (isMutation) {
+    const preArgs: string[] = [];
+    if (token) {
+      // credential.helper= disables any configured helper; extraHeader carries auth.
+      preArgs.push('-c', 'credential.helper=');
+      preArgs.push('-c', `http.extraHeader=Authorization: Bearer ${token}`);
+    }
+    try {
+      const { stdout, stderr } = await execFileAsync('bash', [NC_GIT_PATH, ...preArgs, ...args], {
+        cwd: REPO_ROOT,
+        maxBuffer: 32 * 1024 * 1024,
+        env: { ...baseEnv, NC_GIT_SELF_UPDATE: '1' },
+      });
+      return { code: 0, stdout: scrub(stdout, token), stderr: scrub(stderr, token) };
+    } catch (e: any) {
+      return {
+        code: typeof e.code === 'number' ? e.code : 1,
+        stdout: scrub(e.stdout ?? '', token),
+        stderr: scrub(e.stderr ?? e.message ?? '', token),
+      };
+    }
   }
+
   try {
-    const { stdout, stderr } = await execFileAsync('git', [...preArgs, ...args], {
+    const { stdout, stderr } = await execFileAsync('git', ['-C', REPO_ROOT, ...args], {
       cwd: REPO_ROOT,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: baseEnv,
     });
-    return { code: 0, stdout: scrub(stdout, token), stderr: scrub(stderr, token) };
+    return { code: 0, stdout, stderr };
   } catch (e: any) {
     return {
       code: typeof e.code === 'number' ? e.code : 1,
-      stdout: scrub(e.stdout ?? '', token),
-      stderr: scrub(e.stderr ?? e.message ?? '', token),
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? e.message ?? '',
     };
   }
 }

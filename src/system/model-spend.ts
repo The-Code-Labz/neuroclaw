@@ -78,6 +78,83 @@ export function spendLastHour(): SpendTotals {
   return row;
 }
 
+// ── Wave-3 Item F: per-agent cumulative budget hard-stop ─────────────────────
+// Rolling-window per-agent token spend. Self-resetting: as old model_spend rows
+// age out of the window an over-budget agent auto-un-pauses — no cron/calendar
+// reset. Backed by idx_model_spend_agent_window (db.ts) so the per-claim read
+// doesn't range-scan the whole created_at index and residual-filter agent_id.
+export function spendForAgentWindow(agentId: string, windowMs: number): SpendTotals {
+  const mins = Math.max(1, Math.round(windowMs / 60_000));
+  const row = getDb().prepare(`
+    SELECT
+      COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+      COALESCE(SUM(input_tokens), 0)  as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COUNT(*) as call_count
+    FROM model_spend WHERE agent_id = ? AND created_at > datetime('now', ?)
+  `).get(agentId, `-${mins} minutes`) as SpendTotals;
+  return row;
+}
+
+// Config (module-level, mirrors sentinel.ts's proven process.env pattern).
+// ALL DEFAULT OFF / unlimited — the mechanism is inert until explicitly armed.
+// Evidence pass (ASAGI, 7,289 model_spend rows / 74 days): recommend a 1-hour
+// rolling window on cumulative TOKENS (not USD — codex/kimi report $0 regardless
+// of volume, so a cost guard has a runaway blind spot; USD is also currently
+// mis-scaled 1000x in the cost columns). Highest legit single-hour burst ever
+// observed = 8.27M tok (Asia, document-load). Arm the DEFAULT at 15_000_000
+// (~1.8x that peak, ~40x p99) when flipping AGENT_BUDGET_ENABLED. Asia is the
+// closest false-positive risk — heads-up before arming, same as Rossweisse was
+// for the wall-clock ceiling.
+export const AGENT_BUDGET_ENABLED   = process.env.AGENT_BUDGET_ENABLED === 'true';
+export const AGENT_BUDGET_INTERRUPT = process.env.AGENT_BUDGET_INTERRUPT === 'true';
+const AGENT_SPEND_WINDOW_MS     = parseInt(process.env.AGENT_SPEND_WINDOW_MS ?? String(60 * 60_000), 10);
+const AGENT_SPEND_BUDGET_DEFAULT = parseInt(process.env.AGENT_SPEND_BUDGET_DEFAULT ?? '0', 10);
+const AGENT_SPEND_WARN_PCT      = parseInt(process.env.AGENT_SPEND_WARN_PCT ?? '80', 10);
+
+// Per-agent override AGENT_SPEND_BUDGET_<NAME> (tokens), name upper-cased with
+// non-alphanumerics → '_'. Resolution: <NAME> → DEFAULT → 0 (= exempt/unlimited).
+export function resolveAgentBudget(agentName: string | null): number {
+  if (agentName) {
+    const key = 'AGENT_SPEND_BUDGET_' + agentName.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    const raw = process.env[key];
+    if (raw && raw.trim()) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+  }
+  return AGENT_SPEND_BUDGET_DEFAULT;
+}
+
+export interface AgentBudgetState {
+  enabled:  boolean;   // master flag on AND this agent has a non-zero budget
+  over:     boolean;   // spent >= budget (pause new claims)
+  warn:     boolean;   // spent >= warnPct of budget (visibility only)
+  spent:    number;    // tokens in window
+  budget:   number;    // resolved token ceiling (0 = exempt)
+  pct:      number;    // spent/budget * 100 (0 when exempt)
+  windowMs: number;
+}
+
+// One call the claim gate + interrupt pass share. Returns enabled=false (and
+// never over/warn) whenever the master flag is off OR the agent is exempt
+// (budget 0), so callers can treat it as a single guard.
+export function checkAgentBudget(agentId: string, agentName: string | null): AgentBudgetState {
+  const budget = resolveAgentBudget(agentName);
+  if (!AGENT_BUDGET_ENABLED || budget <= 0) {
+    return { enabled: false, over: false, warn: false, spent: 0, budget, pct: 0, windowMs: AGENT_SPEND_WINDOW_MS };
+  }
+  const spent = spendForAgentWindow(agentId, AGENT_SPEND_WINDOW_MS).total_tokens;
+  const pct   = Math.round((spent / budget) * 100);
+  return {
+    enabled:  true,
+    over:     spent >= budget,
+    warn:     pct >= AGENT_SPEND_WARN_PCT,
+    spent, budget, pct,
+    windowMs: AGENT_SPEND_WINDOW_MS,
+  };
+}
+
 export interface SpendBreakdown {
   tier:         string;
   total_tokens: number;

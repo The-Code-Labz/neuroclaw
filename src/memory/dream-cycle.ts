@@ -176,7 +176,7 @@ async function analyzeSession(session: SessionRow, msgs: MessageRow[]): Promise<
         { role: 'system', content: ANALYSIS_SYSTEM },
         { role: 'user',   content: `Session: ${session.title ?? session.id}\n\n${transcript}` },
       ],
-    }, { label: 'dream:analyze' });
+    }, { preferGemini: true, openrouterModel: config.background.geminiModel, label: 'dream:analyze' });
     const raw = resp.choices[0]?.message?.content ?? '';
     const parsed = JSON.parse(raw) as Partial<AnalysisOut>;
     return {
@@ -371,7 +371,7 @@ async function generatePlan(input: { decisions: string[]; patterns: string[]; pr
         { role: 'system', content: PLAN_SYSTEM },
         { role: 'user',   content: userMsg },
       ],
-    }, { label: 'dream:plan' });
+    }, { preferMinimax: true, label: 'dream:plan' });
     const raw = resp.choices[0]?.message?.content ?? '';
     const p = JSON.parse(raw) as Partial<PlanOut>;
     return {

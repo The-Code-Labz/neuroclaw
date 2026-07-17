@@ -143,7 +143,7 @@ const CommandPalette = ({ open, onClose, setActive }) => {
   const filtered = items.filter(it => !q || it.label.toLowerCase().includes(q.toLowerCase()) || it.hint.includes(q.toLowerCase()));
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="nc-panel" onClick={e => e.stopPropagation()} style={{ width: 560, maxHeight: '70vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div className="nc-panel modal-fixed-width" onClick={e => e.stopPropagation()} style={{ width: 560, maxHeight: '70vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon name="cmd" size={14} style={{ color: 'var(--accent)' }}/>
           <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="type a command or page..." style={{ flex: 1, background: 'transparent', border: 0, outline: 0, color: '#fff', fontFamily: 'var(--mono)', fontSize: 13 }}/>

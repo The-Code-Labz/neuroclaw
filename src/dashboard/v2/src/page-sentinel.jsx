@@ -128,7 +128,7 @@ const BgAgentCard = ({ agent, onRefresh }) => {
   const statusLabel = agent.enabled ? 'ACTIVE' : 'DISABLED';
 
   return (
-    <div className="nc-panel glow" style={{ padding: 14 }}>
+    <div className="sec-card" style={{ padding: 14 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         <AvatarDisplay agent={displayAgent} size={52} />
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -155,7 +155,7 @@ const BgAgentCard = ({ agent, onRefresh }) => {
                 marginBottom: 8,
                 padding: '6px 8px',
                 borderRadius: 4,
-                background: lastResult.ok ? 'rgba(0,255,136,0.1)' : 'rgba(255,68,68,0.1)',
+                background: lastResult.ok ? 'color-mix(in srgb, var(--success) 12%, transparent)' : 'color-mix(in srgb, var(--danger) 12%, transparent)',
                 color: lastResult.ok ? 'var(--success)' : 'var(--danger)',
               }}
             >
@@ -227,7 +227,7 @@ const StephanieAlerts = () => {
         STEPHANIE · TEAM INTEL
         {unread.length > 0 && <span className="tag amber" style={{ fontSize: 9, marginLeft: 8 }}>{unread.length} OPEN</span>}
       </div>
-      <div className="nc-panel glow" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="sec-panel sec-panel--flush">
         {loading ? (
           <div className="mono muted" style={{ padding: '14px 16px', fontSize: 11 }}>loading...</div>
         ) : unread.length === 0 ? (
@@ -327,7 +327,7 @@ const Sentinel = () => {
       </div>
 
       {status && (
-        <div className="nc-panel glow" style={{ padding: '10px 14px', marginBottom: 16, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+        <div className="sec-panel" style={{ padding: '10px 14px', marginBottom: 16, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
           <div className="mono" style={{ fontSize: 11 }}>
             <span className="muted">last run: </span>
             <span style={{ color: 'var(--accent-2)' }}>{status.lastRun ? new Date(status.lastRun).toLocaleTimeString() : '—'}</span>

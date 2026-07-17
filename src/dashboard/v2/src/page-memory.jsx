@@ -101,12 +101,12 @@ const MemoryImport = () => {
   const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
 
   return (
-    <div className="nc-panel" style={{ marginBottom: 16 }}>
+    <div className="mem-panel" style={{ marginBottom: 16, padding: 0 }}>
       <div
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', cursor: 'pointer' }}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', cursor: 'pointer' }}
         onClick={() => setOpen(o => !o)}
       >
-        <span className="mono" style={{ fontSize: 12, letterSpacing: 1 }}>// IMPORT MEMORIES</span>
+        <span className="label-tiny" style={{ letterSpacing: '0.08em' }}>Import memories</span>
         <Icon name={open ? 'chevron-up' : 'chevron-down'} size={12} />
       </div>
 
@@ -165,16 +165,16 @@ const MemoryImport = () => {
           )}
 
           {status === 'done' && summary && (
-            <div className="nc-panel glow" style={{ padding: '10px 14px', marginBottom: 12, borderColor: 'var(--nc-accent)' }}>
+            <div className="mem-panel" style={{ padding: '10px 14px', marginBottom: 12, borderLeft: '2px solid var(--accent)' }}>
               <span className="mono" style={{ fontSize: 12 }}>
-                // {summary.created} memories extracted from {summary.total} exchanges · {summary.skipped} skipped
+                {summary.created} memories extracted from {summary.total} exchanges · {summary.skipped} skipped
               </span>
             </div>
           )}
 
           {status === 'failed' && error && (
-            <div className="nc-panel" style={{ padding: '10px 14px', marginBottom: 12, borderColor: '#ef4444' }}>
-              <span className="mono" style={{ fontSize: 11, color: '#ef4444' }}>{error}</span>
+            <div className="mem-panel" style={{ padding: '10px 14px', marginBottom: 12, borderLeft: '2px solid var(--danger)' }}>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--danger)' }}>{error}</span>
             </div>
           )}
 
@@ -284,8 +284,8 @@ const Memory = () => {
           <button className="nc-btn" onClick={() => loadMemories(true)}><Icon name="refresh" size={12}/> Refresh</button>
         </>}/>
         <MemoryImport />
-        <div className="nc-panel glow" style={{ padding: 30, textAlign: 'center' }}>
-          <div className="mono muted">// no memories yet — they appear automatically after assistant turns</div>
+        <div className="mem-panel" style={{ padding: 30, textAlign: 'center' }}>
+          <div className="mono muted">no memories yet — they appear automatically after assistant turns</div>
         </div>
       </div>
     );
@@ -324,27 +324,27 @@ const Memory = () => {
       </>}/>
       <MemoryImport />
 
-      <div className="stack" style={{ gap: 12 }}>
+      <div className="stack" style={{ gap: 16, alignItems: 'flex-start' }}>
         {/* Type filters - collapsible on mobile */}
-        <div className="nc-panel glow hide-mobile" style={{ padding: 12, minWidth: 180, flex: '0 0 180px' }}>
-          <div className="label-tiny neonc" style={{ marginBottom: 10 }}>TYPES</div>
+        <div className="mem-rail hide-mobile" style={{ minWidth: 180, flex: '0 0 180px' }}>
+          <div className="label-tiny" style={{ marginBottom: 10 }}>Types</div>
           {types.map(t => (
-            <div key={t} onClick={() => setFilter(t)} style={{ padding: '7px 10px', borderRadius: 2, cursor: 'pointer', background: filter === t ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent', border: filter === t ? '1px solid var(--line-hard)' : '1px solid transparent', marginBottom: 3, fontFamily: 'var(--mono)', fontSize: 11, color: filter === t ? 'var(--text)' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div key={t} onClick={() => setFilter(t)} className={`mem-type-row${filter === t ? ' is-active' : ''}`} style={{ fontFamily: 'var(--mono)', fontSize: 11, color: filter === t ? 'var(--text)' : 'var(--text-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>{t}</span>
               <span className="mono muted" style={{ fontSize: 9 }}>{getTypeCount(t)}</span>
             </div>
           ))}
           <hr className="nc-hr" style={{ margin: '12px 0' }}/>
-          <div className="label-tiny" style={{ marginBottom: 8 }}>LOADED</div>
+          <div className="label-tiny" style={{ marginBottom: 8 }}>Loaded</div>
           <div className="mono" style={{ fontSize: 11, padding: '4px 6px', color: 'var(--accent-2)' }}>{memories.length} / {totalCount}</div>
         </div>
 
         {/* Cards */}
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10, alignContent: 'start' }}>
+        <div className="mem-grid" style={{ flex: 1, alignContent: 'start' }}>
           {list.map(m => {
             const dim = m.decay;
             return (
-              <div key={m._raw?.id || m.id} className="nc-panel glow tilt" onClick={() => setActive(m)} style={{ padding: 12, cursor: 'pointer', opacity: dim ? 0.55 : 1, position: 'relative', boxShadow: m.salience > 0.7 ? '0 0 0 1px var(--accent), 0 0 20px color-mix(in srgb, var(--accent) 25%, transparent)' : undefined }}>
+              <div key={m._raw?.id || m.id} className={`mem-card${m.salience > 0.7 ? ' is-high-salience' : ''}`} onClick={() => setActive(m)} style={{ opacity: dim ? 0.55 : 1 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span className={`tag ${m.type === 'preference' ? 'violet' : m.type === 'insight' ? 'cyan' : m.type === 'procedural' ? 'blue' : 'muted'}`} style={{ fontSize: 9 }}>{m.type}</span>
                   <span className="mono muted" style={{ fontSize: 9 }}>{m.id}</span>
@@ -355,11 +355,11 @@ const Memory = () => {
                 <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)', lineHeight: 1.5, marginBottom: 8 }}>{m.summary}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
                   <div>
-                    <div className="label-tiny" style={{ fontSize: 8 }}>IMPORTANCE</div>
+                    <div className="label-tiny" style={{ fontSize: 8 }}>Importance</div>
                     <div className="bar-track" style={{ marginTop: 3 }}><div className="bar-fill" style={{ width: `${m.importance*100}%` }}/></div>
                   </div>
                   <div>
-                    <div className="label-tiny" style={{ fontSize: 8 }}>SALIENCE</div>
+                    <div className="label-tiny" style={{ fontSize: 8 }}>Salience</div>
                     <div className="bar-track" style={{ marginTop: 3 }}><div className="bar-fill" style={{ width: `${m.salience*100}%`, background: 'linear-gradient(90deg, var(--accent-2), var(--violet))' }}/></div>
                   </div>
                 </div>
@@ -380,8 +380,8 @@ const Memory = () => {
 
         {/* Inspector - hidden on mobile, visible on tablet+ */}
         {active && (
-          <div className="nc-panel glow hide-tablet" style={{ padding: 14, alignSelf: 'start', position: 'sticky', top: 0, minWidth: 280, maxWidth: 320 }}>
-            <div className="label-tiny neonc" style={{ marginBottom: 10 }}>MEMORY INSPECTOR</div>
+          <div className="mem-panel hide-tablet" style={{ alignSelf: 'start', position: 'sticky', top: 0, minWidth: 280, maxWidth: 320 }}>
+            <div className="label-tiny" style={{ marginBottom: 10 }}>Memory inspector</div>
             <div className="mono" style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4, display: 'flex', gap: 6 }}>
               {active.title}
             </div>

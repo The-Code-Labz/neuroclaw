@@ -3,71 +3,58 @@
 const AgentCard = ({ a, onEdit, onDelete, onActivate, onHardDelete }) => {
   const accent = a.temp ? 'var(--violet)' : a.color === 'neon2' ? 'var(--accent-2)' : 'var(--accent)';
   const inactive = (a._raw?.status === 'inactive');
+  const capsShown = a.caps.slice(0, 3);
+  const capsMore = a.caps.length - capsShown.length;
   return (
-    <div className="nc-panel glow tilt" style={{ padding: 14, position: 'relative', overflow: 'hidden', borderColor: a.temp ? 'rgba(139,92,246,0.35)' : 'var(--line)', opacity: inactive ? 0.5 : 1 }}>
-      {a.temp && <div className="stripe-bg" style={{ position: 'absolute', inset: 0, opacity: 0.2 }}/>}
-      <div style={{ position: 'relative' }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10 }}>
-          {/* NOTE: `accent` here is this agent's own custom color (per-agent,
-              not the dashboard theme's --accent) — text color intentionally
-              stays a fixed white, independent of the active theme. */}
-          <div style={{ width: 46, height: 46, flex: 'none', borderRadius: 10, background: `radial-gradient(circle at 35% 30%, rgba(255,255,255,0.4), transparent 30%), radial-gradient(circle, ${accent}, rgba(0,0,0,0))`, border: `1px solid ${accent}`, boxShadow: `0 0 14px ${accent}66`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 18, color: '#fff', textShadow: `0 0 6px ${accent}`, overflow: 'hidden' }}>
-            {a._raw?.avatar_url
-              ? <img src={a._raw.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 10 }} />
-              : a.name[0]}
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontFamily: 'var(--display)', fontSize: 16, fontWeight: 600 }}>{a.name}</span>
-              {a.temp && <span className="tag violet" style={{ fontSize: 9 }}>TEMP{a.expires ? ' · ' + a.expires : ''}</span>}
-              {inactive && <span className="tag muted" style={{ fontSize: 9 }}>INACTIVE</span>}
-            </div>
-            <div className="mono muted" style={{ fontSize: 11 }}>{a.role}</div>
-          </div>
-          {(() => {
-            const hb = a.heartbeat_status;
-            const dotColor = hb === 'fail' ? 'red' : hb === 'ok' ? 'green' : hb === 'skipped' ? 'cyan' : 'muted';
-            const title = hb === 'ok'      ? `heartbeat OK · ${a.heartbeat_latency_ms ?? '?'}ms`
-                        : hb === 'fail'    ? 'heartbeat FAIL'
-                        : hb === 'skipped' ? 'heartbeat skipped (Claude CLI)'
-                        :                    'no heartbeat yet';
-            return <span title={title} className={`dot ${dotColor} ${hb === 'ok' || hb === 'skipped' ? 'pulse' : ''}`}/>;
-          })()}
+    <div className={`ag-card${a.temp ? ' is-temp' : ''}${inactive ? ' is-inactive' : ''}`}>
+      <div className="ag-head">
+        <div className="ag-avatar" style={{ '--ag-accent': accent }}>
+          {a._raw?.avatar_url
+            ? <img src={a._raw.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            : a.name[0]}
         </div>
-        <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.55, minHeight: 32 }}>{a.desc}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="ag-name">{a.name}</span>
+            {a.temp && <span className="tag violet" style={{ fontSize: 9 }}>TEMP{a.expires ? ' · ' + a.expires : ''}</span>}
+            {inactive && <span className="tag muted" style={{ fontSize: 9 }}>INACTIVE</span>}
+          </div>
+          <div className="ag-role">{a.role}</div>
+        </div>
+        {(() => {
+          const hb = a.heartbeat_status;
+          const dotColor = hb === 'fail' ? 'red' : hb === 'ok' ? 'green' : hb === 'skipped' ? 'cyan' : 'muted';
+          const title = hb === 'ok'      ? `heartbeat OK · ${a.heartbeat_latency_ms ?? '?'}ms`
+                      : hb === 'fail'    ? 'heartbeat FAIL'
+                      : hb === 'skipped' ? 'heartbeat skipped (Claude CLI)'
+                      :                    'no heartbeat yet';
+          return <span title={title} className={`dot ${dotColor} ${hb === 'ok' || hb === 'skipped' ? 'pulse' : ''}`}/>;
+        })()}
+      </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, margin: '12px 0 10px' }}>
-          <div className="mono" style={{ fontSize: 10 }}>
-            <span className="muted">PROVIDER</span><br/>
-            <span className="neonc">{a.provider}</span>
-          </div>
-          <div className="mono" style={{ fontSize: 10 }}>
-            <span className="muted">MODEL</span><br/>
-            <span style={{ color: 'var(--text)' }}>{a.model}</span>
-          </div>
-          <div className="mono" style={{ fontSize: 10 }}>
-            <span className="muted">SCOPE</span><br/>
-            <span className="neon2">{a.scope}</span>
-          </div>
-          <div className="mono" style={{ fontSize: 10 }}>
-            <span className="muted">DEPTH · TASKS</span><br/>
-            <span style={{ color: 'var(--text)' }}>{a.spawnDepth} · {a.tasks}</span>
-          </div>
-        </div>
+      <div className="ag-desc">{a.desc}</div>
 
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
-          {a.caps.map((c, i) => <span key={i} className="tag" style={{ fontSize: 9, padding: '1px 6px' }}>{c}</span>)}
-          {a.exec && <span className="tag amber" style={{ fontSize: 9, padding: '1px 6px' }}>exec</span>}
-          {a._raw?.chat_mode === 1 && <span className="tag cyan" style={{ fontSize: 9, padding: '1px 6px' }}>chat</span>}
-        </div>
+      <div className="ag-meta">
+        <span><b>{a.provider}</b></span><span className="sep">·</span>
+        <span><b>{a.model || 'default'}</b></span><span className="sep">·</span>
+        <span>scope <b>{a.scope}</b></span><span className="sep">·</span>
+        <span>depth <b>{a.spawnDepth}</b></span><span className="sep">·</span>
+        <span><b>{a.tasks}</b> tasks</span>
+      </div>
 
-        <div style={{ display: 'flex', gap: 6, paddingTop: 10, borderTop: '1px dashed color-mix(in srgb, var(--accent) 10%, transparent)' }}>
-          <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, padding: '5px 6px' }} onClick={onEdit}>edit</button>
-          {inactive
-            ? <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, padding: '5px 6px' }} onClick={onActivate}>activate</button>
-            : <button className="nc-btn ghost" style={{ flex: 1, fontSize: 10, padding: '5px 6px', color: 'var(--danger)' }} onClick={onDelete} disabled={a.name === 'Alfred'}>{a.name === 'Alfred' ? 'protected' : 'deactivate'}</button>}
-          <button className="nc-btn ghost" title="Permanently delete (cannot be undone)" style={{ fontSize: 10, padding: '5px 8px', color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={onHardDelete} disabled={a.name === 'Alfred'}>×</button>
-        </div>
+      <div className="ag-caps">
+        {capsShown.map((c, i) => <span key={i} className="tag" style={{ fontSize: 9, padding: '1px 6px' }}>{c}</span>)}
+        {capsMore > 0 && <span className="tag muted" style={{ fontSize: 9, padding: '1px 6px' }}>+{capsMore}</span>}
+        {a.exec && <span className="tag amber" style={{ fontSize: 9, padding: '1px 6px' }}>exec</span>}
+        {a._raw?.chat_mode === 1 && <span className="tag cyan" style={{ fontSize: 9, padding: '1px 6px' }}>chat</span>}
+      </div>
+
+      <div className="ag-actions">
+        <button className="nc-btn ghost grow" style={{ fontSize: 11 }} onClick={onEdit}><Icon name="edit" size={12}/> Edit</button>
+        {inactive
+          ? <button className="nc-btn ghost icon-only" title="Activate" onClick={onActivate}><Icon name="play" size={13}/></button>
+          : <button className="nc-btn ghost icon-only" title={a.name === 'Alfred' ? 'protected' : 'Deactivate'} style={{ color: a.name === 'Alfred' ? undefined : 'var(--danger)' }} onClick={onDelete} disabled={a.name === 'Alfred'}><Icon name="pause" size={13}/></button>}
+        <button className="nc-btn ghost icon-only" title="Permanently delete (cannot be undone)" style={{ color: 'var(--danger)' }} onClick={onHardDelete} disabled={a.name === 'Alfred'}><Icon name="trash" size={13}/></button>
       </div>
     </div>
   );
@@ -894,16 +881,16 @@ const Agents = () => {
         <button className="nc-btn primary" onClick={() => setEditor({ open: true, agent: null })}><Icon name="plus" size={12}/> New Agent</button>
       </>}/>
 
-      <div className="flex-wrap-mobile" style={{ marginBottom: 14 }}>
+      <div className="ag-toolbar flex-wrap-mobile">
         <span className="tag blue">ALL · {AGENTS.length}</span>
         <span className="tag hide-mobile">PERMANENT · {AGENTS.filter(a => !a.temp).length}</span>
         <span className="tag violet">TEMP · {AGENTS.filter(a => a.temp).length}</span>
         <span className="tag green">LIVE · {AGENTS.filter(a => a.status === 'live').length}</span>
-        <span style={{ flex: 1 }}/>
+        <span className="ag-toolbar-spacer"/>
         <input className="nc-input full-mobile" placeholder="filter agents..." value={filter} onChange={e => setFilter(e.target.value)} style={{ maxWidth: 240 }}/>
       </div>
 
-      <div className="card-grid" style={{ marginBottom: 16 }}>
+      <div className="ag-grid" style={{ marginBottom: 16 }}>
         {filtered.map(a => (
           <AgentCard key={a._raw?.id || a.id} a={a}
             onEdit={() => setEditor({ open: true, agent: a })}

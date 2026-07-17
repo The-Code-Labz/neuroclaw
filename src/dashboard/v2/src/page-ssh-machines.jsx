@@ -123,7 +123,7 @@ const SshMachines = () => {
         </button>
       </div>
 
-      {msg && <div style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6, fontSize: 13, background: msg.ok ? 'rgba(46,160,67,.15)' : 'rgba(248,81,73,.15)', color: msg.ok ? 'var(--accent-2)' : 'var(--danger)' }}>{msg.text}</div>}
+      {msg && <div style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6, fontSize: 13, background: msg.ok ? 'color-mix(in srgb, var(--accent-2) 15%, transparent)' : 'color-mix(in srgb, var(--danger) 15%, transparent)', color: msg.ok ? 'var(--accent-2)' : 'var(--danger)' }}>{msg.text}</div>}
 
       {/* Pending human approvals — TOFU pins + critical-run confirms block here */}
       {pending.length > 0 && (
@@ -188,7 +188,7 @@ const SshMachines = () => {
           let allowed = []; try { allowed = JSON.parse(m.allowed_agents || '[]'); } catch { allowed = []; }
           const open = expanded === m.id;
           return (
-            <div key={m.id} style={{ border: '1px solid var(--border)', borderRadius: 8, marginBottom: 10, opacity: m.disabled ? 0.6 : 1 }}>
+            <div key={m.id} className="cn-row" style={{ padding: 0, opacity: m.disabled ? 0.6 : 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', cursor: 'pointer' }} onClick={() => setExpanded(open ? null : m.id)}>
                 <span style={{ fontWeight: 600 }}>{m.name}</span>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>{m.username}@{m.host}:{m.port}</span>
@@ -268,7 +268,7 @@ const SshMachines = () => {
                       const on = allowed.includes(a.id);
                       return (
                         <button key={a.id} onClick={() => toggleAgent(m, a.id)} title={a.ssh_enabled ? '' : 'agent SSH not enabled — toggle below'}
-                          style={{ padding: '3px 9px', borderRadius: 12, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent-2)' : 'var(--border)'}`, background: on ? 'rgba(46,160,67,.15)' : 'transparent', color: on ? 'var(--accent-2)' : (a.ssh_enabled ? 'var(--text)' : 'var(--muted)') }}>
+                          style={{ padding: '3px 9px', borderRadius: 12, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent-2)' : 'var(--border)'}`, background: on ? 'color-mix(in srgb, var(--accent-2) 15%, transparent)' : 'transparent', color: on ? 'var(--accent-2)' : (a.ssh_enabled ? 'var(--text)' : 'var(--muted)') }}>
                           {on ? '✓ ' : ''}{a.name}{!a.ssh_enabled ? ' ⚠' : ''}
                         </button>
                       );
@@ -286,7 +286,7 @@ const SshMachines = () => {
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>An agent needs SSH enabled here <em>and</em> a per-machine grant above. ⚠ on a chip above = that agent isn’t SSH-enabled yet.</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {agents.map(a => (
-            <button key={a.id} onClick={() => toggleAgentSsh(a)} style={{ padding: '3px 9px', borderRadius: 12, fontSize: 12, cursor: 'pointer', border: `1px solid ${a.ssh_enabled ? 'var(--accent)' : 'var(--border)'}`, background: a.ssh_enabled ? 'rgba(88,166,255,.15)' : 'transparent', color: a.ssh_enabled ? 'var(--accent)' : 'var(--muted)' }}>
+            <button key={a.id} onClick={() => toggleAgentSsh(a)} style={{ padding: '3px 9px', borderRadius: 12, fontSize: 12, cursor: 'pointer', border: `1px solid ${a.ssh_enabled ? 'var(--accent)' : 'var(--border)'}`, background: a.ssh_enabled ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent', color: a.ssh_enabled ? 'var(--accent)' : 'var(--muted)' }}>
               {a.ssh_enabled ? '✓ ' : ''}{a.name}
             </button>
           ))}
@@ -296,7 +296,7 @@ const SshMachines = () => {
   );
 };
 
-const inp = { padding: '6px 8px', background: 'var(--bg-input, #0d1117)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 };
+const inp = { padding: '6px 8px', background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 };
 const btn = { padding: '5px 11px', background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 12 };
 
 window.SshMachines = SshMachines;

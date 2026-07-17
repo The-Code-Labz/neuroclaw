@@ -5,6 +5,7 @@ import { logger } from './utils/logger';
 import { notificationEvents, type DashboardNotificationEvent } from './system/notification-events';
 import { runEvents, agentBus, type RunTerminalEvent } from './system/event-bus';
 import { JOB_TYPE_TO_EVENT } from './system/inngest-functions';
+import { stripNegationTags } from './system/agent-caps-format';
 
 let db: Database.Database | null = null;
 
@@ -438,6 +439,12 @@ function initSchema(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_model_spend_session ON model_spend(session_id);
     CREATE INDEX IF NOT EXISTS idx_model_spend_recent  ON model_spend(created_at DESC);
+    -- Wave-3 Item F: per-agent rolling-window spend guard (spendForAgentWindow).
+    -- MANDATORY: without this the WHERE agent_id=? AND created_at>? query
+    -- range-scans the created_at index and residual-filters agent_id across
+    -- every agent's rows — a real per-claim cost the moment AGENT_BUDGET_ENABLED
+    -- flips. Ships regardless of budget value; "default OFF" doesn't cover it.
+    CREATE INDEX IF NOT EXISTS idx_model_spend_agent_window ON model_spend(agent_id, created_at);
 
     -- v1.5: PARA areas. Used by the dashboard's PARA Map page to organize
     -- agents into themed rooms (Lifestyle, Finance, Health, Work, Learning).
@@ -1463,6 +1470,41 @@ function runMigrations(database: Database.Database): void {
     `).run();
   } catch (err) {
     logger.warn('migration: session source backfill failed', { error: (err as Error).message });
+  }
+
+  // spec 2026-07-15 (decomposer-router-durable-fix, Lever 2): de-poison agent
+  // capabilities. A broken one-shot extractor wrote NEGATION tags
+  // (not-code-generation, etc.) into ~30 agents' `capabilities` arrays; the
+  // decomposer + router rendered them as POSITIVE skills, inverting routing.
+  // Apply the SAME filter the read path (formatAgentCapabilities) uses, once, to
+  // the stored data so the DB stops lying. Deterministic, no LLM, idempotent.
+  // ASAGI correction: malformed (non-array) JSON is SKIPPED, not blanked — mirror
+  // the read path's fail-open so a corrupted-but-differently-shaped row that
+  // merely contains the substring "not-" is never destroyed.
+  try {
+    const rows = database
+      .prepare(`SELECT id, name, capabilities FROM agents
+                 WHERE capabilities LIKE '%"not-%' OR capabilities LIKE '%"not_%'`)
+      .all() as Array<{ id: string; name: string; capabilities: string | null }>;
+    const upd = database.prepare('UPDATE agents SET capabilities = ? WHERE id = ?');
+    let cleaned = 0;
+    for (const row of rows) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(row.capabilities || '[]'); } catch { continue; } // fail-open: skip malformed
+      if (!Array.isArray(parsed)) continue;                                      // fail-open: skip non-array
+      const before = parsed as string[];
+      const after = stripNegationTags(before);
+      if (after.length === before.length) continue;                             // no negation tags → untouched
+      const removed = before.filter(t => typeof t === 'string' && !after.includes(t.trim()));
+      upd.run(JSON.stringify(after), row.id);
+      cleaned++;
+      logger.info('migration: de-poisoned agent capabilities', {
+        agent: row.name, removed, kept: after,
+      });
+    }
+    if (cleaned > 0) logger.info('migration: agent-capability de-poison complete', { agentsCleaned: cleaned });
+  } catch (err) {
+    logger.warn('migration: agent-capability de-poison failed', { error: (err as Error).message });
   }
 
   try {

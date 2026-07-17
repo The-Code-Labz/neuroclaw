@@ -21,6 +21,8 @@ import { startDiscordBotManager } from '../integrations/discord-bot';
 import { startConfigWatcher } from '../system/config-watcher';
 import { markBootHealthy, isBootUnproven } from '../system/self-update';
 import { startCleanupScheduler } from '../system/cleanup';
+import { checkStandardsFreshness } from '../standards/freshness';
+import { initStandardsHookRegistration } from '../standards/hook-registration';
 import { startSessionCleanupScheduler, startAnalyticsRetentionCleanup } from '../system/session-cleanup';
 import { startBackupScheduler } from '../system/db-backup';
 import { startCatalogRefresh } from '../system/model-catalog';
@@ -401,7 +403,7 @@ app.get('/login', (c) => {
 app.use('/chat-mode', async (c, next) => {
   const cookie = c.req.header('cookie') ?? '';
   const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
-  const token = c.req.query('token') ?? cookieToken ?? '';
+  const token = c.req.query('token') || cookieToken || '';
   if (!tokenMatches(token, config.dashboard.token)) {
     return c.redirect('/login?next=' + encodeURIComponent('/chat-mode'));
   }
@@ -432,7 +434,7 @@ app.get('/chat-mode', (c) => {
 app.use('/dashboard', async (c, next) => {
   const cookie = c.req.header('cookie') ?? '';
   const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
-  const token = c.req.query('token') ?? cookieToken ?? '';
+  const token = c.req.query('token') || cookieToken || '';
   if (!tokenMatches(token, config.dashboard.token)) {
     return c.redirect('/login?next=' + encodeURIComponent('/dashboard'));
   }
@@ -513,7 +515,7 @@ app.get('/dashboard-v2/*', (c) => {
 app.use('/dashboard-v4', async (c, next) => {
   const cookie = c.req.header('cookie') ?? '';
   const cookieToken = /(?:^|;\s*)dashboard-token=([^;]+)/.exec(cookie)?.[1];
-  const token = c.req.query('token') ?? cookieToken ?? '';
+  const token = c.req.query('token') || cookieToken || '';
   if (!tokenMatches(token, config.dashboard.token)) {
     return c.redirect('/login?next=' + encodeURIComponent('/dashboard-v4'));
   }
@@ -626,9 +628,12 @@ app.all('/mcp', handleMcpRequest);
 // login page, never the token.
 app.get('/', (c) => c.redirect('/dashboard'));
 
-const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostname: '127.0.0.1' }, (info) => {
+const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostname: config.dashboard.host }, (info) => {
   if (!process.env.DASHBOARD_TOKEN || config.dashboard.token === 'change-me' || config.dashboard.token.length < 16) {
     logger.warn('⚠️  dashboard: DASHBOARD_TOKEN is unset, default ("change-me"), or weak (<16 chars). Set a strong token in .env BEFORE exposing this server behind a reverse proxy.');
+  }
+  if (config.dashboard.host !== '127.0.0.1' && config.dashboard.host !== 'localhost') {
+    logger.warn(`⚠️  dashboard: bound to non-loopback host ${config.dashboard.host} — reachable beyond this machine. Ensure this is a VPN/NetBird IP, NOT 0.0.0.0. Login token still required.`);
   }
   // Never echo the token. Sign in via the login page using your DASHBOARD_TOKEN.
   logger.info(`dashboard: listening → http://localhost:${info.port}/  (sign in with your DASHBOARD_TOKEN)`);
@@ -665,6 +670,8 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
       // (never snapshotted into process.env — the RT rotates). config.openart.enabled
       // and the Studio health check delegate to openartConfigured().
       void import('../infra/openart-auth').then(({ primeOpenArtConfigured }) => primeOpenArtConfigured());
+      // Higgsfield: same live-RT prime (rotating refresh token, never snapshotted).
+      void import('../infra/higgsfield-auth').then(({ primeHiggsfieldConfigured }) => primeHiggsfieldConfigured());
     })
     .catch((err: unknown) => logger.warn('broker: startup key resolution failed', { err: (err as Error).message }))
     .finally(() => startCatalogRefresh());
@@ -676,6 +683,7 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
   startGrokUsageWarmer(); // keep Grok CLI usage cache hot (cold PTY drive > panel's 10s fetch timeout)
   startConfigWatcher();
   startCleanupScheduler();
+  checkStandardsFreshness();
   startSessionCleanupScheduler();
   startAnalyticsRetentionCleanup(); // Prune old analytics/spend data (90/180 days)
   startBackupScheduler(); // Auto-backup database daily, keep last 7
@@ -723,6 +731,8 @@ const httpServer = serve({ fetch: app.fetch, port: config.dashboard.port, hostna
   // Write the configured antigravity model to settings.json once at startup
   // so all agy spawns use the right model without per-call writes or races.
   initAntigravityModel();
+  // Idempotently register the indexed-standards hook in Claude Code settings.
+  initStandardsHookRegistration();
   // Multi-bot Discord manager — reads `discord_bots` table, spawns one
   // gateway client per enabled row, polls every 30s for adds/removes.
   startDiscordBotManager()

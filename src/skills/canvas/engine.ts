@@ -37,27 +37,72 @@ import type {
  * Canvas is "Asia's design studio" but runs as a standalone engine (not an
  * agent), so it does not inherit Asia's model automatically — this bridges it.
  */
-function canvasModel(): string {
-  if (process.env.CANVAS_MODEL) return process.env.CANVAS_MODEL;
+/**
+ * Resolve the model, evaluated per-call. When `agentName` is given (WebApp
+ * Studio — the user picked a specific builder agent), that agent's model wins
+ * so the choice is authoritative. Otherwise: CANVAS_MODEL env > the 'Asia'
+ * design agent > VOIDAI_MODEL.
+ */
+function canvasModel(agentName?: string): string {
   try {
-    // Lazy require — db.ts participates in import cycles (see logger.ts).
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getAgentByName } = require('../../db') as typeof import('../../db');
+    if (agentName) {
+      const picked = getAgentByName(agentName);
+      if (picked?.model) return picked.model;   // explicit per-call choice wins
+    }
+    if (process.env.CANVAS_MODEL) return process.env.CANVAS_MODEL;
     const asia = getAgentByName('Asia');
     if (asia?.model) return asia.model;
   } catch { /* DB not ready / unavailable — fall through to default */ }
+  if (process.env.CANVAS_MODEL) return process.env.CANVAS_MODEL;
   return config.voidai.model || 'gpt-4o-mini';
 }
 
-function canvasProvider(): string {
-  if (process.env.CANVAS_PROVIDER) return process.env.CANVAS_PROVIDER;
+function canvasProvider(agentName?: string): string {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getAgentByName } = require('../../db') as typeof import('../../db');
+    if (agentName) {
+      const picked = getAgentByName(agentName);
+      if (picked?.provider) return picked.provider;   // explicit per-call choice wins
+    }
+    if (process.env.CANVAS_PROVIDER) return process.env.CANVAS_PROVIDER;
     const asia = getAgentByName('Asia');
     if (asia?.provider) return asia.provider;
   } catch { /* fall through */ }
+  if (process.env.CANVAS_PROVIDER) return process.env.CANVAS_PROVIDER;
   return 'voidai';
+}
+
+/**
+ * WebApp Studio default lane — a known-good NON-reasoning code/HTML model, used
+ * when the user hasn't picked a specific builder agent. Deliberately NOT the
+ * Asia design agent: MiniMax-M3 (Asia's model) is a general reasoning model that
+ * burns its budget on hidden reasoning and emits an empty stub for a full app.
+ * OpenRouter gemini-flash is fast, cheap, and reliably emits complete HTML.
+ * Override via WEBAPP_PROVIDER / WEBAPP_MODEL.
+ */
+function webappDefaultProvider(): string { return process.env.WEBAPP_PROVIDER || 'openrouter'; }
+function webappDefaultModel(): string    { return process.env.WEBAPP_MODEL    || 'google/gemini-2.5-flash-lite'; }
+
+// Claude-family providers have NO OpenAI-compatible endpoint reachable here:
+// - 'anthropic'           → subscription OAuth via the Claude Agent SDK
+// - 'claude-gateway'      → LiteLLM /v1/messages (Anthropic wire format, not chat/completions)
+// - 'claude-interactive'  → tmux PTY, no plain-completion transport
+// - 'claude-cli'          → SDK subprocess
+// Their model IDs (e.g. claude-sonnet-5) would fall to the default VoidAI client
+// and 400. Route them to VoidAI's Claude models instead so ANY such agent builds.
+const CLAUDE_FAMILY_PROVIDERS = new Set([
+  'anthropic', 'claude-gateway', 'claude-interactive', 'claude-cli',
+]);
+/** Map a Claude-family model id to a VoidAI-served equivalent. */
+function voidaiClaudeEquivalent(_model: string): string {
+  // claude-sonnet-4-6 is the known-good VoidAI Claude (verified in catalog
+  // 2026-07-15). We deliberately collapse the whole family to it rather than
+  // guess opus/haiku ids that may 404 — Claude is excellent at code either way,
+  // and the stub auto-fallback catches any residual failure.
+  return 'claude-sonnet-4-6';
 }
 
 /**
@@ -69,10 +114,22 @@ function canvasProvider(): string {
  */
 async function* streamModelText(
   messages: Array<{ role: 'system' | 'user'; content: string }>,
-  opts: { temperature?: number; max_tokens?: number } = {},
+  opts: {
+    temperature?: number; max_tokens?: number; agentName?: string;
+    /** Explicit provider/model override — bypasses agent/Asia resolution.
+     *  Used by the WebApp default lane to force a known-good code model. */
+    provider?: string; model?: string;
+  } = {},
 ): AsyncIterable<string> {
-  const model    = canvasModel();
-  const provider = canvasProvider();
+  let model    = opts.model    ?? canvasModel(opts.agentName);
+  let provider = opts.provider ?? canvasProvider(opts.agentName);
+
+  // Route Claude-family providers to VoidAI's Claude (they have no OpenAI-compat
+  // endpoint here — otherwise they 400 on the default client → "no code").
+  if (CLAUDE_FAMILY_PROVIDERS.has(provider)) {
+    model    = voidaiClaudeEquivalent(model);
+    provider = 'voidai';
+  }
 
   if (provider === 'antigravity' || model.startsWith('antigravity/')) {
     const systemMsg = messages.find(m => m.role === 'system')?.content;
@@ -103,9 +160,14 @@ async function* streamModelText(
     kimi:       getSubAgentKimiClient,
   };
   const client = (clientMap[provider] ?? getClient)();
+  // Reasoning models (Kimi kimi-for-coding, o-series, *-thinking) reject any
+  // sampling override — they ONLY accept temperature:1. WebApp Studio lets the
+  // user pick any agent, so a Kimi builder (e.g. Jarvis) would 400 on our 0.7.
+  // Force 1 for those so the picked agent works instead of hard-failing.
+  const isReasoning = provider === 'kimi' || /kimi-for-coding|thinking|reason|^o[0-9]/i.test(model);
   const stream = await client.chat.completions.create({
     model,
-    temperature: opts.temperature ?? 0.65,
+    temperature: isReasoning ? 1 : (opts.temperature ?? 0.65),
     max_tokens:  opts.max_tokens  ?? 16000,
     messages,
     stream: true,
@@ -128,6 +190,52 @@ async function callModelText(
   let out = '';
   for await (const delta of streamModelText(messages, opts)) out += delta;
   return out;
+}
+
+/**
+ * Stream an artifact with a UNIVERSAL safety net. Attempt the picked route —
+ * the chosen agent, or (when no agent is picked) the reliable non-reasoning
+ * default model. If that yields a stub (empty / non-HTML — e.g. a reasoning
+ * model that burned its budget, or an unroutable provider), transparently RETRY
+ * ONCE on the reliable default. This makes "any agent, any provider" literally
+ * true: even a bad pick still produces code. Yields UI `chunk` events;
+ * RETURNS the final extracted HTML ('' only if even the fallback stubbed).
+ */
+async function* streamArtifactWithFallback(
+  sys: string,
+  userMsg: string,
+  opts: { temperature: number; max_tokens: number; agentName?: string },
+): AsyncGenerator<CanvasEvent, string, void> {
+  const messages = [
+    { role: 'system' as const, content: sys },
+    { role: 'user'   as const, content: userMsg },
+  ];
+  const wantDefault = !opts.agentName;   // no agent → reliable default lane
+
+  const runOnce = async function* (
+    o: { temperature: number; max_tokens: number; agentName?: string; provider?: string; model?: string },
+  ): AsyncGenerator<CanvasEvent, string, void> {
+    let raw = '';
+    for await (const delta of streamModelText(messages, o)) {
+      raw += delta;
+      yield { type: 'chunk', payload: { text: delta } };
+    }
+    return extractHtml(raw);
+  };
+
+  // Attempt 1 — the picked route (agent) or the reliable default (no agent).
+  let html: string = wantDefault
+    ? yield* runOnce({ temperature: opts.temperature, max_tokens: opts.max_tokens, provider: webappDefaultProvider(), model: webappDefaultModel() })
+    : yield* runOnce({ temperature: opts.temperature, max_tokens: opts.max_tokens, agentName: opts.agentName });
+  if (!looksLikeStub(html)) return html;
+
+  // Attempt 2 — universal fallback to the reliable default. Skip only when we
+  // were already on it (nothing better to try).
+  if (wantDefault) return html;
+  logger.warn(`canvas: agent "${opts.agentName}" produced a stub — retrying on the reliable default model`);
+  yield { type: 'chunk', payload: { text: `\n\n[ “${opts.agentName}” returned no usable code — retrying on the reliable default model… ]\n\n` } };
+  html = yield* runOnce({ temperature: opts.temperature, max_tokens: opts.max_tokens, provider: webappDefaultProvider(), model: webappDefaultModel() });
+  return html;
 }
 
 const DISCOVERY_FORM: DiscoveryForm = {
@@ -175,6 +283,57 @@ function systemPromptFor(brief: DesignBrief, direction: Direction): string {
     brief.tone     ? `Tone: ${brief.tone}` : '',
     brief.scale    ? `Scale: ${brief.scale}` : '',
     brand,
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * Game Studio system prompt — produces ONE self-contained, playable HTML5
+ * browser game. Tuned for the sandboxed `allow-scripts` (no same-origin) view:
+ * inline JS is allowed, but localStorage/fetch throw — so state stays in-memory.
+ */
+function gameSystemPromptFor(brief: DesignBrief): string {
+  return [
+    'You are a senior JavaScript game developer. You build complete, polished, PLAYABLE browser games as a single self-contained HTML document.',
+    '',
+    'Constraints (non-negotiable):',
+    '- Output ONE complete HTML document. <!doctype html> through </html>. No surrounding markdown, no commentary, no code fences.',
+    '- The ENTIRE game — HTML, CSS, and JavaScript — lives in this one file. Inline CSS in a <style> block and JS in an inline <script> block. No external files, no imports, no CDNs, no external assets.',
+    '- Render with an HTML5 <canvas> and a requestAnimationFrame game loop. Draw all art programmatically (shapes, gradients, text) — do NOT load external images, audio files, or fonts.',
+    '- The game runs inside a sandboxed iframe with `sandbox="allow-scripts"` and NO same-origin. Therefore: NO fetch(), NO localStorage/sessionStorage, NO cookies, NO parent-window calls. Keep ALL state (including high score) in plain JS variables — session-only is fine.',
+    '- Fully self-starting and self-contained: on load, show a title/start screen, then play. Include a visible score/HUD and a game-over + restart flow.',
+    '- Controls: support keyboard (Arrow keys / WASD / Space) AND pointer/touch where it makes sense, so it works on desktop and mobile. Prevent default scrolling on gameplay keys.',
+    '- Make it genuinely fun and responsive: smooth 60fps loop, clear feedback, escalating difficulty. Size the canvas responsively to the viewport.',
+    '- Polished visuals: cohesive color palette, particles/juice where appropriate, readable typography drawn on canvas.',
+    '',
+    `Game to build: ${brief.brief}`,
+    'Build the complete, playable game now. Return only the HTML document.',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * WebApp Studio system prompt — produces ONE self-contained, genuinely
+ * functional modern web app as a single HTML document (a "lovable/bolt"-style
+ * output). Tuned for the relaxed-CSP sandboxed preview (`/webapp/.../file`):
+ * external CDN scripts (React, Tailwind) and https `fetch` to PUBLIC APIs are
+ * allowed, but the iframe has NO same-origin — so no cookies, no localStorage,
+ * no parent access. State stays in memory.
+ */
+function webAppSystemPromptFor(brief: DesignBrief): string {
+  return [
+    'You are a senior full-stack product engineer. You build complete, polished, genuinely FUNCTIONAL modern web apps as a single self-contained HTML document.',
+    '',
+    'Constraints (non-negotiable):',
+    '- Output ONE complete HTML document. <!doctype html> through </html>. No surrounding markdown, no commentary, no code fences.',
+    '- Build a REAL interactive app, not a static mockup: real state, multiple views/routes (client-side), working forms, and meaningful interactivity.',
+    '- Use React 18 + Babel Standalone from a CDN for the UI, and Tailwind via the Play CDN for styling. Load them with <script src> from these EXACT hosts only: https://unpkg.com, https://cdn.jsdelivr.net, https://esm.sh, https://cdn.tailwindcss.com. Write your app code in a <script type="text/babel"> block. (Plain vanilla JS is also acceptable if simpler.)',
+    '- The app runs inside a sandboxed iframe with `sandbox="allow-scripts"` and NO same-origin. Therefore: NO cookies, NO localStorage/sessionStorage, NO parent-window calls. Keep ALL app state in React state / in-memory JS — session-only is fine. Seed realistic demo data in-memory so the app is immediately usable.',
+    '- Networking: you MAY fetch() from PUBLIC, keyless, CORS-enabled HTTPS APIs (e.g. open data APIs). Do NOT assume any private/authenticated backend exists — if the app needs data, seed it in memory. Never reference our own origin or any secret.',
+    '- Responsive and accessible: mobile-friendly layout, semantic HTML, WCAG AA contrast, keyboard-usable controls.',
+    '- Polished, production-quality UI: real spacing rhythm, cohesive palette, thoughtful empty/loading/error states. Make it feel shippable.',
+    '- Fully self-starting: the app mounts and is usable on load with no setup.',
+    '',
+    `App to build: ${brief.brief}`,
+    'Build the complete, working web app now. Return only the HTML document.',
   ].filter(Boolean).join('\n');
 }
 
@@ -325,6 +484,12 @@ export interface GenerateOpts {
   autoDirection?: boolean;
 }
 
+/** True for modes that produce a single self-contained artifact and skip the
+ *  design-critique pass (which scores brand-fit/emotion — meaningless here). */
+function skipsCritique(brief: DesignBrief): boolean {
+  return brief.kind === 'game' || brief.kind === 'webapp';
+}
+
 export async function* generate(
   brief: DesignBrief,
   opts: GenerateOpts = {},
@@ -358,7 +523,7 @@ export async function* generate(
 
   yield {
     type:    'tool.call',
-    payload: { name: 'llm.complete', args: { direction: direction.id, model: canvasModel() } },
+    payload: { name: 'llm.complete', args: { direction: direction.id, model: brief.agentName || 'default' } },
   };
 
   // Phase 4: actually generate — stream tokens so the UI shows live progress
@@ -366,21 +531,24 @@ export async function* generate(
   // event; the client renders a live char + elapsed meter from these.
   let html = '';
   const t0 = Date.now();
-  logger.info(`canvas/generate: llm.complete start — model=${canvasModel()}`);
+  const isGame   = brief.kind === 'game';
+  const isWebApp = brief.kind === 'webapp';
+  logger.info(`canvas/generate: llm.complete start — agent=${brief.agentName || 'default'} · kind=${brief.kind || 'design'}`);
   try {
-    const sys = systemPromptFor(brief, direction);
-    let raw = '';
-    for await (const delta of streamModelText(
-      [
-        { role: 'system', content: sys },
-        { role: 'user',   content: 'Design now. Return only the HTML document.' },
-      ],
-      { temperature: 0.65, max_tokens: 16000 },
-    )) {
-      raw += delta;
-      yield { type: 'chunk', payload: { text: delta } };
-    }
-    html = extractHtml(raw);
+    const sys = isWebApp ? webAppSystemPromptFor(brief)
+              : isGame   ? gameSystemPromptFor(brief)
+              :            systemPromptFor(brief, direction);
+    const userMsg = isWebApp ? 'Build the web app now. Return only the HTML document.'
+                  : isGame   ? 'Build the game now. Return only the HTML document.'
+                  :            'Design now. Return only the HTML document.';
+    // Any agent, any provider: run the picked agent (or the reliable default
+    // when none is chosen) and auto-fall back to the reliable default if the
+    // pick yields no usable code.
+    html = yield* streamArtifactWithFallback(sys, userMsg, {
+      temperature: isGame || isWebApp ? 0.7 : 0.65,
+      max_tokens:  isGame || isWebApp ? 32000 : 16000,
+      agentName:   brief.agentName,
+    });
   } catch (err) {
     const msg = (err as Error).message;
     logger.warn('canvas/generate: model call failed', { err: msg });
@@ -388,11 +556,10 @@ export async function* generate(
     return;
   }
 
-  // Reject stub/empty output (the "blank page with ..." failure) — fail loudly
-  // rather than persist a blank artifact the iframe renders as a white page.
+  // Only reached if even the reliable-default fallback produced a stub.
   if (looksLikeStub(html)) {
-    logger.warn(`canvas/generate: stub artifact rejected — ${html.length} chars · model=${canvasModel()}`);
-    yield { type: 'error', payload: { message: `Model "${canvasModel()}" returned an empty/stub artifact (${html.length} chars). This usually means a reasoning model consumed its token budget — set CANVAS_MODEL to a non-reasoning HTML generator (e.g. google/gemini-3.5-flash).` } };
+    logger.warn(`canvas/generate: stub artifact rejected after fallback — ${html.length} chars`);
+    yield { type: 'error', payload: { message: `Could not generate a usable artifact (${html.length} chars) — even the reliable default model returned an empty result. Try rephrasing the brief.` } };
     return;
   }
 
@@ -431,18 +598,21 @@ export async function* generate(
 
   // Critique is a blocking (non-streamed) call — bracket it with tool.call
   // start/end markers so the activity log + stream meter show it's alive
-  // rather than a silent 5–15s gap.
-  yield { type: 'tool.call', payload: { name: 'llm.critique', args: { persona: 'asia' } } };
-  const tc = Date.now();
-  try {
-    const c = await callModelForCritique(html, brief, 'asia');
-    setArtifactCritique(artifact.id, c);
-    yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: true } };
-    yield { type: 'critique.result', payload: c };
-    logger.info('canvas/generate: critique done');
-  } catch (err) {
-    yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: false } };
-    logger.warn('canvas/generate: critique failed', { err: (err as Error).message });
+  // rather than a silent 5–15s gap. Games & web apps skip it: the design
+  // critique scores brand-fit/emotion, which is meaningless for those.
+  if (!skipsCritique(brief)) {
+    yield { type: 'tool.call', payload: { name: 'llm.critique', args: { persona: 'asia' } } };
+    const tc = Date.now();
+    try {
+      const c = await callModelForCritique(html, brief, 'asia');
+      setArtifactCritique(artifact.id, c);
+      yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: true } };
+      yield { type: 'critique.result', payload: c };
+      logger.info('canvas/generate: critique done');
+    } catch (err) {
+      yield { type: 'tool.call', payload: { name: 'llm.critique', ms: Date.now() - tc, ok: false } };
+      logger.warn('canvas/generate: critique failed', { err: (err as Error).message });
+    }
   }
 
   for (const t of todos) {
@@ -503,8 +673,11 @@ export async function* iterate(
   yield { type: 'tool.call',     payload: { name: 'llm.iterate', args: { instruction } } };
 
   const direction = p.direction || pickDefaultDirection(p.brief);
+  const base = p.brief.kind === 'webapp' ? webAppSystemPromptFor(p.brief)
+             : p.brief.kind === 'game'   ? gameSystemPromptFor(p.brief)
+             :                             systemPromptFor(p.brief, direction);
   const sys = [
-    systemPromptFor(p.brief, direction),
+    base,
     '',
     'You are iterating on an existing artifact. Modify only what the instruction requests; keep everything else identical. Return the FULL updated HTML document.',
   ].join('\n');
@@ -512,26 +685,23 @@ export async function* iterate(
   const t0 = Date.now();
   let html = '';
   try {
-    let raw = '';
-    for await (const delta of streamModelText(
-      [
-        { role: 'system', content: sys },
-        { role: 'user',   content: `Existing artifact:\n${a.content}\n\nChange request:\n${instruction}\n\nReturn the full updated HTML.` },
-      ],
-      { temperature: 0.55, max_tokens: 16000 },
-    )) {
-      raw += delta;
-      yield { type: 'chunk', payload: { text: delta } };
-    }
-    html = extractHtml(raw);
+    html = yield* streamArtifactWithFallback(
+      sys,
+      `Existing artifact:\n${a.content}\n\nChange request:\n${instruction}\n\nReturn the full updated HTML.`,
+      {
+        temperature: 0.55,
+        max_tokens:  p.brief.kind === 'webapp' ? 32000 : 16000,
+        agentName:   p.brief.agentName,
+      },
+    );
   } catch (err) {
     yield { type: 'error', payload: { message: `Iteration failed: ${(err as Error).message}` } };
     return;
   }
 
   if (looksLikeStub(html)) {
-    logger.warn(`canvas/iterate: stub artifact rejected — ${html.length} chars · model=${canvasModel()}`);
-    yield { type: 'error', payload: { message: `Model "${canvasModel()}" returned an empty/stub artifact (${html.length} chars) — set CANVAS_MODEL to a non-reasoning HTML generator (e.g. google/gemini-3.5-flash).` } };
+    logger.warn(`canvas/iterate: stub artifact rejected after fallback — ${html.length} chars`);
+    yield { type: 'error', payload: { message: `Could not produce a usable update (${html.length} chars) — even the reliable default returned an empty result.` } };
     return;
   }
 

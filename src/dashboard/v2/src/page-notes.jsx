@@ -36,6 +36,7 @@ const Notes = () => {
   const [msg, setMsg]         = React.useState(null);
   const [showArchived, setShowArchived] = React.useState(false);
   const [draft, setDraft]     = React.useState({ title: '', content: '' });
+  const [mobilePane, setMobilePane] = React.useState('list'); // 'list' | 'note' — narrow-viewport toggle
 
   const flash = (text, ok = true) => { setMsg({ text, ok }); setTimeout(() => setMsg(null), 4000); };
 
@@ -68,7 +69,7 @@ const Notes = () => {
     setBusy('new');
     const r = await noteApi('/api/notes', 'POST', { title: 'Untitled note', content: '', author: 'User' });
     setBusy('');
-    if (r.ok) { await load(); setActiveId(r.note.id); setDraft({ title: r.note.title, content: r.note.content }); setMode('edit'); }
+    if (r.ok) { await load(); setActiveId(r.note.id); setDraft({ title: r.note.title, content: r.note.content }); setMode('edit'); setMobilePane('note'); }
     else flash('create failed', false);
   };
 
@@ -118,20 +119,24 @@ const Notes = () => {
       </div>}
 
       {loading ? <div className="mono muted" style={{ padding: 24 }}>loading notes…</div> : (
-      <div className="stack" style={{ gap: 32, alignItems: 'flex-start' }}>
+      <>
+      <div className="nt-mobile-tabs">
+        <button className={`nc-btn ghost ${mobilePane === 'list' ? 'active' : ''}`} onClick={() => setMobilePane('list')}><Icon name="sessions" size={12}/> List</button>
+        <button className={`nc-btn ghost ${mobilePane === 'note' ? 'active' : ''}`} onClick={() => setMobilePane('note')} disabled={!note}><Icon name="docs" size={12}/> Note</button>
+      </div>
+      <div className="nt-split">
         {/* Note list */}
-        <div style={{ flex: '0 0 300px', maxWidth: 340, minWidth: 0, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, alignContent: 'start', paddingRight: 8 }}>
-          {notes.length === 0 && <div className="nc-panel" style={{ padding: 14 }}>
+        <div className={`nt-list ${mobilePane === 'note' ? 'nt-mobile-hide' : ''}`}>
+          {notes.length === 0 && <div className="nt-card" style={{ cursor: 'default' }}>
             <div className="mono" style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.6 }}>No notes yet.<br/><span className="muted">Agents can write here with <span className="neonc">write_note</span> / <span className="neonc">append_note</span>, or make one yourself.</span></div>
           </div>}
           {notes.map(n => (
-            <div key={n.id} className="nc-panel glow tilt" onClick={() => setActiveId(n.id)}
-              style={{ padding: 12, cursor: 'pointer', position: 'relative',
-                opacity: n.archived ? 0.6 : 1,
-                boxShadow: activeId === n.id ? '0 0 0 1px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent)' : undefined }}>
+            <div key={n.id}
+              className={`nt-card ${activeId === n.id ? 'is-active' : ''} ${n.pinned ? 'is-pinned' : ''} ${n.archived ? 'is-archived' : ''}`}
+              onClick={() => { setActiveId(n.id); setMobilePane('note'); }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                 <div className="mono" style={{ fontSize: 13, color: 'var(--text)', wordBreak: 'break-word' }}>
-                  {n.pinned ? <span title="pinned" style={{ color: 'var(--accent-2)' }}>📌 </span> : null}{n.title}
+                  {n.pinned ? <Icon name="pin" size={11} style={{ color: 'var(--accent-2)', marginRight: 4, verticalAlign: -1 }} /> : null}{n.title}
                 </div>
               </div>
               {n.preview && <div className="mono" style={{ fontSize: 10, color: 'var(--text-soft)', marginTop: 4, lineHeight: 1.5, maxHeight: 30, overflow: 'hidden' }}>{n.preview}</div>}
@@ -146,12 +151,12 @@ const Notes = () => {
         </div>
 
         {/* Selected note */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {!note && <div className="nc-panel" style={{ padding: 20, textAlign: 'center' }}>
+        <div style={{ minWidth: 0 }} className={mobilePane === 'list' ? 'nt-mobile-hide' : ''}>
+          {!note && <div className="nt-panel" style={{ textAlign: 'center' }}>
             <div className="mono muted" style={{ fontSize: 11 }}>← select a note, or create one</div>
           </div>}
           {note && (
-            <div className="nc-panel glow" style={{ padding: 0 }}>
+            <div className="nt-panel nt-panel--flush">
               {/* Toolbar */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line-soft)', flexWrap: 'wrap' }}>
                 {mode === 'edit'
@@ -159,7 +164,7 @@ const Notes = () => {
                   : <div className="mono" style={{ flex: 1, minWidth: 160, fontSize: 14, color: 'var(--text)', wordBreak: 'break-word' }}>{note.title}</div>}
                 {mode === 'edit' ? (
                   <>
-                    <button className="nc-btn" onClick={save} disabled={busy === 'save'}>{busy === 'save' ? 'Saving…' : '💾 Save'}</button>
+                    <button className="nc-btn" onClick={save} disabled={busy === 'save'}>{busy === 'save' ? 'Saving…' : <><Icon name="save" size={12}/> Save</>}</button>
                     <button className="nc-btn ghost" onClick={() => { setMode('view'); loadNote(note.id); }}>Cancel</button>
                   </>
                 ) : (
@@ -168,11 +173,11 @@ const Notes = () => {
                       <button className={`nc-btn ghost ${mode === 'view' ? 'active' : ''}`} onClick={() => setMode('view')} style={{ fontSize: 10 }}>Rendered</button>
                       <button className={`nc-btn ghost ${mode === 'raw' ? 'active' : ''}`} onClick={() => setMode('raw')} style={{ fontSize: 10 }}>Raw</button>
                     </div>
-                    <button className="nc-btn" onClick={copy}>📋 Copy</button>
-                    <button className="nc-btn ghost" onClick={startEdit}>✎ Edit</button>
-                    <button className="nc-btn ghost" onClick={() => patch({ pinned: !note.pinned })} title="pin">{note.pinned ? '📌' : '📍'}</button>
-                    <button className="nc-btn ghost" onClick={() => patch({ archived: !note.archived })} title="archive">{note.archived ? '⇧' : '🗄'}</button>
-                    <button className="nc-btn ghost" onClick={del} style={{ color: 'var(--danger)' }}>✕</button>
+                    <button className="nt-toolbar-btn" onClick={copy} title="Copy markdown"><Icon name="copy" size={14}/></button>
+                    <button className="nt-toolbar-btn" onClick={startEdit} title="Edit"><Icon name="edit" size={14}/></button>
+                    <button className={`nt-toolbar-btn ${note.pinned ? 'is-active' : ''}`} onClick={() => patch({ pinned: !note.pinned })} title={note.pinned ? 'Unpin' : 'Pin'}><Icon name="pin" size={14}/></button>
+                    <button className={`nt-toolbar-btn ${note.archived ? 'is-active' : ''}`} onClick={() => patch({ archived: !note.archived })} title={note.archived ? 'Unarchive' : 'Archive'}><Icon name="archive" size={14}/></button>
+                    <button className="nt-toolbar-btn is-danger" onClick={del} title="Delete"><Icon name="trash" size={14}/></button>
                   </>
                 )}
               </div>
@@ -204,6 +209,7 @@ const Notes = () => {
           )}
         </div>
       </div>
+      </>
       )}
     </div>
   );

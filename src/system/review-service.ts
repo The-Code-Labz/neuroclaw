@@ -158,6 +158,10 @@ async function runTier1(input: ReviewInput): Promise<{ escalate: boolean; verdic
   const prior   = input.priorFeedback ? `\n\nPRIOR FEEDBACK:\n${input.priorFeedback}` : '';
   const user    = `REQUEST:\n${input.request}\n\n${subject}${logs}${prior}`;
 
+  // MiniMax-prefixed model ids ride the native preferMinimax lane; anything else
+  // (e.g. a VoidAI override like 'gpt-4.1-mini') keeps the original voidaiModel lane.
+  const isMinimax = model.toLowerCase().startsWith('minimax');
+
   const resp = await withTimeout(
     bgChatCompletion({
       model:           model,           // ignored by bgChatCompletion, kept for clarity
@@ -168,7 +172,9 @@ async function runTier1(input: ReviewInput): Promise<{ escalate: boolean; verdic
         { role: 'system', content: TIER1_SYSTEM },
         { role: 'user',   content: user },
       ],
-    }, { voidaiModel: model, label: 'review-tier1' }),
+    }, isMinimax
+      ? { preferMinimax: true, minimaxModel: model, label: 'review-tier1' }
+      : { voidaiModel: model, label: 'review-tier1' }),
     config.review.tierTimeoutMs, 'review-tier1',
   );
 
@@ -221,12 +227,14 @@ async function runTier2(input: ReviewInput): Promise<ReviewerVerdict> {
       raw = resp.choices[0]?.message?.content ?? '';
     } catch (primaryErr) {
       logger.warn('review-tier2: primary failed, trying fallback', { error: (primaryErr as Error).message });
-      // Fallback: strong VoidAI model.
+      // Fallback: native MiniMax-M3 lane — off VoidAI's flaky proxy path
+      // (was voidaiModel: config.review.tier2Fallback, which just landed back
+      // on the same unstable provider the primary was falling back away from).
       const resp = await withTimeout(
         bgChatCompletion({
           model: config.review.tier2Fallback, max_tokens: 3000, temperature: 0.1,
           response_format: { type: 'json_object' }, messages,
-        }, { voidaiModel: config.review.tier2Fallback, label: 'review-tier2-fallback' }),
+        }, { preferMinimax: true, label: 'review-tier2-fallback' }),
         config.review.tierTimeoutMs, 'review-tier2-fallback',
       );
       raw = resp.choices[0]?.message?.content ?? '';

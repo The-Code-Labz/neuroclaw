@@ -24,7 +24,7 @@ const FATAL_REPEAT_THRESHOLD = parseInt(process.env.SENTINEL_FATAL_REPEAT ?? '3'
 // NOTE: bare 403/`unauthorized` deliberately EXCLUDED — last_error is free text
 // and a bare 403 matches unrelated numerals / a transient scrape 403. Only 401
 // (`invalid api key`) is treated as a hard auth-fatal.
-const FATAL_PATTERNS: RegExp[] = [
+export const FATAL_PATTERNS: RegExp[] = [
   /model\s+name\s+not\s+supported/i,
   /no\s+such\s+model/i,
   /model_not_found/i,
@@ -40,7 +40,7 @@ const FATAL_PATTERNS: RegExp[] = [
 // Recoverable-by-retry / by-reassignment signatures.
 // NOTE: quota/billing lives HERE, not in fatal — it's `shouldFallback:true`, so
 // a different provider/agent (i.e. reassignment) is exactly the correct fix.
-const TRANSIENT_PATTERNS: RegExp[] = [
+export const TRANSIENT_PATTERNS: RegExp[] = [
   /rate\s*limit/i,
   /\b429\b/,
   /timeout/i,

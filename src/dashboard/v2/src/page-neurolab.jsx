@@ -243,7 +243,7 @@ const ParticleBeams = ({ beams = [], rooms, tick }) => {
 
 // ─── FloorCanvas ──────────────────────────────────────────────────────────────
 const FloorCanvas = ({ rooms, agents, agentRooms, agentBehavior = {}, beams = [], hiveActivity = {}, tick, selectedId, onSelectAgent }) => (
-  <div className="nc-panel glow" style={{ padding: 0, background: '#060610', overflow: 'hidden', position: 'relative' }}>
+  <div className="st-panel st-panel--flush" style={{ background: '#060610', position: 'relative' }}>
     <div className="scan-line"/>
     <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--line-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <div className="pixel" style={{ fontSize: 12, color: 'var(--accent)', letterSpacing: '.2em', textShadow: '0 0 8px var(--accent)' }}>NEUROCLAW HQ · LAB FLOOR</div>
@@ -643,7 +643,7 @@ const NeuroLab = () => {
           <button className="nc-btn primary" onClick={addRoom}><Icon name="plus" size={12}/> Room</button>
         </>}
       />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 290px', gap: 12 }}>
+      <div className="split-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 290px', gap: 12 }}>
         <FloorCanvas
           rooms={rooms} agents={AGENTS} agentRooms={agentRooms}
           agentBehavior={agentBehavior} beams={beams} hiveActivity={hiveActivity}

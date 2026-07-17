@@ -70,29 +70,6 @@ const connectionState = () => {
   return { tone: 'green', label: 'connected' };
 };
 
-const getDashboardToken = () => {
-  try {
-    return new URLSearchParams(location.search).get('token')
-      || document.cookie.match(/dashboard-token=([^;]+)/)?.[1]
-      || '';
-  } catch { return ''; }
-};
-
-const VersionSwitch = () => {
-  const token = getDashboardToken();
-  const isV4 = location.pathname.startsWith('/dashboard-v4');
-  const href = isV4
-    ? (token ? `/dashboard?token=${encodeURIComponent(token)}` : '/dashboard')
-    : (token ? `/dashboard-v4?token=${encodeURIComponent(token)}` : '/dashboard-v4');
-  const label = isV4 ? 'v4 → v3' : 'v3 → v4';
-  return (
-    <a href={href} className="nc-btn version-switch" title={`Switch to ${isV4 ? 'v3' : 'v4'} dashboard`}>
-      <Icon name={isV4 ? 'arrow-left' : 'arrow-right'} size={12} />
-      <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>{label}</span>
-    </a>
-  );
-};
-
 const RestartButton = ({ iconOnly = false }) => {
   const [state, setState] = React.useState('idle'); // idle | confirm | restarting
 
@@ -208,8 +185,8 @@ const Sidebar = ({ active, setActive, collapsed, setCollapsed }) => {
                    }
                  }}
                  title={it.label}
-                 style={{ justifyContent: isCollapsed ? 'center' : 'flex-start', padding: isCollapsed ? '10px 0' : '8px 14px' }}>
-                <Icon name={it.icon} size={15} />
+                 style={isCollapsed ? { justifyContent: 'center', padding: '10px 0' } : undefined}>
+                <Icon name={it.icon} size={16} />
                 {!isCollapsed && <span style={{ flex: 1 }}>{it.label}</span>}
                 {!isCollapsed && it.soon && <span className="tag muted" style={{ fontSize: 8, padding: '1px 5px' }}>SOON</span>}
               </a>
@@ -327,7 +304,7 @@ const NotificationBell = () => {
       </button>
 
       {open && (
-        <div style={{
+        <div className="notif-panel" style={{
           position: 'absolute', right: 0, top: 'calc(100% + 4px)',
           width: 360, maxHeight: 420, overflow: 'auto',
           background: 'var(--panel)', border: '1px solid var(--line)',
@@ -367,6 +344,43 @@ const NotificationBell = () => {
   );
 };
 
+const SystemPopover = ({ chips }) => {
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    setTimeout(() => document.addEventListener('click', close), 0);
+    return () => document.removeEventListener('click', close);
+  }, [open]);
+  const sys = chips[0];
+  const worstTone = chips.some(c => c.tone === 'red') ? 'red' : chips.some(c => c.tone === 'amber') ? 'amber' : sys.tone;
+  return (
+    <div style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+      <button className="sys-pill" onClick={() => setOpen(o => !o)} title="System status">
+        <span className={`dot ${worstTone} ${worstTone !== 'muted' ? 'pulse' : ''}`} />
+        <span>{sys.value}</span>
+      </button>
+      {open && (
+        <div className="notif-panel" style={{
+          position: 'absolute', right: 0, top: 'calc(100% + 4px)',
+          width: 260, background: 'var(--panel)', border: '1px solid var(--line)',
+          borderRadius: 8, zIndex: 9000, boxShadow: '0 8px 32px rgba(0,0,0,0.9)', overflow: 'hidden',
+        }}>
+          {chips.map(c => (
+            <div key={c.label} className="sys-popover-row">
+              <span className="k">{c.label}</span>
+              <span className="v" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span className={`dot ${c.tone}`} style={{ width: 6, height: 6 }} />
+                {c.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const TopBar = ({ activeLabel, onCmd }) => {
   const data = window.NC_DATA || {};
   const core = data.CORE || {};
@@ -392,23 +406,19 @@ const TopBar = ({ activeLabel, onCmd }) => {
       display: 'flex', alignItems: 'center', gap: 14, padding: '0 16px',
     }}>
       {/* Crumbs */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--mono)', fontSize: 11, minWidth: 0, flex: '0 1 auto' }}>
-        <span className="muted hide-mobile">NEUROCLAW</span>
-        <span className="muted hide-mobile">/</span>
-        <span style={{ color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeLabel}</span>
-        <span className="blink neonc hide-mobile" style={{ marginLeft: 2 }}>_</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--display)', minWidth: 0, flex: '0 1 auto' }}>
+        <span className="mono muted hide-mobile" style={{ fontSize: 10 }}>NEUROCLAW /</span>
+        <span style={{ color: 'var(--text)', fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeLabel}</span>
+        <span className="blink neonc hide-mobile" style={{ marginLeft: 2, color: 'var(--accent)' }}>_</span>
       </div>
 
       <div style={{ flex: 1 }} />
 
-      {/* Status chips - hidden on mobile */}
-      <div className="topbar-chips hide-mobile" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'nowrap', overflow: 'hidden' }}>
-        {chips.slice(0, 4).map(chip => <StatusChip key={chip.label} {...chip} />)}
+      <div className="hide-mobile" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <SystemPopover chips={chips} />
       </div>
 
       <NotificationBell />
-
-      <VersionSwitch />
 
       {/* Search / Cmd - compact on mobile */}
       <button onClick={onCmd} className="nc-btn topbar-search" style={{ minWidth: 'auto', justifyContent: 'center' }}>
@@ -427,6 +437,16 @@ const TopBar = ({ activeLabel, onCmd }) => {
 
 const FooterTerminal = () => {
   const [fps, setFps] = React.useState(null);
+  const [devOpen, setDevOpen] = React.useState(() => {
+    try { return localStorage.getItem('nc-footer-dev-open') === '1'; } catch { return false; }
+  });
+  const toggleDev = () => {
+    setDevOpen(v => {
+      const next = !v;
+      try { localStorage.setItem('nc-footer-dev-open', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
   const [statusCtx, setStatusCtx] = React.useState(() => window.NC_STATUS_CONTEXT || null);
   React.useEffect(() => {
     let raf = 0;
@@ -474,32 +494,32 @@ const FooterTerminal = () => {
   const agentText = `${agent.name || ctx.agentName || 'agent'} · ${agent.role || ctx.agentRole || 'agent'}`;
   const git = status.git || {};
   return (
-    <footer className="footer mono" style={{
-      borderTop: '1px solid var(--line)',
-      background: 'var(--bg-0)',
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '0 10px',
-      fontSize: 10, color: 'var(--muted)',
-      letterSpacing: '0.03em',
-      overflow: 'hidden',
-    }}>
-      <div title={agentText} style={{ flex: '1 1 0', minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
-        <span style={{ color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>@{agentText}</span>
-        <span className="hide-tablet" style={{ color: 'var(--accent-2)', whiteSpace: 'nowrap' }}>{mode} · {model}</span>
-      </div>
+    <footer className="footer" style={{ position: 'relative', borderTop: '1px solid var(--line)', background: 'var(--bg-0)' }}>
+      {devOpen && (
+        <div className="footer-dev-strip" style={{ position: 'absolute', left: 0, right: 0, bottom: '100%' }}>
+          <span title={agentText}>@<b>{agentText}</b></span>
+          <span>{mode} · {model}</span>
+          <span>cpu <b>{cpu == null ? '—' : `${cpu}%`}</b></span>
+          <span>mem <b>{mem.heapUsedMb || '—'}mb</b></span>
+          <span>fps <b>{fps ?? '—'}</b></span>
+          <span>calls/h <b>{spend.call_count ?? '—'}</b></span>
+        </div>
+      )}
+      <div className="footer-ambient mono" style={{ fontSize: 10, color: 'var(--muted)', letterSpacing: '0.03em' }}>
+        <div title={`refresh ${refreshAge()}`} style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6, color: conn.tone === 'green' ? 'var(--green)' : conn.tone === 'amber' ? 'var(--amber)' : 'var(--danger)' }}>
+          <span className={`dot ${conn.tone} ${conn.tone !== 'red' ? 'pulse' : ''}`} style={{ width: 6, height: 6 }} />
+          <span style={{ whiteSpace: 'nowrap' }}>{conn.label}</span>
+        </div>
 
-      <div title={`refresh ${refreshAge()}`} style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6, color: conn.tone === 'green' ? 'var(--green)' : conn.tone === 'amber' ? 'var(--amber)' : 'var(--danger)' }}>
-        <span className={`dot ${conn.tone} ${conn.tone !== 'red' ? 'pulse' : ''}`} style={{ width: 7, height: 7 }} />
-        <span style={{ whiteSpace: 'nowrap' }}>{conn.label}</span>
-        <span className="hide-mobile" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{refreshAge()}</span>
-      </div>
+        <span style={{ color: 'var(--accent-2)', whiteSpace: 'nowrap' }} className="hide-mobile">s:{abbreviateId(sessionId)}</span>
+        <span title={gitLabel(git)} style={{ color: git.dirty ? 'var(--amber)' : 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} className="hide-mobile">{gitLabel(git)}</span>
 
-      <div style={{ flex: '1 1 0', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, overflow: 'hidden' }}>
-        <span style={{ color: 'var(--accent-2)', whiteSpace: 'nowrap' }}>s:{abbreviateId(sessionId)}</span>
-        <span title={gitLabel(git)} style={{ color: git.dirty ? 'var(--amber)' : 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{gitLabel(git)}</span>
-        <span className="hide-tablet">fps {fps ?? '—'}</span>
-        <span className="hide-tablet">cpu {cpu == null ? '—' : `${cpu}%`}</span>
-        <span className="hide-tablet">heap {mem.heapUsedMb || '—'}mb</span>
-        <span className="hide-tablet">calls/h {spend.call_count ?? '—'}</span>
+        <div style={{ flex: 1 }} />
+
+        <button className="footer-dev-toggle" onClick={toggleDev} title={devOpen ? 'Hide dev telemetry' : 'Show dev telemetry'}>
+          <span>dev</span>
+          <Icon name="chevron" size={10} style={{ transform: devOpen ? 'rotate(-90deg)' : 'rotate(90deg)', transition: 'transform .18s ease' }} />
+        </button>
       </div>
     </footer>
   );
@@ -519,8 +539,8 @@ const PageHeader = ({ title, subtitle, right }) => (
   </div>
 );
 
-const Section = ({ title, right, children, padded = true }) => (
-  <div className="nc-panel glow" style={{ padding: padded ? 16 : 0, marginBottom: 16 }}>
+const Section = ({ title, right, children, padded = true, style }) => (
+  <div className="sec-panel" style={{ padding: padded ? 16 : 0, marginBottom: 16, ...style }}>
     {(title || right) && (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: padded ? 14 : 0, padding: padded ? 0 : '12px 14px', borderBottom: padded ? 'none' : '1px solid var(--line-soft)' }}>
         <div className="label-tiny" style={{ color: 'var(--accent)' }}>{title}</div>
@@ -532,18 +552,15 @@ const Section = ({ title, right, children, padded = true }) => (
 );
 
 const StatCard = ({ label, value, sub, tone = 'cyan', icon }) => (
-  <div className="nc-panel glow tilt stat-card" style={{ padding: 14, position: 'relative', overflow: 'hidden' }}>
-    <div className="stripe-bg" style={{ position: 'absolute', inset: 0, opacity: 0.3, pointerEvents: 'none' }} />
-    <div style={{ position: 'relative' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div className="label-tiny">{label}</div>
-        {icon && <Icon name={icon} size={14} className={tone === 'cyan' ? 'neonc' : tone === 'violet' ? 'violetc' : 'amberc'} />}
-      </div>
-      <div className="stat-value" style={{ fontFamily: 'var(--mono)', fontSize: 28, fontWeight: 600, marginTop: 6, color: 'var(--accent)' }}>
-        {value}
-      </div>
-      <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>{sub}</div>
+  <div className="sec-card stat-card" style={{ padding: 14 }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="label-tiny">{label}</div>
+      {icon && <Icon name={icon} size={14} className={tone === 'cyan' ? 'neonc' : tone === 'violet' ? 'violetc' : 'amberc'} />}
     </div>
+    <div className="stat-value" style={{ fontFamily: 'var(--mono)', fontSize: 28, fontWeight: 600, marginTop: 6, color: 'var(--accent)' }}>
+      {value}
+    </div>
+    <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>{sub}</div>
   </div>
 );
 

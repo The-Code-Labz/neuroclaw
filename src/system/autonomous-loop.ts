@@ -27,7 +27,7 @@ import { getTasks, getTaskById, updateTask, type AppTask } from './task-manager'
 import { logHive } from './hive-mind';
 import { logger } from '../utils/logger';
 import { config } from '../config';
-import { healMemoryStats, candidateFixes } from './self-heal/heal-loop';
+import { healMemoryStats, candidateFixes, clearRun } from './self-heal/heal-loop';
 
 export interface AutonomousOptions {
   /** Cap on tasks worked before the loop stops and reports back. */
@@ -188,6 +188,10 @@ function finish(reason: StopReason): void {
   state.running    = false;
   state.stoppedAt  = Date.now();
   state.stopReason = reason;
+
+  // Clear the per-run storm breaker BEFORE any final telemetry/logging feeds
+  // further tool-phase volume into stormCounts (F2).
+  clearRun(state.runId ?? undefined);
 
   const report = buildReport(reason);
   try {
