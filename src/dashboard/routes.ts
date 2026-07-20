@@ -40,7 +40,7 @@ import {
   startImport, cancelImport, importEvents,
 } from '../memory/memory-importer';
 import { listImportSessions, getImportSession } from '../db';
-import { getTasks, createTask, updateTask, TASK_STATUSES, type TaskStatus } from '../system/task-manager';
+import { getTasks, createTask, updateTask, requeueSelfHealBlockedTasks, TASK_STATUSES, type TaskStatus } from '../system/task-manager';
 import { configEvents } from '../system/config-watcher';
 import { chatStream, orchestrateMultiAgent, resolveAgent, clearHistory, type MetaEvent } from '../agent/alfred';
 import { setRelayDispatch, clearRelayDispatch, createPending, resolvePending } from '../system/relay';
@@ -1451,7 +1451,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     { id: 'abacus_image', label: 'Abacus AI', tier: 1, modelsSource: 'abacus', models: ABACUS_IMAGE_MODELS, requiresSession: false, argHint: 'up to 4 images', supportsCount: true, resolutions: ['1K', '2K', '4K'] },
     { id: 'generate_image', label: 'xAI · Grok Imagine', tier: 1, models: ['grok-imagine-image', 'grok-imagine-image-quality'], requiresSession: false, argHint: '1 image per prompt', qualityMap: { 'grok-imagine-image': 'standard', 'grok-imagine-image-quality': 'hd' } },
     { id: 'generate_image_venice', label: 'Venice', tier: 1, modelsSource: 'venice', models: STATIC_VENICE_IMAGE_MODELS, requiresSession: false, argHint: 'supports width/height/negative prompt', supportsNegative: true },
-    { id: 'voidai_image', label: 'VoidAI', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, degraded: true, note: 'VoidAI image is experiencing a temporary upstream outage — try again later.', argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'voidai_image', label: 'VoidAI', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
     { id: 'voidai_gpt_image', label: 'VoidAI · GPT Image', tier: 1, models: ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'], requiresSession: false, argHint: '1 image per prompt' },
     { id: 'voidai_gemini_pro_image', label: 'VoidAI · Gemini Pro Image', tier: 1, models: ['gemini-3-pro-image'], requiresSession: false, argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
     { id: 'kie_image', label: 'KIE AI', tier: 1, models: STATIC_KIE_IMAGE_MODELS, requiresSession: false, argHint: 'premium catalog · 1 image per prompt' },
@@ -3610,6 +3610,26 @@ except Exception as e:
       .prepare(`UPDATE tasks SET archived = 1, archived_at = datetime('now'), archived_by = 'dashboard' WHERE ${where.join(' AND ')}`)
       .run(...args);
     return c.json({ ok: true, archived: result.changes });
+  });
+
+  // ── Requeue tasks buried by the reviewer fail-closed bug ─────────────────
+  // Recovery for tasks parked at `blocked` by the self-heal storm breaker after
+  // the reviewer failed them with ZERO issues (`### tier1 (none)`). Narrow and
+  // positive by construction — real `deterministic gate` failures and unmarked
+  // blocked rows are never matched.
+  //
+  // DRY RUN by default: previews the affected tasks and mutates nothing. Pass
+  // { dryRun: false } to actually requeue. `limit` staggers the release.
+  app.post('/api/tasks/requeue-blocked', async (c) => {
+    const body   = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const dryRun = body.dryRun !== false;
+    const limit  = typeof body.limit === 'number' && body.limit > 0 ? body.limit : undefined;
+    try {
+      const result = requeueSelfHealBlockedTasks({ dryRun, limit });
+      return c.json({ ok: true, ...result });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   // ── Task discipline (hive-mind engagement metrics per agent) ─────────────

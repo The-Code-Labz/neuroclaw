@@ -20,6 +20,7 @@ import { tmpdir } from 'os';
 import { createHash, randomUUID } from 'crypto';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { ensureAntigravityMcpRegistered } from '../system/antigravity-config-writer';
+import { prepareProviderGitEnv, NC_GIT_SHIM_DIR } from '../system/nc-git-env';
 import { resolveCliBinary, MODEL_DISPLAY_NAMES } from './antigravity';
 import { respondBus, type RespondPayload } from '../system/agy-respond-bus';
 import { logger } from '../utils/logger';
@@ -142,10 +143,16 @@ class AgySessionManager {
 
     // Broker-scoped secrets are injected as tmux session env (-e KEY=VALUE), so
     // they reach the agy process via the pane's shell without appearing in logs.
+    // Add the main-checkout git shim + attribution so agy's git writes carry a
+    // lock token and real NC_AGENT/NC_SESSION (Phase 2 WS-A).
     const { resolved } = await buildAgentScopedEnv(opts.agentId, 'antigravity', process.env as Record<string, string>);
+    const gitEnv = await prepareProviderGitEnv({}, opts.agentId, opts.sessionId, process.cwd());
     const envArgs: string[] = [];
     for (const [k, v] of Object.entries(resolved)) {
       if (v) envArgs.push('-e', `${k}=${v}`);
+    }
+    for (const [k, v] of Object.entries(gitEnv)) {
+      if (v !== undefined) envArgs.push('-e', `${k}=${v}`);
     }
 
     const agyCli = resolveCliBinary() ?? 'agy';
@@ -153,7 +160,10 @@ class AgySessionManager {
     // send-keys argument stays tiny (avoids the tmux per-arg "command too long"
     // limit — the same fix proven in claude-interactive). Command substitution
     // inside double quotes is not re-parsed, so any prompt content is verbatim.
-    const launchCmd = [
+    // Shell startup files can prepend dirs ahead of a tmux -e PATH, so export
+    // PATH in the launch command itself as defense-in-depth.
+    const pathExport = `export PATH=${sh(NC_GIT_SHIM_DIR)}:"$PATH"; `;
+    const launchCmd = pathExport + [
       agyCli,
       '--dangerously-skip-permissions',
       ...modelArgs(opts.model),

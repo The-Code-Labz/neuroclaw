@@ -106,6 +106,7 @@ export type HiveAction =
   | 'sentinel_check_in'
   | 'sentinel_reassign'
   | 'sentinel_same_agent_retry'
+  | 'sentinel_owner_dispatch'
   | 'sentinel_blocked'
   | 'sentinel_runaway'
   | 'agent_budget'

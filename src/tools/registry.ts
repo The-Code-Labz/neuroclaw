@@ -600,6 +600,26 @@ export const registry: ToolDef[] = [
       return { response, session_id: sessionId, agent: targetAgent?.name ?? 'Alfred' };
     },
   },
+  // ── composio (deterministic single-tool execute) ─────────────────────────
+  {
+    name:        'composio_execute',
+    category:    'action',
+    description: 'Execute ONE Composio tool with structured arguments (e.g. YOUTUBE_LIST_PLAYLIST_ITEMS, GMAIL_SEND_EMAIL). Use this for single Composio tool calls — it passes arguments deterministically and avoids the nested-argument corruption of the multi-execute meta-tool. Only tools within your allowed Composio toolkits are permitted. For genuine parallel fan-out across multiple tools, use COMPOSIO_MULTI_EXECUTE_TOOL instead.',
+    schema: z.object({
+      tool_slug:           z.string().describe('The Composio tool slug to execute, e.g. "YOUTUBE_LIST_PLAYLIST_ITEMS".'),
+      arguments:           z.record(z.string(), z.any()).optional().describe('Flat object of the tool\'s arguments, e.g. { playlistId: "PL...", maxResults: 50 }.'),
+      connected_account_id: z.string().optional().describe('Optional specific connected account id; defaults to the agent\'s connected account for the toolkit.'),
+    }),
+    shape: {
+      tool_slug:           z.string().describe('The Composio tool slug to execute, e.g. "YOUTUBE_LIST_PLAYLIST_ITEMS".'),
+      arguments:           z.record(z.string(), z.any()).optional().describe('Flat object of the tool\'s arguments, e.g. { playlistId: "PL...", maxResults: 50 }.'),
+      connected_account_id: z.string().optional().describe('Optional specific connected account id; defaults to the agent\'s connected account for the toolkit.'),
+    },
+    handler: async (args, ctx) => {
+      const { runComposioExecute } = await import('./adapters/composio');
+      return runComposioExecute(args as { tool_slug?: string; arguments?: Record<string, unknown>; connected_account_id?: string }, ctx);
+    },
+  },
   // ── memory / vault ───────────────────────────────────────────────────────
   {
     name:            'search_memory',
@@ -895,6 +915,19 @@ export const registry: ToolDef[] = [
       if (!pid) pid = `nc-montage-${Date.now()}`;
       const title = `Montage: ${brief.slice(0, 60)}`;
 
+      // Validate + assemble init-time media overrides. Written on the node in the
+      // SAME exec BEFORE Sachi is assigned, so the assets stage (stage 1 — where
+      // both image + TTS overrides apply) reads them deterministically with no race.
+      const okOmId = (s: string) => /^[A-Za-z0-9._-]+$/.test(s) && !s.includes('..');
+      const okOmModel = (s: string) => /^[A-Za-z0-9._/-]+$/.test(s) && !s.includes('..');
+      const overridesObj: Record<string, string> = {};
+      const ip = args.image_provider?.trim();
+      const im = args.image_model?.trim();
+      const tv = args.tts_voice?.trim();
+      if (ip) { if (!okOmId(ip))    return { ok: false, error: 'invalid image_provider' }; overridesObj.image_provider = ip; }
+      if (im) { if (!okOmModel(im)) return { ok: false, error: 'invalid image_model' };    overridesObj.image_model    = im; }
+      if (tv) { if (!okOmModel(tv)) return { ok: false, error: 'invalid tts_voice' };       overridesObj.tts_voice      = tv; }
+
       // Init (or reuse) the project on the render node and persist the brief so
       // post-gate resumes can re-read it (each openmontage_exec is a fresh process).
       // JSON.stringify produces valid Python string literals — safe interpolation.
@@ -909,7 +942,9 @@ export const registry: ToolDef[] = [
         'if not pdir.exists():',
         '    cp.init_project(pid, title=title, pipeline_type=pt); created=True',
         "(pdir / 'brief.txt').write_text(brief, encoding='utf-8')",
-        'print("RESULT="+json.dumps({"ok":True,"project_id":pid,"pipeline_type":pt,"created":created,"next":cp.get_next_stage(PROJECTS_DIR, pid, pt)}))',
+        `ov=${JSON.stringify(overridesObj)}`,
+        'stored = cp.set_project_overrides(pid, ov) if ov else (cp.get_project_overrides(pid) or {})',
+        'print("RESULT="+json.dumps({"ok":True,"project_id":pid,"pipeline_type":pt,"created":created,"overrides":stored,"next":cp.get_next_stage(PROJECTS_DIR, pid, pt)}))',
       ].join('\n');
       const b64 = Buffer.from(py, 'utf8').toString('base64');
       const command = `cd "$HOME/openmontage" && .venv/bin/python -c "import base64;exec(base64.b64decode('${b64}').decode())"`;
@@ -920,7 +955,7 @@ export const registry: ToolDef[] = [
       });
       if (!res.ok) return { ok: false, error: res.error || 'init_project exec failed', stderr: (res.stderr || '').slice(-800) };
       const m = /RESULT=(\{.*\})/.exec(res.stdout || '');
-      let parsed: { ok?: boolean; next?: string } = {};
+      let parsed: { ok?: boolean; next?: string; overrides?: Record<string, unknown> } = {};
       try { parsed = JSON.parse(m?.[1] ?? '{}'); } catch { /* keep empty */ }
       if (!parsed.ok) return { ok: false, error: 'init_project failed on node', stdout: (res.stdout || '').slice(-800) };
 
@@ -936,7 +971,7 @@ export const registry: ToolDef[] = [
       } satisfies AgentTaskPayload);
       logHive('agent_task_assigned', `run_montage: assigned "${taskTitle}" to Sachi Komine`, sachi.id, { taskId: task.id, projectId: pid, pipeline });
 
-      return { ok: true, project_id: pid, pipeline_type: pipeline, next_stage: parsed.next, task_id: task.id, assigned_to: sachi.name };
+      return { ok: true, project_id: pid, pipeline_type: pipeline, next_stage: parsed.next, overrides: parsed.overrides ?? {}, task_id: task.id, assigned_to: sachi.name };
     },
   },
 
@@ -4486,6 +4521,7 @@ Requires ABACUS_API_KEY in .env.`,
       allow_composio: z.boolean().optional().describe('Set true to let this sub-agent call Composio tools (COMPOSIO_*) for READ/lookup/pagination work — e.g. driving a multi-page YouTube/Gmail/Notion list loop without burning the parent context. Off by default. Blast-radius note: this blesses the whole Composio surface for the spawn, so keep destructive actions (delete/send) on the parent for human review and scope the sub-agent task to fetch-only.'),
       kind:          z.enum(['code', 'prose']).optional().describe("Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content."),
       force:         z.boolean().optional().describe('Bypass the duplicate-task guard and spawn even if an identical subtask recently ran in this session. Only set when the user explicitly wants a re-run.'),
+      preload_tools: z.array(z.string()).optional().describe('Exact tool name(s) to offer the sub-agent UPFRONT (max 5) so it calls them on turn 1 instead of burning turns on search_tools → get_tool_schema. Use when you already know the tool(s) the job needs — e.g. ["COMPOSIO_MULTI_EXECUTE_TOOL"] for a paginated YouTube/Gmail fetch, or ["web_search"]. Names that don\'t resolve are silently dropped; blocked tools are not offered. Pair with priority:\'frontier\' for long sequential pagination.'),
     }),
     shape: {
       task:          z.string().describe('What the sub-agent should do — be specific and self-contained'),
@@ -4497,9 +4533,10 @@ Requires ABACUS_API_KEY in .env.`,
       allow_composio: z.boolean().optional().describe('Set true to let this sub-agent call Composio tools (COMPOSIO_*) for READ/lookup/pagination work — e.g. driving a multi-page YouTube/Gmail/Notion list loop without burning the parent context. Off by default. Blast-radius note: this blesses the whole Composio surface for the spawn, so keep destructive actions (delete/send) on the parent for human review and scope the sub-agent task to fetch-only.'),
       kind:          z.enum(['code', 'prose']).optional().describe("Optional explicit routing hint. 'code' → Kimi K2.6 (coding model). 'prose' → MiniMax 2.7 (research/planning/writing). Omit to let the triage scorer decide based on task content."),
       force:         z.boolean().optional().describe('Bypass the duplicate-task guard and spawn even if an identical subtask recently ran in this session. Only set when the user explicitly wants a re-run.'),
+      preload_tools: z.array(z.string()).optional().describe('Exact tool name(s) to offer the sub-agent UPFRONT (max 5) so it calls them on turn 1 instead of burning turns on search_tools → get_tool_schema. Use when you already know the tool(s) the job needs — e.g. ["COMPOSIO_MULTI_EXECUTE_TOOL"] for a paginated YouTube/Gmail fetch, or ["web_search"]. Names that don\'t resolve are silently dropped; blocked tools are not offered. Pair with priority:\'frontier\' for long sequential pagination.'),
     },
     gate: gateSubAgent,
-    handler: async (args: { task: string; context: string; agent_name?: string; priority?: string; notify_policy?: string; allow_bash?: boolean; allow_composio?: boolean; kind?: 'code' | 'prose'; force?: boolean }, ctx: ToolContext) => {
+    handler: async (args: { task: string; context: string; agent_name?: string; priority?: string; notify_policy?: string; allow_bash?: boolean; allow_composio?: boolean; kind?: 'code' | 'prose'; force?: boolean; preload_tools?: string[] }, ctx: ToolContext) => {
       // Dedup backstop: if an IDENTICAL task is already running in this session,
       // return that task instead of spawning a duplicate. Root cause it guards:
       // across turns (esp. Discord, where history is restored from DB as
@@ -4609,6 +4646,21 @@ Requires ABACUS_API_KEY in .env.`,
             : {}),
         });
       } catch { /* advisory only — never let telemetry break a spawn */ }
+      // preload_tools (graduated-budget C): cap at 5, dedupe, drop blanks. On
+      // over-supply, truncate and surface a VISIBLE warning (mirror shellWarning)
+      // so a parent stuffing the whole registry upfront finds out instead of
+      // silently getting partial preload.
+      let preloadWarning: string | undefined;
+      let preloadTools:   string[] | undefined;
+      if (Array.isArray(args.preload_tools) && args.preload_tools.length > 0) {
+        const deduped = [...new Set(args.preload_tools.map(s => String(s).trim()).filter(Boolean))];
+        if (deduped.length > 5) {
+          preloadWarning = `preload_tools capped at 5 (received ${deduped.length}); using first 5: ${deduped.slice(0, 5).join(', ')}. Unresolvable names are silently dropped.`;
+          preloadTools   = deduped.slice(0, 5);
+        } else {
+          preloadTools = deduped;
+        }
+      }
       const handle = runSubAgentAsync({
         task:                 args.task,
         context:              args.context,
@@ -4618,6 +4670,7 @@ Requires ABACUS_API_KEY in .env.`,
         priorityOverride:     args.priority,
         kind:                 args.kind,
         notifyPolicy:         args.notify_policy as TaskNotifyPolicy | undefined,
+        preloadTools,
         allowedToolOverrides: (() => {
           // Per-spawn tool blessings. bash_run enables the shell executor;
           // the 'composio' sentinel (honored by isToolBlockedForSubAgent BEFORE
@@ -4633,6 +4686,7 @@ Requires ABACUS_API_KEY in .env.`,
       const shellWarning = !args.allow_bash && SHELL_HINT_RE.test(args.task)
         ? 'WARNING: This task appears to need shell/git access but allow_bash is not set. If the sub-agent returns blocked status, re-call run_subtask with allow_bash: true.'
         : undefined;
+      const combinedWarning = [shellWarning, preloadWarning].filter(Boolean).join(' ') || undefined;
       // Auto-continuation: unless notify_policy is 'never', the system brings
       // this agent back automatically when the sub-agent(s) finish, with the
       // results in hand. The agent must NOT tell the user to reply/check back —
@@ -4648,7 +4702,7 @@ Requires ABACUS_API_KEY in .env.`,
         provider: handle.provider,
         model:    handle.model,
         message:  `SubAgent spawned [task-id: ${handle.taskId}] using ${handle.provider}/${handle.model}. ${guidance}`,
-        ...(shellWarning ? { warning: shellWarning } : {}),
+        ...(combinedWarning ? { warning: combinedWarning } : {}),
       };
     },
   },

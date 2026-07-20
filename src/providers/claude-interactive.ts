@@ -6,6 +6,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { ensureSession, sendLine, isAlive, killSession } from '../system/claude-tmux';
+import { prepareProviderGitEnv, NC_GIT_SHIM_DIR } from '../system/nc-git-env';
 
 export interface ClaudeInteractiveOptions {
   prompt:       string;
@@ -154,6 +155,18 @@ export async function* streamClaudeInteractiveChat(
   if (!(await isAlive(name))) {
     const { settingsPath, mcpPath } = writeConfigFiles(opts.sessionId, secret);
     const sub   = await buildAgentScopedEnv(opts.agentId, 'claude-interactive', buildChildEnv());
+    // Broker-scoped secrets + git coordination env must be delivered via tmux
+    // `new-session -e` pairs: a persistent tmux server gives new panes the
+    // SERVER's captured env, not the client's execFile env, so `env: sub.env`
+    // is a silent no-op. Mirror antigravity-session.ts:146-167.
+    const gitEnv = await prepareProviderGitEnv({}, opts.agentId, opts.sessionId, process.cwd());
+    const envArgs: string[] = [];
+    for (const [k, v] of Object.entries(sub.resolved)) {
+      if (v) envArgs.push('-e', `${k}=${v}`);
+    }
+    for (const [k, v] of Object.entries(gitEnv)) {
+      if (v !== undefined) envArgs.push('-e', `${k}=${v}`);
+    }
     // Pre-approve the in-process NeuroClaw MCP tools (mounted via mcp.json) so
     // the interactive REPL doesn't block on a permission prompt the first time
     // the agent calls memory/vault/spawn/etc — mirrors claude-cli.ts. Without
@@ -187,7 +200,12 @@ export async function* streamClaudeInteractiveChat(
     const sessionFlags = claudeSessionExistsOnDisk(cid)
       ? ['--resume', cid]
       : ['--session-id', cid];
-    const launch = [
+    // Shell startup files (.bashrc/.profile) can prepend directories ahead of a
+    // tmux -e PATH, so also export PATH in the launch command itself. This is a
+    // defense-in-depth guard: the -e pair still carries the value, and the export
+    // guarantees the shim resolves first after the shell has started.
+    const pathExport = `export PATH=${sh(NC_GIT_SHIM_DIR)}:"$PATH"; `;
+    const launch = pathExport + [
       'claude',
       ...sessionFlags,
       '--settings', sh(settingsPath),
@@ -196,7 +214,7 @@ export async function* streamClaudeInteractiveChat(
       ...modelArgs,
       '--allowedTools', sh(allow),
     ].join(' ');
-    await ensureSession({ name, command: launch, cwd: process.cwd(), env: sub.env });
+    await ensureSession({ name, command: launch, cwd: process.cwd(), env: sub.env, envArgs });
   }
 
   const turn = new Promise<string>((resolve, reject) => {

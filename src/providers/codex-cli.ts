@@ -23,6 +23,7 @@ import { getComposioMcp, parseAgentToolkits } from '../composio/client';
 import { ensureCodexMcpRegistered, syncComposioInCodexConfig } from '../system/codex-config-writer';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { createStreamScrubber, scrubOutput } from '../broker/scrubber';
+import { prepareProviderGitEnv } from '../system/nc-git-env';
 
 export class CodexCliAuthError    extends Error { constructor(m='codex login required (run `codex login`)') { super(m); this.name='CodexCliAuthError'; } }
 export class CodexCliRateLimitError extends Error { constructor(m='codex rate limit')                       { super(m); this.name='CodexCliRateLimitError'; } }
@@ -212,9 +213,12 @@ async function* runQuery(opts: CodexCliOptions): AsyncGenerator<string, void, vo
 
   // Inject the agent's full scoped broker secret set into the codex subprocess
   // env, and prepare a scrubber to redact those values from streamed output.
+  // When this one-shot spawn lands in the main checkout, also route git writes
+  // through the coordination-lock shim with real attribution (Phase 2 WS-A).
   const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'codex-cli', buildChildEnv());
+  const childEnv = await prepareProviderGitEnv(sub.env, opts.agentId ?? undefined, opts.sessionId ?? undefined, opts.cwd ?? process.cwd());
   const scrubber = createStreamScrubber(sub.resolved);
-  const child: ChildProcess = spawn(cmd, args, { env: sub.env });
+  const child: ChildProcess = spawn(cmd, args, { env: childEnv });
   let timedOut = false;
   let aborted = false;
   // External abort (runaway/stop): SIGKILL the child. codex-cli's exit check
