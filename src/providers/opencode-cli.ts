@@ -14,6 +14,7 @@ import { getComposioMcp, parseAgentToolkits } from '../composio/client';
 import { ensureOpencodeMcpRegistered, syncComposioInOpencodeConfig } from '../system/opencode-config-writer';
 import { buildAgentScopedEnv } from '../broker/subprocessSecrets';
 import { createStreamScrubber, scrubOutput } from '../broker/scrubber';
+import { prepareProviderGitEnv } from '../system/nc-git-env';
 
 export class OpencodeCliAuthError    extends Error { constructor(m='opencode login required') { super(m); this.name='OpencodeCliAuthError'; } }
 export class OpencodeCliRateLimitError extends Error { constructor(m='opencode rate limit') { super(m); this.name='OpencodeCliRateLimitError'; } }
@@ -164,8 +165,9 @@ async function* runQuery(opts: OpencodeCliOptions): AsyncGenerator<string, void,
   args.push('-');
 
   const sub = await buildAgentScopedEnv(opts.agentId ?? null, 'opencode-cli', process.env);
+  const childEnv = await prepareProviderGitEnv(sub.env, opts.agentId ?? undefined, opts.sessionId ?? undefined, opts.cwd ?? process.cwd());
   const scrubber = createStreamScrubber(sub.resolved);
-  const child: ChildProcess = spawn(cmd, args, { env: sub.env });
+  const child: ChildProcess = spawn(cmd, args, { env: childEnv });
   // External abort (runaway/stop): SIGKILL the child. The exit check below already
   // has a `signalCode !== null` branch, so a killed child throws (closes as error)
   // rather than returning truncated output as success. [Item I]

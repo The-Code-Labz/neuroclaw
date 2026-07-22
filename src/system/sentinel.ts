@@ -372,10 +372,57 @@ async function checkInWithAgent(task: StaleTask, agent: AgentRecord, state: Sent
     `After the status update, briefly summarize progress.`;
 
   const preCheckUpdatedAt = task.updated_at;
+
+  // L0 — REAL owner dispatch. The nudge below is a bare completion with NO tools,
+  // so the agent physically cannot run the manage_task() call the message asks for;
+  // it can only generate prose. Historically that made L0 a dead end (41 distinct
+  // tasks check-in'd → 1 same-agent retry). Enqueue actual work for the OWNER so
+  // the assigned agent can finish/park its own task before we ever consider
+  // reassigning it elsewhere.
+  //
+  // Guard: only dispatch when NO open job exists for this task. A stale task with
+  // a live 'pending'/'claimed' job is queued, not abandoned — re-enqueueing there
+  // would either be swallowed by enqueueJob's dedup or race a run that is about to
+  // start. Those cases fall through to L1, which force-cancels and retries.
+  let dispatched = false;
+  if (process.env.SENTINEL_OWNER_DISPATCH !== 'false') {
+    try {
+      const openJob = getDb().prepare(
+        `SELECT id FROM job_queue
+          WHERE status IN ('pending','claimed')
+            AND json_extract(payload,'$.taskId') = ?
+          LIMIT 1`,
+      ).get(task.id) as { id: string } | undefined;
+
+      if (!openJob) {
+        enqueueJob('agent_task', {
+          taskId:          task.id,
+          agentId:         agent.id,
+          agentName:       agent.name,
+          taskTitle:       task.title,
+          taskDescription: task.description ?? '',
+          freshSession:    true,   // stalled run may hold a zombie session
+        });
+        dispatched = true;
+        logHive(
+          'sentinel_owner_dispatch',
+          `sentinel: re-dispatched "${task.title}" to its owner ${agent.name} (stalled ${minutesStale}m, no open job)`,
+          sentinelAgent?.id,
+          { taskId: task.id, agentId: agent.id, agentName: agent.name },
+        );
+        logger.info('sentinel: owner dispatch enqueued', { taskId: task.id, agentName: agent.name });
+      }
+    } catch (err) {
+      logger.warn('sentinel: owner dispatch failed', { taskId: task.id, error: (err as Error).message });
+    }
+  }
+
   // Optional courtesy nudge. Informational only — escalation is decided by
-  // liveness, not by whether the agent replies. Disable with SENTINEL_SEND_NUDGE=false.
+  // liveness, not by whether the agent replies. Skipped when we just dispatched
+  // real work (double-poking the same agent invites duplicate effort).
+  // Disable entirely with SENTINEL_SEND_NUDGE=false.
   let reply = '';
-  if (process.env.SENTINEL_SEND_NUDGE !== 'false') {
+  if (!dispatched && process.env.SENTINEL_SEND_NUDGE !== 'false') {
     reply = await sentinelLlm(
       agent.system_prompt ?? `You are ${agent.name}. Respond concisely.`,
       msg,
@@ -388,8 +435,19 @@ async function checkInWithAgent(task: StaleTask, agent: AgentRecord, state: Sent
     return;
   }
 
-  // Verify the agent actually acted
-  const acted = taskWasActedOn(task.id, preCheckUpdatedAt);
+  // Verify the agent actually acted. A successful owner dispatch counts as action:
+  // real work is now queued, and the job cannot have run yet, so counting it as a
+  // silent reminder would escalate to L1 (reassignment) before the owner ever gets
+  // a turn — exactly the "yank work off the owner" behaviour L0 exists to avoid.
+  // The task re-enters the stale scan on the next pass if the dispatch changes
+  // nothing, so this cannot loop forever.
+  //
+  // Bounded: only the FIRST dispatch (reminders_sent === 0) buys an escalation
+  // reset. If the task stalls again after the owner has already been handed real
+  // work, later dispatches still happen but count as reminders — so the ladder
+  // continues to L1/L2 instead of a dispatch↔reset loop that never escalates.
+  const firstDispatch = dispatched && state.reminders_sent === 0;
+  const acted = firstDispatch || taskWasActedOn(task.id, preCheckUpdatedAt);
   if (acted) {
     updateState(task.id, {
       escalation_level: 0,

@@ -121,7 +121,7 @@ const RestartButton = ({ iconOnly = false }) => {
   );
 };
 
-const Sidebar = ({ active, setActive, collapsed, setCollapsed }) => {
+const Sidebar = ({ active, setActive, collapsed, setCollapsed, mobileOpen, onCloseMobile }) => {
   const { NAV, CORE, STATUS } = window.NC_DATA;
   const state = CORE?.state || STATUS?.status || 'loading';
   const tone = coreTone(state);
@@ -139,7 +139,7 @@ const Sidebar = ({ active, setActive, collapsed, setCollapsed }) => {
   const isCollapsed = collapsed || forceCollapsed;
   
   return (
-    <aside className="sidebar nc-sidebar" style={{
+    <aside className={'sidebar nc-sidebar' + (mobileOpen ? ' mob-open' : '')} style={{
       background: 'var(--bg-0)',
       borderRight: '1px solid var(--line)',
       overflowY: 'auto',
@@ -175,13 +175,11 @@ const Sidebar = ({ active, setActive, collapsed, setCollapsed }) => {
                  onClick={(e) => {
                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
                    e.preventDefault();
-                   if (!it.soon) { 
-                     setActive(it.id); 
-                     // Close mobile sidebar when navigating
-                     if (window.innerWidth <= 640) { 
-                       document.querySelector('.nc-sidebar')?.classList.remove('mob-open'); 
-                       document.getElementById('sidebar-mob-overlay')?.classList.remove('open'); 
-                     } 
+                   if (!it.soon) {
+                     setActive(it.id);
+                     // Close mobile sidebar when navigating (real React state now,
+                     // not a classList hack that React's own re-renders wiped out).
+                     onCloseMobile?.();
                    }
                  }}
                  title={it.label}

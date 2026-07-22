@@ -699,6 +699,11 @@ export const config = {
       // more tool turns: discovery (search_tools → get_tool_schema → call_tool)
       // costs turns before any real work. Bumped from the old hardcoded 8.
       maxToolTurns: parseInt(process.env.SUB_AGENT_MAX_TOOL_TURNS ?? '16', 10),
+      // Component B (graduated-budget spec): consecutive fail-streak ceiling that
+      // bails a sub-agent regardless of remaining turn budget — the safety net
+      // that makes a large frontier ceiling safe on cheap models. Clean tool
+      // results reset the streak; see sub-agent-budget.ts classifyStreakDelta.
+      maxFailStreak: parseInt(process.env.SUB_AGENT_MAX_FAIL_STREAK ?? '4', 10),
       // "Don't go overboard" guardrails on the broadened surface: sub-agents may
       // reach the full tool registry + MCP research tools + skills, but by
       // default may NOT delegate to other agents (agent__*) — prevents fan-out /

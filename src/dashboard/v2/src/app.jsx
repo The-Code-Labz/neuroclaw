@@ -260,7 +260,16 @@ const App = () => {
   // > 1024px: expanded
   const getInitialCollapsed = () => window.innerWidth < 1024;
   const [collapsed, setCollapsed] = React.useState(getInitialCollapsed);
-  
+
+  // Mobile hamburger slide-over — real React state. Previously this was a
+  // vanilla classList.toggle('mob-open') fired from a static <button> in
+  // index.html, targeting the React-owned <aside className="sidebar nc-sidebar">.
+  // React reconciles that className on every re-render (and this app re-renders
+  // constantly — nc-data-tick fires every few seconds), which silently wiped the
+  // 'mob-open' class right back off, making the menu appear to do nothing on
+  // small screens. Real state means React itself renders the open/closed class.
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
+
   // Listen for resize and auto-collapse/expand
   React.useEffect(() => {
     const handleResize = () => {
@@ -269,6 +278,7 @@ const App = () => {
         setCollapsed(true);
       }
       // Don't auto-expand - let user control that
+      if (width > 640) setMobileNavOpen(false);
     };
     window.addEventListener('resize', handleResize);
     // Run once on mount
@@ -360,8 +370,18 @@ const App = () => {
     <>
       {!tweaks.scanlines && <style>{`body::after{display:none}`}</style>}
       {!tweaks.gridOverlay && <style>{`body::before{display:none}`}</style>}
+      <button
+        id="mobile-menu-btn"
+        aria-label="Toggle navigation"
+        onClick={() => setMobileNavOpen(o => !o)}
+      >☰</button>
+      <div
+        id="sidebar-mob-overlay"
+        className={mobileNavOpen ? 'open' : ''}
+        onClick={() => setMobileNavOpen(false)}
+      />
       <div className={`app ${collapsed ? 'collapsed' : ''}`} data-screen-label={`${active}`}>
-        <Sidebar active={active} setActive={setActive} collapsed={collapsed} setCollapsed={setCollapsed}/>
+        <Sidebar active={active} setActive={setActive} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)}/>
         <TopBar activeLabel={label} onCmd={() => setCmd(true)}/>
         <main className="main" style={{ padding: tweaks.density === 'compact' ? 14 : 22 }}>
           <UpdateBanner/>

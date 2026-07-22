@@ -180,6 +180,7 @@ async function runTier1(input: ReviewInput): Promise<{ escalate: boolean; verdic
 
   const raw = resp.choices[0]?.message?.content ?? '';
   const obj = safeParse(raw);
+  assertGradable(obj, 'tier1');
   const verdict: ReviewerVerdict = {
     reviewer: 'tier1',
     passed:   obj.passed === true,
@@ -240,6 +241,7 @@ async function runTier2(input: ReviewInput): Promise<ReviewerVerdict> {
       raw = resp.choices[0]?.message?.content ?? '';
     }
     const obj = safeParse(raw);
+    assertGradable(obj, 'tier2');
     return {
       reviewer: 'tier2',
       passed:   obj.passed === true,
@@ -262,6 +264,23 @@ function safeParse(raw: string): Record<string, unknown> {
     return (v && typeof v === 'object') ? v as Record<string, unknown> : {};
   } catch {
     return {};
+  }
+}
+
+/**
+ * Guard against silently failing CLOSED on an ungradable reviewer response.
+ *
+ * safeParse() returns {} for unparseable/non-JSON output, which made
+ * `obj.passed === true` evaluate false — producing a FAILING verdict with zero
+ * issues (the "### tier1 (none)" signature). Repeated identically, that trips
+ * the self-heal storm breaker and parks an otherwise-fine task at `blocked`
+ * permanently. This module's contract is fail-OPEN on every failure; a bad
+ * parse is a failure to grade, not a failing grade. Throwing here routes into
+ * the existing catch → failOpen() paths in reviewInput().
+ */
+function assertGradable(obj: Record<string, unknown>, tier: 'tier1' | 'tier2'): void {
+  if (typeof obj.passed !== 'boolean') {
+    throw new Error(`${tier}: ungradable response (no boolean "passed" field) — treating as fail-open`);
   }
 }
 

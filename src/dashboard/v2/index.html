@@ -1211,6 +1211,11 @@
     justify-content: space-around;
     align-items: center;
     height: 100%;
+    /* Safety net: if item count/labels ever exceed the viewport width (tiny
+       phones, longer labels), scroll horizontally instead of silently
+       squeezing/clipping items with no way to reach the rest. */
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .mobile-bottom-nav a {
     display: flex;
@@ -1225,6 +1230,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     -webkit-tap-highlight-color: transparent;
+    flex: 0 0 auto;
   }
   .mobile-bottom-nav a.active { color: var(--accent); }
   .mobile-bottom-nav a svg { width: 18px; height: 18px; }
@@ -2037,8 +2043,6 @@
 
 </head>
 <body>
-<button id="mobile-menu-btn" aria-label="Toggle navigation" onclick="document.querySelector('.nc-sidebar').classList.toggle('mob-open');document.getElementById('sidebar-mob-overlay').classList.toggle('open')">☰</button>
-<div id="sidebar-mob-overlay" onclick="document.querySelector('.nc-sidebar').classList.remove('mob-open');this.classList.remove('open')"></div>
 <div id="root"></div>
 
 <!-- Vite-bundled entry: replaces 36 <script type="text/babel"> tags + CDN React/Babel -->

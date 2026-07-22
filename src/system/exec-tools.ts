@@ -1,4 +1,5 @@
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
@@ -10,6 +11,7 @@ import { buildSubprocessEnv } from '../broker/subprocessSecrets';
 import { scrubOutput } from '../broker/scrubber';
 import { spawnCollect } from './spawn-collect';
 import { resolveWorkspace, workspaceRoot, workspaceEnv } from './workspace';
+import { isMainCheckout, maybeInjectGitShim, stampGitAttribution } from './nc-git-env';
 
 // Exec tools — gated per-agent via agents.exec_enabled. Default-allow shell
 // with a hard-deny denylist for catastrophic commands. All calls are audited.
@@ -35,11 +37,11 @@ function buildChildEnv(
   // Never leak the supervisor token into child shells.
   delete out.NC_AGENT_TOKEN;
   // Wire agent attribution so serialized git ops can identify the caller.
-  if (agentId !== undefined) out.NC_AGENT = agentId;
-  if (sessionId !== undefined) out.NC_SESSION = sessionId;
   if (extra) for (const [k, v] of Object.entries(extra)) out[k] = v;
-  return out;
+  return stampGitAttribution(out, agentId, sessionId);
 }
+
+const execFileAsync = promisify(execFile);
 
 // ── Workspace-scoped default paths ───────────────────────────────────────────
 
@@ -169,6 +171,19 @@ export async function bashRun(opts: BashRunOpts): Promise<BashRunResult> {
   if (sub.denied.length)  secretsMeta.secrets_denied  = sub.denied;
   if (sub.missing.length) secretsMeta.secrets_missing = sub.missing;
 
+  // Phase 1: route git writes through the coordination-lock wrapper when the
+  // shell's cwd is the shared main checkout. Worktrees and non-repo paths stay
+  // unwrapped. process.env.PATH is never mutated (M3).
+  //
+  // Phase 2 (follow-up spec, required before enforce flip): interactive CLI
+  // providers (claude-interactive, antigravity via claude-tmux.ts) construct
+  // their own child env and bypass bashRun; they need an equivalent shim
+  // injection path so their main-checkout git writes also carry a token.
+  let childEnv = sub.env;
+  if (!config.ncGit.lockDisabled && await isMainCheckout(cwd)) {
+    childEnv = maybeInjectGitShim(childEnv);
+  }
+
   const limit = config.exec.outputMaxBytes;
   // Process-group-safe runner: spawns detached, resolves on 'exit' (not 'close'),
   // and kills the whole group on timeout/cleanup — so a backgrounded grandchild
@@ -176,7 +191,7 @@ export async function bashRun(opts: BashRunOpts): Promise<BashRunResult> {
   const res = await spawnCollect({
     command,
     cwd,
-    env:            sub.env,
+    env:            childEnv,
     timeoutMs,
     outputCapBytes: limit,
     shellArgs:      ['-lc'],

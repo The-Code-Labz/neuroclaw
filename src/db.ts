@@ -4,6 +4,7 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import { notificationEvents, type DashboardNotificationEvent } from './system/notification-events';
 import { runEvents, agentBus, type RunTerminalEvent } from './system/event-bus';
+import { defaultAnthropicModel } from './system/model-defaults';
 import { JOB_TYPE_TO_EVENT } from './system/inngest-functions';
 import { stripNegationTags } from './system/agent-caps-format';
 
@@ -2948,7 +2949,7 @@ export function createAgentRecord(
   const db = getDb();
   const provider = opts.provider ?? 'voidai';
   const defaultModel = provider === 'anthropic'
-    ? 'claude-sonnet-4-6'
+    ? defaultAnthropicModel()
     : provider === 'kimi-api'
       ? config.kimiApi.model
       : provider === 'openrouter'
