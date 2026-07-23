@@ -9,6 +9,10 @@ export interface TmuxLaunch {
   command:   string;                 // full shell command to run in the window (the `claude ...` line)
   cwd:       string;
   env?:      Record<string, string | undefined>;
+  /** tmux `new-session -e KEY=VALUE` pairs — the ONLY way to inject env into a
+   *  pane under a persistent tmux server (new panes inherit the server's env,
+   *  not the client execFile env). */
+  envArgs?:  string[];
   cols?:     number;                 // default 220
   rows?:     number;                 // default 50
 }
@@ -80,7 +84,11 @@ async function sleep(ms: number): Promise<void> { return new Promise(r => setTim
 // the one-time folder-trust prompt. Resolves when ready, throws on timeout.
 export async function ensureSession(opts: TmuxLaunch, readyTimeoutMs = 45_000): Promise<void> {
   if (await isAlive(opts.name)) return;
-  await tmux(['new-session', '-d', '-s', opts.name, '-x', String(opts.cols ?? 220), '-y', String(opts.rows ?? 50), '-c', opts.cwd], opts.env);
+  await tmux([
+    'new-session', '-d', '-s', opts.name,
+    '-x', String(opts.cols ?? 220), '-y', String(opts.rows ?? 50), '-c', opts.cwd,
+    ...(opts.envArgs ?? []),
+  ], opts.env);
   await tmux(['set-option', '-t', opts.name, 'history-limit', '2000'], opts.env);
   // Run the launch command in the window.
   await tmux(['send-keys', '-t', opts.name, '-l', '--', opts.command], opts.env);

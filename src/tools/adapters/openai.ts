@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { visibleCoreTools, findTool, isToolBlockedForSubAgent } from '../registry';
 import { findMcpBackedAgentTool } from './mcp-backed-agent-adapter';
 import { findMcpRegistryTool } from './mcp-registry-adapter';
-import { dispatchComposioTool } from './composio';
+import { dispatchComposioTool, buildComposioOpenAiTools } from './composio';
 import { META_TOOL_NAMES, buildMetaChatCompletionTools, dispatchMetaTool } from '../meta-tools';
 import type { ToolContext } from '../context';
 import { logger } from '../../utils/logger';
@@ -39,6 +39,60 @@ export function buildOpenAiTools(ctx: ToolContext): ChatCompletionTool[] {
  * sensible value; it just isn't API-validated. Used by both the legacy OpenAI
  * loop and the Agents-SDK backbone for the `hermes` provider.
  */
+/**
+ * Component C (preload_tools) resolver. Given a list of tool names a parent
+ * knows its sub-agent will need, mint their OpenAI tool schemas so they can be
+ * offered UPFRONT — the sub-agent calls them on turn 1 instead of burning
+ * turns on search_tools → get_tool_schema per page.
+ *
+ * Resolution paths (spec §3.3 / ASAGI C5):
+ *   - static registry + MCP-registry names → findTool (covers both; MCP tools
+ *     use a synchronous passthrough schema), converted like buildOpenAiTools.
+ *   - COMPOSIO_* names → buildComposioOpenAiTools(ctx) once (async, TTL-cached
+ *     against the parent's Composio config), filtered by name.
+ * Names that resolve to nothing are silently dropped (a typo doesn't error the
+ * spawn). Dispatch-gating (isToolBlockedForSubAgent) is applied by the CALLER
+ * before offering — a preloaded blocked tool is dropped, not advertised.
+ */
+export async function buildPreloadOpenAiTools(
+  names: string[],
+  ctx: ToolContext,
+): Promise<ChatCompletionTool[]> {
+  const out: ChatCompletionTool[] = [];
+  const composioNames = names.filter(n => n.startsWith('COMPOSIO_'));
+  const staticNames   = names.filter(n => !n.startsWith('COMPOSIO_'));
+
+  for (const name of staticNames) {
+    const tool = findTool(name); // static registry OR MCP-registry passthrough
+    if (!tool) continue;
+    try {
+      out.push({
+        type: 'function' as const,
+        function: {
+          name:        tool.name,
+          description: tool.description,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          parameters:  stripSchemaMeta(z.toJSONSchema(tool.schema as any, { target: 'draft-7' })),
+        },
+      });
+    } catch (err) {
+      logger.warn('buildPreloadOpenAiTools: unconvertible schema, dropping', { name, err: (err as Error).message });
+    }
+  }
+
+  if (composioNames.length > 0) {
+    try {
+      const wanted = new Set(composioNames);
+      const all    = await buildComposioOpenAiTools(ctx);
+      for (const t of all) if (wanted.has(t.function.name)) out.push(t);
+    } catch (err) {
+      logger.warn('buildPreloadOpenAiTools: composio resolve failed, dropping', { err: (err as Error).message });
+    }
+  }
+
+  return out;
+}
+
 export function sanitizeToolSchemasForGrok(tools: ChatCompletionTool[]): ChatCompletionTool[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function scrubSchema(schema: any): any {

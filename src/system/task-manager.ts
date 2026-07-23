@@ -430,6 +430,89 @@ export function recoverStuckReviewTasks(minAgeMs = 0): number {
 }
 
 /**
+ * Marker for the reviewer fail-closed bug (fixed in review-service `assertGradable`).
+ *
+ * When the reviewer returned ungradable output, `safeParse` yielded `{}`, so
+ * `obj.passed === true` evaluated FALSE — producing a *failing* verdict that
+ * listed ZERO blocking issues. That renders as `### tier1 (none)` in the
+ * feedback. Repeated `maxRetries` times it produced an identical failure
+ * signature, tripping the self-heal storm breaker, which parks the task at
+ * `blocked` — a terminal state nothing ever retries.
+ *
+ * This selector is deliberately NARROW and POSITIVE. It matches only that
+ * provably-safe class. It must never be widened to "all blocked tasks":
+ *   - `deterministic gate` failures are REAL failures the reviewer fix does not
+ *     address — requeuing them just re-fails them.
+ *   - unmarked blocked rows have an unknown cause and are excluded by default.
+ */
+const SELF_HEAL_PARSE_BUG_MARKER = '%tier1 (none)%';
+
+export interface RequeueBlockedResult {
+  dryRun:   boolean;
+  matched:  number;
+  requeued: number;
+  tasks:    Array<{ id: string; title: string; agent_id: string | null; failure_count: number }>;
+}
+
+/**
+ * Recover tasks buried by the reviewer fail-closed bug: reset them to `todo`
+ * and clear the failure counter so they are eligible to be worked again.
+ *
+ * Deliberately does NOT enqueue jobs. Setting status to `todo` returns the task
+ * to the board, where the autonomous loop and `claim_next_task` pick it up at
+ * their own pace — that natural drain IS the stagger. Dispatching N jobs here
+ * would stampede the queue with the whole backlog at once.
+ *
+ * Defaults to a DRY RUN: callers must pass `dryRun: false` to mutate anything.
+ * Running this before the `assertGradable` fix is deployed is pointless — the
+ * requeued tasks would hit the same bug and be re-buried.
+ */
+export function requeueSelfHealBlockedTasks(
+  opts: { dryRun?: boolean; limit?: number } = {},
+): RequeueBlockedResult {
+  const dryRun = opts.dryRun !== false;           // fail-safe: mutate only on explicit false
+  const limit  = Number.isFinite(opts.limit) && (opts.limit as number) > 0
+    ? Math.floor(opts.limit as number)
+    : null;
+
+  const db   = getDb();
+  const rows = db.prepare(
+    `SELECT id, title, agent_id, failure_count
+       FROM tasks
+      WHERE status = 'blocked'
+        AND archived = 0
+        AND last_error LIKE ?
+      ORDER BY updated_at ASC
+      ${limit ? 'LIMIT ?' : ''}`,
+  ).all(...(limit ? [SELF_HEAL_PARSE_BUG_MARKER, limit] : [SELF_HEAL_PARSE_BUG_MARKER])) as
+    Array<{ id: string; title: string; agent_id: string | null; failure_count: number }>;
+
+  if (dryRun || rows.length === 0) {
+    return { dryRun: true, matched: rows.length, requeued: 0, tasks: rows };
+  }
+
+  // Two mutations only: return to the board, and clear the counter so the task
+  // gets a full retry budget instead of instantly re-tripping the breaker.
+  // `last_error` is cleared so a stale marker can't re-match on a later sweep.
+  const reset = db.prepare(
+    `UPDATE tasks
+        SET status = 'todo', failure_count = 0, last_error = NULL, updated_at = datetime('now')
+      WHERE id = ? AND status = 'blocked'`,
+  );
+  const runAll = db.transaction((ids: string[]) => {
+    let n = 0;
+    for (const id of ids) n += reset.run(id).changes;
+    return n;
+  });
+  const requeued = runAll(rows.map(r => r.id));
+
+  logger.warn('task-mgr: requeued self-heal-blocked tasks (reviewer fail-closed recovery)', {
+    matched: rows.length, requeued,
+  });
+  return { dryRun: false, matched: rows.length, requeued, tasks: rows };
+}
+
+/**
  * List tasks. Defaults exclude archived rows (Archon-style soft delete).
  *   getTasks() — every active task across every project, status-grouped order
  *   getTasks('todo') — just one status

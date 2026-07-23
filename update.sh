@@ -92,10 +92,21 @@ ensure_node() {
 
 rebuild_and_restart() {
   ensure_node
-  local lockfile_after
+  local lockfile_after nm_drift
   lockfile_after="$(git hash-object package-lock.json 2>/dev/null || echo none)"
-  if [ -n "$LOCKFILE_BEFORE" ] && [ "$LOCKFILE_BEFORE" != "$lockfile_after" ]; then
-    say "Dependencies changed — running npm ci ..."
+  # Detect a direct dependency whose INSTALLED version no longer satisfies the
+  # range in package.json — e.g. a stale jimp 1.x left behind by an install that
+  # predated the current pin. The git-tip lockfile comparison alone misses this:
+  # if the lockfile is identical between tips but node_modules was never
+  # reconciled to it, we'd build against the wrong version and fail. If node/
+  # semver/node_modules are missing or unreadable, this returns "1" (reinstall).
+  nm_drift="$(node -e 'try{const semver=require("semver");const pj=require("./package.json");const deps=Object.assign({},pj.dependencies,pj.devDependencies);const inst=require("./node_modules/.package-lock.json").packages;let s="0";for(const name of Object.keys(deps)){const range=deps[name];const p=inst["node_modules/"+name];const have=p&&p.version;if(have&&range&&semver.validRange(range)&&!semver.satisfies(have,range)){s="1";break;}}process.stdout.write(s);}catch(e){process.stdout.write("1");}' 2>/dev/null || echo 1)"
+  if { [ -n "$LOCKFILE_BEFORE" ] && [ "$LOCKFILE_BEFORE" != "$lockfile_after" ]; } || [ "$nm_drift" != "0" ]; then
+    if [ "$nm_drift" != "0" ]; then
+      say "Installed dependencies out of sync with package.json — running npm ci ..."
+    else
+      say "Dependencies changed — running npm ci ..."
+    fi
     npm ci
   else
     ok "Dependencies unchanged — skipping npm ci."

@@ -18,18 +18,18 @@ const DEFAULT_DETACHED_TASK_LIFECYCLE_RUNTIME: DetachedTaskLifecycleRuntime = {
     const db = getDb();
     if (status === 'done') {
       db.prepare(
-        `UPDATE tasks SET status='done', output=?, terminal_outcome=NULL, updated_at=datetime('now') WHERE id=?`,
+        `UPDATE tasks SET status='done', output=?, terminal_outcome=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id=?`,
       ).run(output ?? '', taskId);
     } else if (status === 'blocked') {
       // Phase 1: store as status='done' + terminal_outcome='blocked' per sub-agent-blocked-outcome spec.
       // Phase 2 (task-status-extension spec): update to status='blocked' natively once that migration lands.
       db.prepare(
-        `UPDATE tasks SET status='done', output=?, terminal_outcome='blocked', updated_at=datetime('now') WHERE id=?`,
+        `UPDATE tasks SET status='done', output=?, terminal_outcome='blocked', updated_at=strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id=?`,
       ).run(output ?? '', taskId);
     } else {
       // 'failed' or 'dropped' — both map to tasks.status='failed'
       db.prepare(
-        `UPDATE tasks SET status='failed', output=?, terminal_outcome=NULL, updated_at=datetime('now') WHERE id=?`,
+        `UPDATE tasks SET status='failed', output=?, terminal_outcome=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id=?`,
       ).run(JSON.stringify({ error: error ?? `Task ended with status: ${status}` }), taskId);
     }
   },

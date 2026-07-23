@@ -52,6 +52,35 @@ function getClient(): Composio {
   return cachedClient;
 }
 
+/**
+ * Execute a single Composio tool via the SDK's structured `arguments` channel —
+ * the deterministic path that bypasses the hosted MCP meta-tool's nested arg
+ * slot (which Composio's server collapses into a `{"$text":"..."}` NL-fallback,
+ * dropping required params). See .planning/specs/2026-07-18-composio-text-wrap-fix.md.
+ *
+ * ⚠️ NEVER populate `text` here — only `arguments`. `ToolExecuteParams.text` is
+ * Composio's natural-language mode; populating it is exactly what reintroduces
+ * the `$text` corruption this path exists to eliminate.
+ */
+export async function executeComposioTool(
+  slug: string,
+  opts: { userId: string; arguments: Record<string, unknown>; connectedAccountId?: string },
+): Promise<unknown> {
+  const client = getClient();
+  // Q4: pin the toolkit version explicitly (default 'latest') so behaviour is
+  // deterministic and logged, rather than silently drifting. The SDK's
+  // dangerouslySkipVersionCheck is a compat flag; the version above is the pin.
+  const version = process.env.COMPOSIO_TOOLKIT_VERSION || 'latest';
+  logger.debug('composio.execute', { slug, userId: opts.userId, version });
+  return client.tools.execute(slug, {
+    userId:                     opts.userId,
+    version,
+    arguments:                  opts.arguments, // structured ONLY — never `text`
+    connectedAccountId:         opts.connectedAccountId,
+    dangerouslySkipVersionCheck: true,
+  } as never);
+}
+
 function cacheKey(userId: string, toolkits: string[] | null): string {
   return `${userId}::${toolkits ? toolkits.slice().sort().join(',') : '*'}`;
 }

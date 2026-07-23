@@ -435,7 +435,9 @@ const ImageGen = () => {
       body.size = sizeMap[sizeRatio] || '1024x1024';
     }
     if (provider === 'gpt_image_generate') {
-      const styleMap = { 'dall-e-3': 'auto', vivid: 'vivid', natural: 'natural' };
+      // ChatGPT web is on GPT Image now, not DALL·E 3 — "model" here is really
+      // the style enum this tool exposes (no real model selector).
+      const styleMap = { auto: 'auto', vivid: 'vivid', natural: 'natural' };
       body.style = styleMap[model] || 'auto';
     }
     if (supportsResolution && resolution) body.resolution = resolution;

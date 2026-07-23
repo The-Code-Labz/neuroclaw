@@ -695,9 +695,15 @@ export function fetchClaudeCliModels(): string[] {
   });
   if (result.error || result.status !== 0) return [];
   const text = (result.stdout ?? '').trim();
-  // Extract all claude model IDs from the output text
-  const matches = text.match(/claude-[a-z]+-\d[\w.-]*/gi) ?? [];
-  return [...new Set(matches)];
+  const ids = new Set<string>();
+  // Legacy format: full model IDs embedded in the output (older CLI builds).
+  for (const m of text.match(/claude-[a-z]+-\d[\w.-]*/gi) ?? []) ids.add(m);
+  // Current format: aliases only, with the active model on a "Current model:" line —
+  // e.g. "Current model: Sonnet 5 (default)" or "Current model: Opus 4.8 (1M context) (default)".
+  // Derive the canonical id: "Sonnet 5" -> claude-sonnet-5, "Opus 4.8" -> claude-opus-4-8.
+  const cur = text.match(/Current model:\s*([A-Za-z]+)\s+(\d[\d.]*)/i);
+  if (cur) ids.add(`claude-${cur[1].toLowerCase()}-${cur[2].replace(/\./g, '-')}`);
+  return [...ids];
 }
 
 export function logClaudeCliInfo(): void {

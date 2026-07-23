@@ -40,7 +40,7 @@ import {
   startImport, cancelImport, importEvents,
 } from '../memory/memory-importer';
 import { listImportSessions, getImportSession } from '../db';
-import { getTasks, createTask, updateTask, TASK_STATUSES, type TaskStatus } from '../system/task-manager';
+import { getTasks, createTask, updateTask, requeueSelfHealBlockedTasks, TASK_STATUSES, type TaskStatus } from '../system/task-manager';
 import { configEvents } from '../system/config-watcher';
 import { chatStream, orchestrateMultiAgent, resolveAgent, clearHistory, type MetaEvent } from '../agent/alfred';
 import { setRelayDispatch, clearRelayDispatch, createPending, resolvePending } from '../system/relay';
@@ -65,6 +65,7 @@ import {
   MODEL_PROVIDERS, type ModelTier, type ModelProvider,
 } from '../system/model-catalog';
 import { spendLastHourWithCost, spendByTierLastHour, spendByModelLastHour, spendByProvider, spendByProviderAndAgent, logSpend } from '../system/model-spend';
+import { defaultAnthropicModel } from '../system/model-defaults';
 import { getWikiTree, getWikiArticle } from './wiki-loader';
 import {
   listSkills, clearSkillCache, getSkill,
@@ -1451,7 +1452,7 @@ export function registerApiRoutes(app: Hono<any>): void {
     { id: 'abacus_image', label: 'Abacus AI', tier: 1, modelsSource: 'abacus', models: ABACUS_IMAGE_MODELS, requiresSession: false, argHint: 'up to 4 images', supportsCount: true, resolutions: ['1K', '2K', '4K'] },
     { id: 'generate_image', label: 'xAI · Grok Imagine', tier: 1, models: ['grok-imagine-image', 'grok-imagine-image-quality'], requiresSession: false, argHint: '1 image per prompt', qualityMap: { 'grok-imagine-image': 'standard', 'grok-imagine-image-quality': 'hd' } },
     { id: 'generate_image_venice', label: 'Venice', tier: 1, modelsSource: 'venice', models: STATIC_VENICE_IMAGE_MODELS, requiresSession: false, argHint: 'supports width/height/negative prompt', supportsNegative: true },
-    { id: 'voidai_image', label: 'VoidAI', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, degraded: true, note: 'VoidAI image is experiencing a temporary upstream outage — try again later.', argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
+    { id: 'voidai_image', label: 'VoidAI', tier: 1, models: ['gemini-3.1-flash-image', 'gemini-3-pro-image'], requiresSession: false, argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
     { id: 'voidai_gpt_image', label: 'VoidAI · GPT Image', tier: 1, models: ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'], requiresSession: false, argHint: '1 image per prompt' },
     { id: 'voidai_gemini_pro_image', label: 'VoidAI · Gemini Pro Image', tier: 1, models: ['gemini-3-pro-image'], requiresSession: false, argHint: '1 image per prompt', resolutions: ['STANDARD', '2K', '4K'] },
     { id: 'kie_image', label: 'KIE AI', tier: 1, models: STATIC_KIE_IMAGE_MODELS, requiresSession: false, argHint: 'premium catalog · 1 image per prompt' },
@@ -1462,7 +1463,10 @@ export function registerApiRoutes(app: Hono<any>): void {
     // background-removers / outpaint excluded — those are edit-tab / phase-2). The
     // higgsfield_image tool delivers+archives internally (same pattern as openart_image).
     { id: 'higgsfield_image', label: 'Higgsfield', tier: 1, models: HIGGSFIELD_IMAGE_MODELS, requiresSession: false, argHint: 'MCP · subscription credits · 1 image per prompt', resolutions: ['1k', '2k', '4k'] },
-    { id: 'gpt_image_generate', label: 'ChatGPT · DALL·E (session)', tier: 2, models: ['dall-e-3'], requiresSession: true, note: 'Requires a provisioned ChatGPT browser session.' },
+    // ChatGPT web no longer generates with DALL·E 3 — it's on GPT Image now.
+    // There's no real model choice here (the sidecar's chatgpt_image_generate
+    // only takes prompt+style), so the "models" list is really the style enum.
+    { id: 'gpt_image_generate', label: 'ChatGPT · GPT Image (session)', tier: 2, models: ['auto', 'vivid', 'natural'], requiresSession: true, note: 'Requires a provisioned ChatGPT browser session.' },
     { id: 'gemini_image_generate', label: 'Gemini · Nano Banana (session)', tier: 2, models: ['gemini-generate'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
     { id: 'gemini_web_generate_image', label: 'Gemini Web · Imagen (session)', tier: 2, models: ['imagen-3'], requiresSession: true, note: 'Requires a provisioned Gemini browser session.' },
     { id: 'grok_image_edit', label: 'Grok · Aurora Edit (session)', tier: 2, mode: 'edit', models: ['grok-edit'], requiresSession: true, note: 'Edit-only via Grok web session. Generation is covered by xAI · Grok Imagine.' },
@@ -1833,7 +1837,9 @@ export function registerApiRoutes(app: Hono<any>): void {
         const [width, height] = aspectRatioToDimensions(aspectRatio);
         toolArgs = { prompt, model, width, height, ...(negative ? { negative_prompt: negative } : {}) };
       } else if (provider === 'gpt_image_generate') {
-        const styleMap: Record<string, 'auto' | 'vivid' | 'natural'> = { 'dall-e-3': 'auto', vivid: 'vivid', natural: 'natural' };
+        // "model" here is actually the style enum (auto/vivid/natural) — this
+        // tool has no real model selector.
+        const styleMap: Record<string, 'auto' | 'vivid' | 'natural'> = { auto: 'auto', vivid: 'vivid', natural: 'natural' };
         toolArgs = { prompt, style: styleMap[model || ''] ?? rawStyle };
       } else if (provider === 'gemini_image_generate' || provider === 'gemini_web_generate_image') {
         toolArgs = { prompt };
@@ -2584,7 +2590,7 @@ except Exception as e:
         try {
           const sachi = getAgentByName('Sachi Komine');
           if (sachi && sachi.status === 'active') {
-            const taskTitle = `Advance montage ${id} to next gate`;
+            const taskTitle = `Advance montage ${id} past ${stage}`;
             const taskDesc = `Stage "${stage}" was approved in Backlot. Resume OpenMontage project "${id}" and drive it to its next awaiting_human gate using the openmontage-sachi-stage-loop-procedure skill. END YOUR TURN at any awaiting_human gate — do NOT self-approve.`;
             const task = await createTask(taskTitle, taskDesc, undefined, sachi.id, 55);
             enqueueJob('agent_task', {
@@ -3310,7 +3316,7 @@ except Exception as e:
 
     const provider    = body.provider ?? 'voidai';
     const defaultModel = provider === 'anthropic'
-      ? 'claude-sonnet-4-6'
+      ? defaultAnthropicModel()
       : provider === 'kimi-api'
           ? config.kimiApi.model
           : provider === 'openrouter'
@@ -3610,6 +3616,26 @@ except Exception as e:
       .prepare(`UPDATE tasks SET archived = 1, archived_at = datetime('now'), archived_by = 'dashboard' WHERE ${where.join(' AND ')}`)
       .run(...args);
     return c.json({ ok: true, archived: result.changes });
+  });
+
+  // ── Requeue tasks buried by the reviewer fail-closed bug ─────────────────
+  // Recovery for tasks parked at `blocked` by the self-heal storm breaker after
+  // the reviewer failed them with ZERO issues (`### tier1 (none)`). Narrow and
+  // positive by construction — real `deterministic gate` failures and unmarked
+  // blocked rows are never matched.
+  //
+  // DRY RUN by default: previews the affected tasks and mutates nothing. Pass
+  // { dryRun: false } to actually requeue. `limit` staggers the release.
+  app.post('/api/tasks/requeue-blocked', async (c) => {
+    const body   = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const dryRun = body.dryRun !== false;
+    const limit  = typeof body.limit === 'number' && body.limit > 0 ? body.limit : undefined;
+    try {
+      const result = requeueSelfHealBlockedTasks({ dryRun, limit });
+      return c.json({ ok: true, ...result });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   // ── Task discipline (hive-mind engagement metrics per agent) ─────────────

@@ -501,6 +501,15 @@ function startEvictionScheduler(): void {
 // work goes through the NeuroClaw `bash_run` tool, dispatched via item/tool/call
 // with the correct PER-AGENT ToolContext (threadCtx) and per-call broker injection
 // — the same model the CLI providers use.
+//
+// WS-A SCOPE-OUT: this singleton persistent process is NOT covered by the Phase 2
+// per-call git attribution guarantee. Its env is fixed at cold start, so stamping
+// NC_AGENT/NC_SESSION per turn would misattribute every subsequent call to the
+// first agent that started the process. Git ops initiated by codex-app-server's
+// native shell are therefore shim-active only if the global PATH happens to include
+// the shim (it does not by default), and attribution is best-effort/stale. The
+// supported write path is the already-attributed `bash_run` MCP tool. Do NOT add
+// per-call env injection here without a process-per-agent redesign.
 function buildChildEnv(): Record<string, string | undefined> {
   const env = { ...process.env };
   delete env.OPENAI_API_KEY;

@@ -270,7 +270,8 @@ async function refreshVoidAi(): Promise<{ added: number; updated: number; missin
 async function refreshAnthropic(): Promise<{ added: number; updated: number; missing: number }> {
   const { fetchClaudeCliModels } = await import('../providers/claude-cli');
   const cliIds = fetchClaudeCliModels();
-  if (cliIds.length > 0) return upsertSeen('anthropic', cliIds);
+  // additive: the CLI now names only the *current* model — never deactivate the rest.
+  if (cliIds.length > 0) return upsertSeen('anthropic', cliIds, false, {}, {}, true);
 
   // Fall back to SDK when CLI subprocess is unavailable (e.g. nested inside Claude Code)
   try {
@@ -292,7 +293,8 @@ async function refreshClaudeInteractive(): Promise<{ added: number; updated: num
   const { fetchClaudeCliModels } = await import('../providers/claude-cli');
   const ids = fetchClaudeCliModels();
   if (ids.length === 0) return upsertSeen('claude-interactive', ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'], true);
-  return upsertSeen('claude-interactive', ids, true /* subscription */);
+  // additive: CLI names only the current model — never deactivate the rest.
+  return upsertSeen('claude-interactive', ids, true /* subscription */, {}, {}, true);
 }
 
 async function refreshCodex(): Promise<{ added: number; updated: number; missing: number }> {
@@ -578,6 +580,7 @@ function upsertSeen(
   subscriptionProvider = false,
   tierOverrides: Record<string, ModelTier> = {},
   meta: Record<string, ModelMeta> = {},
+  additive = false,
 ): { added: number; updated: number; missing: number } {
   const db = getDb();
   const now = new Date().toISOString();
@@ -617,14 +620,18 @@ function upsertSeen(
     if (before) updated++; else added++;
   }
 
-  // Mark anything else for this provider as missing.
-  const provRows = db.prepare('SELECT id, model_id FROM model_catalog WHERE provider = ?').all(provider) as { id: string; model_id: string }[];
+  // Mark anything else for this provider as missing — UNLESS additive. Additive sources
+  // are known to report an incomplete set (e.g. the Claude CLI now names only the *current*
+  // model), so deactivating unseen entries would collapse a rich catalog snapshot.
   let missing = 0;
-  const markMissing = db.prepare(`UPDATE model_catalog SET is_available = 0, updated_at = datetime('now') WHERE id = ?`);
-  for (const row of provRows) {
-    if (!seen.has(row.model_id)) {
-      markMissing.run(row.id);
-      missing++;
+  if (!additive) {
+    const provRows = db.prepare('SELECT id, model_id FROM model_catalog WHERE provider = ?').all(provider) as { id: string; model_id: string }[];
+    const markMissing = db.prepare(`UPDATE model_catalog SET is_available = 0, updated_at = datetime('now') WHERE id = ?`);
+    for (const row of provRows) {
+      if (!seen.has(row.model_id)) {
+        markMissing.run(row.id);
+        missing++;
+      }
     }
   }
 

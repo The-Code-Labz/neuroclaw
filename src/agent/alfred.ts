@@ -39,6 +39,7 @@ import { renderSkillsForAgent } from '../skills/telemetry';
 import { listSkills } from '../skills/skill-loader';
 import { pickModel } from '../system/model-triage';
 import { logSpend } from '../system/model-spend';
+import { defaultAnthropicModel } from '../system/model-defaults';
 import {
   maybeCompactHistory,
   type HistoryTurn,
@@ -1224,7 +1225,7 @@ async function chatStreamClaudeCli(
   }
   const model = gwTarget
     ? (resolveAgentModel(agentRecord, userMessage, agentRecord!.provider!) || gwTarget.model)
-    : (resolveAgentModel(agentRecord, userMessage, 'anthropic') || 'claude-sonnet-4-6');
+    : (resolveAgentModel(agentRecord, userMessage, 'anthropic') || defaultAnthropicModel());
   const trace = createChatTrace(sessionId, agentId, agentRecord?.name, userMessage);
   const generation = trace?.generation({
     name: 'claude-cli-completion',
@@ -2125,7 +2126,7 @@ async function chatStreamPlainAnthropic(
     await onChunk(`*(The \`${provider}\` Anthropic endpoint isn't configured.)*`);
     return;
   }
-  const model = gwTarget ? (agentRecord?.model || gwTarget.model) : (agentRecord?.model || 'claude-sonnet-4-6');
+  const model = gwTarget ? (agentRecord?.model || gwTarget.model) : (agentRecord?.model || defaultAnthropicModel());
 
   const history = getOrCreateAnthropicHistory(sessionId, agentId);
   while (history.length > 0 && history[history.length - 1].role === 'user') history.pop();

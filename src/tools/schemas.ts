@@ -151,6 +151,9 @@ export const runMontageShape = {
   pipeline_type: z.string().optional().describe('OpenMontage pipeline manifest id (default "mvp_zero_key"). mvp_zero_key = 4 tool-exec stages (assets→edit→compose→publish). explainer/cinematic/animation add reasoning stages (verify vendored first).'),
   project_id:    z.string().optional().describe('Reuse an existing project id, or omit to auto-generate (nc-montage-<ts>). Must match ^[a-zA-Z0-9._-]{1,64}$.'),
   priority:      z.number().int().min(1).max(100).optional().describe('Task priority for the Sachi assignment (default 55).'),
+  image_provider: z.string().optional().describe('Override the assets-stage image provider (e.g. "kie", "fal", "voidai" — or the tool id "fal_image"). Written to project overrides at init BEFORE Sachi runs, so the assets stage honors it deterministically. Omit to use the pipeline default (KIE primary → fal → VoidAI).'),
+  image_model:   z.string().optional().describe('Override the image model paired with image_provider (e.g. "google/nano-banana-pro", "fal-ai/flux/schnell"). May carry a namespace slash.'),
+  tts_voice:     z.string().optional().describe('Override the Kokoro narration voice for the assets stage (e.g. "am_michael", "af_heart"). Omit for the pipeline default voice.'),
 };
 export const runMontageSchema = z.object(runMontageShape);
 

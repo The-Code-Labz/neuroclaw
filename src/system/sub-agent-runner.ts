@@ -15,14 +15,15 @@ import { taskEvents } from './background-tasks';
 import { logger }     from '../utils/logger';
 import { translateClaudeError } from '../utils/claudeErrorLabel';
 import { config }     from '../config';
-import { triageSubAgentModel, type SubAgentProvider } from './sub-agent-triage';
+import { triageSubAgentModel, type SubAgentProvider, type SubAgentComplexity } from './sub-agent-triage';
 import { getSubAgentKimiClient, getSubAgentMinimaxClient } from '../agent/subagent-clients';
 import { resolveFamilyEnabled, resolveFamilyModel } from './subagent-providers-store';
 import { isProgressOnlyOutput } from '../utils/progress-only-detector';
 import { shouldDeliverTaskUpdate, type TaskNotifyPolicy } from './task-notify-policy';
 import { getDetachedTaskLifecycleRuntime } from './detached-task-runtime';
 import { isToolBlockedForSubAgent } from '../tools/registry';
-import { dispatchOpenAiTool, buildOpenAiTools } from '../tools/adapters/openai';
+import { dispatchOpenAiTool, buildOpenAiTools, buildPreloadOpenAiTools } from '../tools/adapters/openai';
+import { resolveSubAgentTurnBudget, foldStreak } from './sub-agent-budget';
 import type { ToolContext } from '../tools/context';
 import { KeyedSemaphore } from '../utils/keyed-semaphore';
 
@@ -44,6 +45,7 @@ export interface RunSubAgentOptions {
   kind?:                 'code' | 'prose'; // explicit routing override — bypasses keyword scorer
   spawnDepth?:           number;           // defaults to 1 for all sub-agent calls
   allowedToolOverrides?: string[];         // tools the parent explicitly permitted
+  preloadTools?:         string[];         // Component C: exact tools offered upfront (skip discovery)
   notifyPolicy?:         TaskNotifyPolicy; // default: 'done_only'
 }
 
@@ -266,9 +268,17 @@ function notifyParentInbox(
 // plus the search_tools/call_tool/get_tool_schema meta-tools — so they can
 // discover and invoke the full registry, the MCP research servers, and skills.
 // The lockdown is enforced centrally at dispatch (isToolBlockedForSubAgent),
-// not by withholding the offer. MAX_TOOL_TURNS is raised (config) to cover the
-// extra turns that tool discovery costs.
-const MAX_TOOL_TURNS = config.subAgent.maxToolTurns;
+// not by withholding the offer. The per-call turn budget is now graduated off
+// triage.complexity (sub-agent-budget.ts), not a flat module-level constant.
+
+// Terminal outcome of a route attempt. `exhausted:true` means the sub-agent hit
+// its turn budget OR the fail-streak guard without finishing — a machine-readable
+// pause signal (NOT a specially-worded string), so runSubAgentAsync can mark it
+// `blocked` instead of silently `done`. (Fixes the pre-existing done-not-blocked
+// bug where the old `[sub-agent incomplete…]` string slipped past isProgressOnlyOutput.)
+interface RouteResult { text: string; exhausted: boolean }
+
+const MIDLOOP_MAX_RETRIES = 2; // §3.2.1: same-route retries after real progress before pausing
 
 // MiniMax (and some reasoning models) emit <think>...</think> before the answer.
 // Keep only the final answer (everything after the last </think>); strip stray
@@ -281,7 +291,13 @@ function stripThinkBlocks(text: string): string {
   return out || text.trim();
 }
 
-async function runOnRoute(opts: RunSubAgentOptions, route: SubAgentRoute, ctx: string, systemPrompt: string): Promise<string> {
+async function runOnRoute(
+  opts: RunSubAgentOptions,
+  route: SubAgentRoute,
+  ctx: string,
+  systemPrompt: string,
+  complexity: SubAgentComplexity,
+): Promise<RouteResult> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
@@ -299,6 +315,11 @@ async function runOnRoute(opts: RunSubAgentOptions, route: SubAgentRoute, ctx: s
     allowedToolOverrides: opts.allowedToolOverrides,
   };
 
+  // Component A: graduated per-call budget off complexity, clamped by the raw
+  // SUB_AGENT_MAX_TOOL_TURNS env (unset ⇒ presets govern; set ⇒ hard ceiling).
+  const budget        = resolveSubAgentTurnBudget(complexity);
+  const maxFailStreak = config.subAgent.maxFailStreak;
+
   // Offer the same upfront surface main agents get (visibleCoreTools +
   // search_tools/call_tool/get_tool_schema). The sub-agent reaches everything
   // else — full registry, MCP research servers, skills — by searching and
@@ -309,17 +330,69 @@ async function runOnRoute(opts: RunSubAgentOptions, route: SubAgentRoute, ctx: s
   const tools = buildOpenAiTools(toolCtx)
     .filter(t => !isToolBlockedForSubAgent(t.function.name, toolCtx, opts.allowedToolOverrides));
 
+  // Component C: offer parent-declared preload tools UPFRONT so the sub-agent
+  // calls them on turn 1 instead of burning search_tools → get_tool_schema
+  // round-trips per page. Deduped against the upfront set; dispatch-gated tools
+  // are dropped (never advertised), and unresolvable names are silently ignored.
+  if (opts.preloadTools?.length) {
+    try {
+      const preload  = await buildPreloadOpenAiTools(opts.preloadTools, toolCtx);
+      const existing = new Set(tools.map(t => t.function.name));
+      for (const p of preload) {
+        if (existing.has(p.function.name)) continue;
+        if (isToolBlockedForSubAgent(p.function.name, toolCtx, opts.allowedToolOverrides)) continue;
+        tools.push(p);
+        existing.add(p.function.name);
+      }
+      logger.info('sub-agent-runner: preload tools offered', {
+        requested: opts.preloadTools, offered: tools.length,
+      });
+    } catch (err) {
+      logger.warn('sub-agent-runner: preload resolve failed (continuing without)', { err: (err as Error).message });
+    }
+  }
+
   const client = route.provider === 'kimi' ? getSubAgentKimiClient() : getSubAgentMinimaxClient();
   const model  = resolveModel(route);
 
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+  let failStreak     = 0; // Component B — consecutive fail weight; clean result resets to 0
+  let turnsCompleted = 0; // §3.2.1 — successful model responses so far (guards mid-loop reroute)
+  let midloopRetries = 0; // §3.2.1 — same-route retries used after real progress
+
+  for (let turn = 0; turn < budget; turn++) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const response: any = await providerGate.run(route.family, () => client.chat.completions.create({
-      model,
-      messages,
-      stream: false,
-      ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
-    }));
+    let response: any;
+    try {
+      response = await providerGate.run(route.family, () => client.chat.completions.create({
+        model,
+        messages,
+        stream: false,
+        ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+      }));
+    } catch (err) {
+      // §3.2.1 — mid-loop quota/provider-error preservation. Cold-start failures
+      // (turnsCompleted === 0: bad key, 403 UA mismatch) rethrow so executeSubAgent
+      // falls over to the next family — cheap, no transcript to lose. But a 429 at
+      // turn 150 under a frontier budget must NOT discard 150 turns of paid progress
+      // by silently restarting on MiniMax cold: retry the SAME route briefly, and if
+      // still failing, PAUSE with the transcript intact rather than reroute.
+      if (turnsCompleted === 0) throw err;
+      if (midloopRetries < MIDLOOP_MAX_RETRIES) {
+        midloopRetries++;
+        logger.warn('sub-agent-runner: mid-loop provider error after progress — same-route retry', {
+          family: route.family, turnsCompleted, retry: midloopRetries,
+          error: err instanceof Error ? err.message.slice(0, 160) : String(err).slice(0, 160),
+        });
+        await new Promise(r => setTimeout(r, 1500 * midloopRetries));
+        continue; // consumes a budget turn — bounded, no infinite loop
+      }
+      logger.warn('sub-agent-runner: mid-loop provider error exhausted retries — pausing with transcript', {
+        family: route.family, turnsCompleted,
+      });
+      break; // fall through to the exhausted-return below (preserves lastText)
+    }
+
+    turnsCompleted++;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const choice = (response as any).choices?.[0];
@@ -344,25 +417,53 @@ async function runOnRoute(opts: RunSubAgentOptions, route: SubAgentRoute, ctx: s
         })),
       );
       messages.push(...results);
-      logger.info('sub-agent-runner: tool turn', { turn, tools: msg.tool_calls.map((tc: any) => tc.function.name) });
+
+      // Component B — fold this turn's results into the fail-streak. A clean
+      // result resets to 0 (progress); an unbroken run of errors trips the guard
+      // and bails EARLY, regardless of remaining turn budget. This is what makes
+      // the large frontier ceiling safe on cheap models — a flailing loop dies
+      // fast, a productive one keeps its whole budget.
+      failStreak = foldStreak(failStreak, results.map(r => r.content));
+      logger.info('sub-agent-runner: tool turn', {
+        turn, budget, failStreak,
+        tools: msg.tool_calls.map((tc: any) => tc.function.name),
+      });
+      if (failStreak >= maxFailStreak) {
+        logger.warn('sub-agent-runner: fail-streak guard tripped — bailing', {
+          family: route.family, model, failStreak, maxFailStreak, turn,
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const last = [...messages].reverse().find((m: any) => m.role === 'assistant' && typeof m.content === 'string');
+        const lastText = stripThinkBlocks((last?.content as string | undefined) ?? '');
+        return {
+          text: lastText.trim()
+            ? lastText
+            : `[sub-agent PAUSED: ${failStreak} consecutive tool failures on ${route.family} — the loop was not making progress. Fix the blocker (wrong tool/args, or a gated tool) and re-spawn with a corrected task.]`,
+          exhausted: true,
+        };
+      }
       continue;
     }
 
-    return stripThinkBlocks(msg.content ?? '');
+    return { text: stripThinkBlocks(msg.content ?? ''), exhausted: false };
   }
 
-  // Exhausted turns — return last assistant text if any. Never return ''
-  // silently: an empty string used to be written to the task as a successful
-  // result, giving the parent no signal that the sub-agent ran out of turns.
+  // Budget exhausted (or mid-loop pause) — return last assistant text as a
+  // STRUCTURED pause (exhausted:true), never a specially-worded string that
+  // isProgressOnlyOutput would misread as done.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const last = [...messages].reverse().find((m: any) => m.role === 'assistant' && typeof m.content === 'string');
   const lastText = stripThinkBlocks((last?.content as string | undefined) ?? '');
-  if (lastText.trim()) return lastText;
-  logger.warn('sub-agent-runner: exhausted tool turns with no final text', { family: route.family, model });
-  return `[sub-agent incomplete: exhausted ${MAX_TOOL_TURNS} tool turns without producing a final answer — re-run with a narrower task or fewer required tool calls]`;
+  logger.warn('sub-agent-runner: budget exhausted', { family: route.family, model, budget, complexity });
+  return {
+    text: lastText.trim()
+      ? `[sub-agent PAUSED: reached ${budget}-turn budget for '${complexity}' tier without finishing. Progress so far:]\n${lastText}\n\n[On-disk artifacts (if any) are preserved. To finish: re-spawn with the same task + a "resume from where it stopped" note, priority:'frontier', and preload_tools naming the exact tool(s).]`
+      : `[sub-agent PAUSED: reached ${budget}-turn budget for '${complexity}' tier without producing a final answer. Re-spawn with priority:'frontier', preload_tools naming the exact tool(s), and a narrower/resumable task.]`,
+    exhausted: true,
+  };
 }
 
-async function executeSubAgent(opts: RunSubAgentOptions, triage: ReturnType<typeof triageSubAgentModel>): Promise<string> {
+async function executeSubAgent(opts: RunSubAgentOptions, triage: ReturnType<typeof triageSubAgentModel>): Promise<RouteResult> {
   const ctx = truncateContext(opts.context);
 
   let rawPrompt = 'You are a focused sub-agent. Complete the assigned task concisely and accurately.';
@@ -405,7 +506,7 @@ async function executeSubAgent(opts: RunSubAgentOptions, triage: ReturnType<type
   for (const route of routes) {
     try {
       logger.info('sub-agent-runner: attempting route', { family: route.family, model: route.model });
-      return await runOnRoute(opts, route, ctx, systemPrompt);
+      return await runOnRoute(opts, route, ctx, systemPrompt, triage.complexity);
     } catch (err) {
       // ANY provider error fails over to the next route, not just 429s.
       // Rationale: the native Kimi /coding endpoint returns 403 for an
@@ -448,19 +549,26 @@ export function runSubAgentAsync(opts: RunSubAgentOptions): SubAgentHandle {
   // Fire-and-forget — never awaited by caller
   (async () => {
     try {
-      const result = await executeSubAgent(opts, triage);
+      const routeResult = await executeSubAgent(opts, triage);
+      const result = routeResult.text;
 
-      // Spec 2: progress-only detection — marks blocked instead of done
-      const isBlocked = isProgressOnlyOutput(result);
+      // Spec 2 + graduated-budget C2: mark blocked when the runner explicitly
+      // paused (turn budget / fail-streak — routeResult.exhausted) OR when the
+      // text is progress-only. The `exhausted` flag is the fix for the pre-existing
+      // done-not-blocked bug: a `[`-prefixed pause string slips past the
+      // ^-anchored isProgressOnlyOutput regexes and was silently marked done.
+      const isBlocked = routeResult.exhausted || isProgressOnlyOutput(result);
 
       // When blocked, diagnose whether the task likely needed shell access so
       // the parent agent can self-correct by re-calling with allow_bash: true.
       const SHELL_TASK_RE = /\b(?:curl|wget|git\s+(?:clone|push|pull|commit|log|status)|npm|pip|gh\s+run|fetch\s+logs?|ci\s+logs?|github\s+actions?|bash|shell|execute|docker|ssh|scp)\b/i;
       const likelyNeedsBash = SHELL_TASK_RE.test(opts.task) && !opts.allowedToolOverrides?.includes('bash_run');
       const blockReason = isBlocked
-        ? (likelyNeedsBash
-            ? 'Task requires shell/git execution — re-call run_subtask with allow_bash: true to enable bash commands'
-            : 'Sub-agent returned progress-only output — no actionable result was produced')
+        ? (routeResult.exhausted
+            ? 'Sub-agent PAUSED at its turn/fail-streak budget without finishing — re-spawn with priority:\'frontier\' + preload_tools naming the exact tool(s), or drive the loop from the parent. See partial_output for where it stopped.'
+            : likelyNeedsBash
+              ? 'Task requires shell/git execution — re-call run_subtask with allow_bash: true to enable bash commands'
+              : 'Sub-agent returned progress-only output — no actionable result was produced')
         : null;
 
       if (isBlocked) {
